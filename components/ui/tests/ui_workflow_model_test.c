@@ -177,6 +177,48 @@ static void test_max460_guided_step_content_and_placement_gate(void)
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
 }
 
+/*
+ * Board 2026-11-17: the scan step said only "Scan on phone"/"use WebXR". The operator typed the device's address, was redirected
+ * to the name the phone could not resolve, and had nowhere to go. The step now says where: the name, and the address when there
+ * is one (a phone that cannot resolve ".local" uses the address).
+ */
+static void test_the_scan_step_says_where_to_open_the_page(void)
+{
+    for (workflow_step_t step = WORKFLOW_STEP_SCAN_CHOICE; step <= WORKFLOW_STEP_SCANNING; ++step) {
+        workflow_snapshot_t snapshot = make_snapshot(step);
+        ui_workflow_ranging_t ranging = {0};
+        ui_workflow_model_state_t state = {0};
+        ui_workflow_model_t model;
+
+        build(&snapshot, &state, &ranging, &model);               /* no address yet: the name alone */
+        assert(model.line_count == 2U);
+        assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
+        assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_NAME);
+        assert(strcmp(model.lines[1].args[0], "geolocator.local") == 0);
+
+        (void)snprintf(state.device_address, sizeof(state.device_address), "%s", "192.168.0.191");
+        build(&snapshot, &state, &ranging, &model);               /* with an address: both */
+        assert(model.line_count == 3U);
+        assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_IP);
+        assert(strcmp(model.lines[2].args[0], "192.168.0.191") == 0);
+
+        (void)snprintf(state.device_address, sizeof(state.device_address), "%s", "255.255.255.255");   /* the longest one fits */
+        build(&snapshot, &state, &ranging, &model);
+        assert(strcmp(model.lines[2].args[0], "255.255.255.255") == 0);
+    }
+    /* Other steps do not carry the address. */
+    workflow_snapshot_t other = make_snapshot(WORKFLOW_STEP_RECORD_READY);
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+    (void)snprintf(state.device_address, sizeof(state.device_address), "%s", "192.168.0.191");
+    build(&other, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_NAME);
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_IP);
+    }
+}
+
 static void test_max460_tft_action_set_matches_core_for_guided_steps(void)
 {
     static const workflow_step_t steps[] = {
@@ -1515,6 +1557,7 @@ int main(void)
     test_material_save_sequence_wrap_keeps_new_save_pending();
     test_max460_guided_step_content_and_placement_gate();
     test_max460_tft_action_set_matches_core_for_guided_steps();
+    test_the_scan_step_says_where_to_open_the_page();
     test_the_wifi_choice_before_the_distance_measurement_is_explicit();
     test_a_ranging_pair_without_a_distance_shows_both_directions_and_the_cause();
     test_sensor_counts();

@@ -6,6 +6,7 @@
 #include "wifi_manager_sta.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 
 #include "freertos/FreeRTOS.h"
@@ -391,6 +392,33 @@ esp_err_t wifi_manager_enter_setup_mode(void)
 }
 
 
+/*
+ * How long a started connection attempt is left alone: association and DHCP take a few seconds, and a second request in
+ * that time would stop the radio and start from scratch, which is what undid the connection the operator was waiting for.
+ */
+#define WIFI_CONNECT_SAVED_SETTLE_US 8000000LL
+
+/* Start of the last successful station start by wifi_manager_connect_saved(); 0 before one. Written under the transition. */
+static int64_t s_connect_saved_started_us;
+
+/*
+ * A request to connect to the saved network is pointless while the station has an address, and harmful for a few seconds
+ * after an attempt has been started. Board log 2026-11-17 10:29: the second press of OK on the Wi-Fi screen arrived 20 ms
+ * after the station had associated (179.23 s), called this function, and the radio was stopped 0.25 s into a link that had
+ * just come up; the same press at 9.8 s took down a link that had been up for six seconds. Only a station that has no
+ * address and whose last attempt is older than the settle time is restarted: that is the operator's retry.
+ */
+static bool wifi_manager_connect_saved_not_needed(void)
+{
+    char address[16];
+    if (wifi_manager_sta_ip_string(address, sizeof(address)) == ESP_OK) {
+        return true;
+    }
+    return s_connect_saved_started_us != 0 &&
+        esp_timer_get_time() - s_connect_saved_started_us < WIFI_CONNECT_SAVED_SETTLE_US;
+}
+
+
 esp_err_t wifi_manager_connect_saved(void)
 {
     esp_err_t err =
@@ -405,6 +433,12 @@ esp_err_t wifi_manager_connect_saved(void)
     if (!state.initialized || state.radio_state_uncertain) {
         wifi_manager_internal_end_transition();
         return ESP_ERR_INVALID_STATE;
+    }
+
+    /* From the setup access point the switch always goes through; from the station it only restarts a stalled attempt. */
+    if (state.running && !state.setup_mode && wifi_manager_connect_saved_not_needed()) {
+        wifi_manager_internal_end_transition();
+        return ESP_OK;
     }
 
     err =
@@ -430,6 +464,8 @@ esp_err_t wifi_manager_connect_saved(void)
         wifi_manager_internal_end_transition();
         return err;
     }
+
+    s_connect_saved_started_us = esp_timer_get_time();
 
     wifi_manager_internal_commit_final_state(
         true,

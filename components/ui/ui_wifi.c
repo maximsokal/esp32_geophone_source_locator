@@ -269,6 +269,17 @@ static void ui_wifi_render_setup_card(
 }
 
 
+/* The device's mDNS name, "geolocator.local"; the address text is whatever the station has, "-"-led when it has none. */
+static void ui_wifi_device_name(char *name, size_t size)
+{
+    (void)snprintf(name, size, "%s.local", APP_MDNS_HOSTNAME);
+}
+
+static bool ui_wifi_has_address(const char *ip)
+{
+    return ip != NULL && ip[0] != '\0' && ip[0] != '-';
+}
+
 static void ui_wifi_render_sta_card(
     lv_obj_t *screen,
     const char *ssid,
@@ -276,6 +287,8 @@ static void ui_wifi_render_sta_card(
 )
 {
     ui_context_t *context = ui_context();
+    char device_name[32];
+    ui_wifi_device_name(device_name, sizeof(device_name));
 
     const bool show_verify_qr =
         context->wifi_verify_ready &&
@@ -336,14 +349,29 @@ static void ui_wifi_render_sta_card(
             ready ? UI_COLOR_GOOD : UI_COLOR_TEXT
         );
 
-        (void)ui_create_label_locked(
-            card,
-            10,
-            49,
-            280,
-            ui_tr(UI_I18N_KEY_WIFI_PHONE_REPORT),
-            UI_COLOR_MUTED
-        );
+        /*
+         * Where to go next. A phone that cannot resolve ".local" (Android often cannot) needs the address, so both are
+         * shown (board 2026-11-17: "WebXR verified" and no address left the operator guessing). A report that is not
+         * complete keeps the line it had.
+         */
+        if (ready) {
+            char address[96];
+            if (ui_wifi_has_address(ip)) {
+                ui_utf8_format(address, sizeof(address), ui_tr(UI_I18N_KEY_WIFI_OPEN_BOTH), device_name, ip);
+            } else {
+                ui_utf8_format(address, sizeof(address), ui_tr(UI_I18N_KEY_WIFI_OPEN_NAME), device_name);
+            }
+            (void)ui_create_label_locked(card, 10, 49, 280, address, UI_COLOR_ACCENT);
+        } else {
+            (void)ui_create_label_locked(
+                card,
+                10,
+                49,
+                280,
+                ui_tr(UI_I18N_KEY_WIFI_PHONE_REPORT),
+                UI_COLOR_MUTED
+            );
+        }
 
         return;
     }
@@ -367,14 +395,21 @@ static void ui_wifi_render_sta_card(
             UI_COLOR_TEXT
         );
 
-        (void)ui_create_label_locked(
-            card,
-            10,
-            49,
-            200,
-            ui_tr(UI_I18N_KEY_WIFI_CAMERA_WEBXR),
-            UI_COLOR_MUTED
-        );
+        /* The QR leads to the device's name; the address is the way in for a phone that cannot resolve it. */
+        if (ui_wifi_has_address(ip)) {
+            char address[48];
+            ui_utf8_format(address, sizeof(address), ui_tr(UI_I18N_KEY_WIFI_OPEN_IP), ip);
+            (void)ui_create_label_locked(card, 10, 49, 200, address, UI_COLOR_ACCENT);
+        } else {
+            (void)ui_create_label_locked(
+                card,
+                10,
+                49,
+                200,
+                ui_tr(UI_I18N_KEY_WIFI_CAMERA_WEBXR),
+                UI_COLOR_MUTED
+            );
+        }
 
         char verify_url[128];
 

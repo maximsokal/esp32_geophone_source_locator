@@ -211,10 +211,11 @@ static void capture_storage(void)
 static void capture_wifi(void)
 {
     /* Every setup branch, saved-network/verify state, confirmation and selection. */
-    for (unsigned state = 0U; state < 13U; ++state) {
+    for (unsigned state = 0U; state < 15U; ++state) {
         reset_menu(UI_SCREEN_WIFI);
         render_wifi_saved = state != 0U;
-        render_wifi_ip = state >= 8U;
+        /* States 13 and 14 are the verify QR card (9) and the verified card (10) while the station has no address. */
+        render_wifi_ip = state >= 8U && state < 13U;
         if (state >= 1U && state <= 7U) {
             render_wifi_setup = true;
             render_wifi_client = state >= 2U && state != 7U;
@@ -226,8 +227,9 @@ static void capture_wifi(void)
         if (state >= 9U) {
             render_context.wifi_verify_ready = true;
             render_context.wifi_verify_nonce = state == 12U ? 0U : UINT32_C(0x1234ABCD);
-            render_context.wifi_verify_result_received = state == 10U || state == 11U;
-            render_context.wifi_verify_result_mask = state == 10U ? APP_TLS_VERIFY_REQUIRED_MASK : APP_TLS_VERIFY_CAMERA;
+            render_context.wifi_verify_result_received = state == 10U || state == 11U || state == 14U;
+            render_context.wifi_verify_result_mask =
+                (state == 10U || state == 14U) ? APP_TLS_VERIFY_REQUIRED_MASK : APP_TLS_VERIFY_CAMERA;
         }
         for (unsigned selected = 0U; selected < 3U; ++selected) {
             char name[48];

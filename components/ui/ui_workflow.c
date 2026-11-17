@@ -48,6 +48,7 @@ static BaseType_t ui_workflow_task_create(
 #include "ui_utf8_format.h"
 #include "ui_workflow_model.h"
 #include "ui_workflow_sensor_values.h"
+#include "wifi_manager.h"
 #include "workflow_service.h"
 
 #define UI_WORKFLOW_REFRESH_PERIOD_MS 250U
@@ -1073,6 +1074,10 @@ static void ui_workflow_refresh_snapshot(ui_workflow_screen_state_t *state, uint
     }
     if (snapshot->step == WORKFLOW_STEP_RECORDING && state->model_state.recording_elapsed_valid) {
         state->model_state.recording_elapsed_ms = now_ms - state->recording_started_ms;
+    }
+    /* The scan step shows where to open the page; "" while the station has no address. */
+    if (wifi_manager_sta_ip_string(state->model_state.device_address, sizeof(state->model_state.device_address)) != ESP_OK) {
+        state->model_state.device_address[0] = '\0';
     }
     state->model_state.sample_rate_hz = seismic_acquisition_get_sample_rate();
     state->model_state.record_limit_s = seismic_rate_profile_record_limit_ms(state->model_state.sample_rate_hz) / 1000U;

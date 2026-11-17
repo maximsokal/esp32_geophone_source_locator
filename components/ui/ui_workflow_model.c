@@ -52,6 +52,9 @@ static void copy_arg(char *destination, size_t capacity, const char *source)
     (void)ui_utf8_format(destination, capacity, "%s", source);
 }
 
+/* The device's mDNS name (APP_MDNS_HOSTNAME ".local"); a pytest contract keeps the two the same. */
+#define UI_WORKFLOW_DEVICE_NAME "geolocator.local"
+
 static ui_workflow_model_line_t *add_line(ui_workflow_model_t *model, ui_i18n_key_t key)
 {
     if (model->line_count >= UI_WORKFLOW_MODEL_MAX_LINES) return NULL;
@@ -1085,9 +1088,19 @@ void ui_workflow_model_build(
             break;
         }
         case WORKFLOW_STEP_SCAN_CHOICE:
-        case WORKFLOW_STEP_SCANNING:
+        case WORKFLOW_STEP_SCANNING: {
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
+            /*
+             * Say where to go. The page is served over HTTPS at the device's name and, because a phone may not resolve
+             * ".local" (Android often does not), at its address too: both are shown (board 2026-11-17: "use WebXR" with no
+             * address left the operator guessing, and the plain-HTTP redirect to the name led nowhere).
+             */
+            set_arg(add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_NAME), 0U, UI_WORKFLOW_DEVICE_NAME);
+            if (state->device_address[0] != '\0') {
+                set_arg(add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SCAN_OPEN_IP), 0U, state->device_address);
+            }
             break;
+        }
         case WORKFLOW_STEP_RECORD_READY:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
             if (state->sample_rate_hz != 0U) {

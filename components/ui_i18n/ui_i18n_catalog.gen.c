@@ -401,6 +401,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
     "Rate %s Hz, max %s s", /* tft.workflow.sample_rate.limited */
     "Rate %s Hz, no time limit", /* tft.workflow.sample_rate.unlimited */
+    "or: https://%s", /* tft.workflow.scan.open_ip */
+    "Open: https://%s", /* tft.workflow.scan.open_name */
     "Scan on phone", /* tft.workflow.scan.phone */
     "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
@@ -472,6 +474,9 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SETUP PAGE OPEN - ENTER HOTSPOT DATA", /* wifi.notice_setup_open */
     "HTTPS/CAMERA/WEBXR VERIFIED", /* wifi.notice_verified */
     "VERIFY INCOMPLETE - CHECK PHONE RESULTS", /* wifi.notice_verify_incomplete */
+    "%s  or  %s", /* wifi.open_both */
+    "or: https://%s", /* wifi.open_ip */
+    "Open: https://%s", /* wifi.open_name */
     "PHONE REPORT RECEIVED", /* wifi.phone_report */
     "RETURN + TAP CONTINUE", /* wifi.return_continue */
     "ROOT CA CONFIRMED", /* wifi.root_ca_confirmed */
@@ -893,6 +898,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
     "Частота %s Гц, до %s с", /* tft.workflow.sample_rate.limited */
     "Частота %s Гц, без ліміту часу", /* tft.workflow.sample_rate.unlimited */
+    "або: https://%s", /* tft.workflow.scan.open_ip */
+    "Відкрийте: https://%s", /* tft.workflow.scan.open_name */
     "Скануйте на телефоні", /* tft.workflow.scan.phone */
     "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
@@ -964,6 +971,9 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "СТОРІНКУ ВІДКРИТО — ВВЕДІТЬ ДАНІ ТОЧКИ ДОСТУПУ", /* wifi.notice_setup_open */
     "HTTPS/КАМЕРА/WEBXR ПЕРЕВІРЕНО", /* wifi.notice_verified */
     "ПЕРЕВІРКУ НЕ ЗАВЕРШЕНО — ПЕРЕВІРТЕ ТЕЛЕФОН", /* wifi.notice_verify_incomplete */
+    "%s  або  %s", /* wifi.open_both */
+    "або: https://%s", /* wifi.open_ip */
+    "Відкрийте: https://%s", /* wifi.open_name */
     "ЗВІТ З ТЕЛЕФОНА ОТРИМАНО", /* wifi.phone_report */
     "ПОВЕРНІТЬСЯ Й НАТИСНІТЬ ДАЛІ", /* wifi.return_continue */
     "ROOT CA ПІДТВЕРДЖЕНО", /* wifi.root_ca_confirmed */

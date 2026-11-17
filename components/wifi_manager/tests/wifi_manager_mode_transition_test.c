@@ -189,6 +189,23 @@ void wifi_manager_runtime_clear_setup_client(void)
 {
 }
 
+/* The clock and the station's address, as the production code reads them. */
+static int64_t fake_now_us;
+static bool fake_sta_has_ip;
+
+int64_t esp_timer_get_time(void)
+{
+    return fake_now_us;
+}
+
+esp_err_t wifi_manager_sta_ip_string(char *text, size_t text_size)
+{
+    if (text == NULL || text_size < 16U) return ESP_ERR_INVALID_ARG;
+    if (!fake_sta_has_ip) return ESP_ERR_NOT_FOUND;
+    text[0] = '1'; text[1] = '\0';
+    return ESP_OK;
+}
+
 void vTaskDelay(TickType_t ticks)
 {
     (void)ticks;
@@ -486,6 +503,91 @@ int main(void)
     assert(trace_count == 2U);
     assert(trace[0] == TRACE_STA_RESET);
     assert(trace[1] == TRACE_WIFI_STOP);
+
+    /*
+     * Board log 2026-11-17 10:29: the operator pressed OK on "connect to the saved network" at 176.62 s; the station was
+     * associated at 179.23 s, and the second OK press (179.25 s, handled 179.48 s) called wifi_manager_connect_saved()
+     * again, which stopped the radio ("run -> init") 0.25 s after the link had come up. The same press at 9.8 s tore down a
+     * link that had been up for six seconds. A connect request must not undo a connection that is up or that was started a
+     * moment ago, and it must still work as the retry when the last attempt has gone nowhere.
+     */
+    fake_initialized = true;
+    fake_radio_state_uncertain = false;
+    fake_transition_active = false;
+    fake_network_events_suppressed = false;
+    fake_wifi_stop_result = ESP_OK;
+    fake_cleanup_wifi_stop_result = ESP_OK;
+    fake_sta_start_result = ESP_OK;
+    prepare_result = ESP_OK;
+    fake_sta_has_ip = false;
+    fake_now_us = 1000000;
+
+    /* 1. From the setup access point: always goes through (this is the "I have just entered the network" case). */
+    fake_running = true;
+    fake_setup_mode = true;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 1U);
+    assert(fake_running && !fake_setup_mode);
+
+    /* 2. The same request 2.6 s later, while the first attempt is still associating: nothing happens. */
+    fake_now_us += 2600000;
+    reset_trace();
+    mode_transition_complete_calls = 0U;
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 0U);          /* the radio was not stopped */
+    assert(trace_count == 0U);                   /* no lifecycle callback ran: HTTPS and mDNS stay as they are */
+    assert(mode_transition_complete_calls == 0U);
+    assert(fake_running && !fake_setup_mode);
+    assert(!fake_transition_active && !fake_network_events_suppressed);
+
+    /* 3. The link has come up (an address was obtained): a request, however late, leaves it alone. */
+    fake_sta_has_ip = true;
+    fake_now_us += 60000000;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 0U && trace_count == 0U);
+
+    /* 4. No address and the settle time is over: the attempt went nowhere, the request is the retry and restarts it. */
+    fake_sta_has_ip = false;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 1U);
+    fake_now_us += 7900000;                      /* 7.9 s after that restart: still inside the settle time */
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 0U && trace_count == 0U);
+    fake_now_us += 200000;                       /* 8.1 s: over */
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 1U);
+
+    /* 5. A failed start does not start the settle time: the next request may try again at once. */
+    fake_running = true;
+    fake_setup_mode = true;
+    fake_sta_start_result = ESP_FAIL;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_FAIL);
+    fake_sta_start_result = ESP_OK;
+    fake_now_us += 100000;
+    fake_running = true;
+    fake_setup_mode = true;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 1U);
+
+    /* 6. After the radio was stopped or the setup access point started, a request goes through again. */
+    fake_now_us += 100000;
+    fake_running = true;
+    fake_setup_mode = false;
+    reset_trace();
+    assert(wifi_manager_enter_setup_mode() == ESP_OK);
+    fake_running = false;
+    fake_setup_mode = false;
+    fake_now_us += 100000;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_OK);
+    assert(fake_wifi_stop_calls == 1U);
 
     puts("wifi manager mode transition tests passed");
     return 0;

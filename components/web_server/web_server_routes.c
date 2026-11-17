@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "wifi_manager.h"
 #include "web_client_log.h"
+#include "web_redirect_policy.h"
 #include "web_route_capacity.h"
 
 static const char *TAG = "WEB_ROUTES";
@@ -64,8 +65,13 @@ static esp_err_t web_server_bootstrap_index_handler(httpd_req_t *request)
     }
 
     static const char response[] = "GeoLocator secure web UI is available over HTTPS.";
+    /* The host the client typed is the one that works for it: a phone that cannot resolve ".local" must not be sent there. */
+    char host[96] = {0};
+    static char location[96];
+    if (httpd_req_get_hdr_value_str(request, "Host", host, sizeof(host)) != ESP_OK) host[0] = '\0';
+    (void)web_redirect_https_location(host, APP_MDNS_WEB_URL, location, sizeof(location));
     httpd_resp_set_status(request, "302 Found");
-    httpd_resp_set_hdr(request, "Location", APP_MDNS_WEB_URL);
+    httpd_resp_set_hdr(request, "Location", location);
     httpd_resp_set_type(request, "text/plain; charset=utf-8");
     return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
 }

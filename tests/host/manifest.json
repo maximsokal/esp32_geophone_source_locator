@@ -2819,6 +2819,16 @@
       "include_dirs": [
         "components/seismic_test_generator/include"
       ]
+    },
+    {
+      "name": "web_redirect_policy",
+      "sources": [
+        "components/web_server/web_redirect_policy.c",
+        "components/web_server/tests/web_redirect_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
     }
   ]
 }

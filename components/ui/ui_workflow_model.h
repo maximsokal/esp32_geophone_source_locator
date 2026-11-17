@@ -130,6 +130,8 @@ typedef struct {
     /* The recording sample rate of the next run and its longest recording in seconds (0: none); refreshed by the screen. */
     uint32_t sample_rate_hz;
     uint32_t record_limit_s;
+    /* The station's IPv4 address as text, "" while there is none; refreshed by the screen (the scan step shows it). */
+    char device_address[16];
     bool result_waveform_available;
     bool result_source_valid;
     double result_source_m[3];

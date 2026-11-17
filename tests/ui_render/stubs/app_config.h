@@ -5,3 +5,4 @@
 #define APP_WIFI_CA_URL "http://192.0.2.1/ca"
 #define APP_WIFI_SETUP_URL "http://192.0.2.1/setup"
 #define APP_HTTPS_VERIFY_URL "https://192.0.2.2/verify"
+#define APP_MDNS_HOSTNAME "geolocator"
