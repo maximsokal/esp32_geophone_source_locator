@@ -47,9 +47,14 @@ export default defineConfig({
               priority: 20,
             },
             {
+              /*
+               * One lazy vendor file, never split by size. The 420 kB maxSize split it into 13 pieces and the scanner then
+               * opened ~15 parallel module requests (board 2026-11-17, 18-19-54): the phone's extra TLS connections purged
+               * the one that was serving, handshakes were aborted (-0x7780) and the browser reported "Failed to fetch
+               * dynamically imported module" for the whole scanner. Few big files mean few connections.
+               */
               name: 'lazy-vendor',
               test: /node_modules[\\/]/,
-              maxSize: 420_000,
               priority: 10,
             },
           ],
