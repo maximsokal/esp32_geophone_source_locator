@@ -4,7 +4,7 @@ import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import * as rgbGuidance from '../../src/xr/rgbDepthGuidance';
 import { RawCameraGuidanceCapture, type XrCameraViewLike } from '../../src/xr/rawCameraGuidance';
 import { TagDetectorClient } from '../../src/xr/fiducial/tagDetectorClient';
-import { WebXrRuntime } from '../../src/xr/webxrRuntime';
+import { TAG_CAPTURE_HEIGHT, TAG_CAPTURE_WIDTH, WebXrRuntime } from '../../src/xr/webxrRuntime';
 import { LiveCoveragePointRenderer } from '../../src/xr/liveCoverageRenderer';
 
 interface FakeAttribute {
@@ -182,12 +182,12 @@ describe('RawCameraGuidanceCapture tag path', () => {
   });
 
   it('refuses WebGL1 high-resolution tag capture before any synchronous pixel readback', async() => {
-    const fake=fakeGl(new Uint8Array(960*540*4));const runtime=new WebXrRuntime();const warning=vi.spyOn(clientDiagnostics,'warn');
+    const fake=fakeGl(new Uint8Array(TAG_CAPTURE_WIDTH*TAG_CAPTURE_HEIGHT*4));const runtime=new WebXrRuntime();const warning=vi.spyOn(clientDiagnostics,'warn');
     const internal=runtime as unknown as {state:{phase:string};gl:WebGLRenderingContext|null;cameraBinding:unknown;tagCaptureEnabled:boolean};
     internal.state={phase:'running'};internal.gl=fake.gl;internal.cameraBinding={getCameraImage:()=>({id:'webgl1-camera'} as WebGLTexture)};
     const reason=runtime.setTagCaptureEnabled(true);
     expect(reason).toBe('High-resolution tag capture requires non-blocking WebGL2 readback.');
-    expect(warning).toHaveBeenCalledWith('XR_TAG_CAPTURE_REFUSED',expect.objectContaining({tagReadbackMode:'synchronous',width:960,height:540}));
+    expect(warning).toHaveBeenCalledWith('XR_TAG_CAPTURE_REFUSED',expect.objectContaining({tagReadbackMode:'synchronous',width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT}));
     (runtime as unknown as {captureTagGuidance:(time:number,view:XrCameraViewLike)=>void}).captureTagGuidance(441,view());
     expect(internal.tagCaptureEnabled).toBe(false);expect(fake.readbackSizes).toEqual([]);
     runtime.setTagCaptureEnabled(false);internal.gl=null;await runtime.dispose();

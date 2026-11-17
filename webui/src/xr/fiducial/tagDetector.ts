@@ -47,5 +47,31 @@ export function detectAprilTags(width: number, height: number, rgba: Uint8Array)
       hammingDistance: marker.hammingDistance,
     });
   }
-  return result;
+  return onePerTagId(result);
+}
+
+function quadArea(corners: DetectedAprilTag['corners']): number {
+  let twice = 0;
+  for (let i = 0; i < 4; i += 1) {
+    const [x0, y0] = corners[i]; const [x1, y1] = corners[(i + 1) % 4];
+    twice += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(twice) / 2;
+}
+
+/**
+ * Each tag id is one physical sticker, so a frame holds it at most once. The contour search can report the same sticker twice (the
+ * outer border and a quad a couple of pixels inside it, seen at 1280x720 from a 15 degree view); keeping both double-counts one
+ * observation with a slightly different pose. Keep the cleaner reading: fewest corrected bits, then the larger quad.
+ */
+function onePerTagId(detections: DetectedAprilTag[]): DetectedAprilTag[] {
+  const best = new Map<number, DetectedAprilTag>();
+  for (const detection of detections) {
+    const held = best.get(detection.tagId);
+    if (held === undefined || detection.hammingDistance < held.hammingDistance ||
+        (detection.hammingDistance === held.hammingDistance && quadArea(detection.corners) > quadArea(held.corners))) {
+      best.set(detection.tagId, detection);
+    }
+  }
+  return detections.filter((detection) => best.get(detection.tagId) === detection);
 }

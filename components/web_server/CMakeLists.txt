@@ -43,6 +43,7 @@ set(WEB_SERVER_WEBUI_EMBED_FILES)
 set(WEB_SERVER_WEBUI_EMBED_TXTFILES)
 set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 0)
 set(WEB_SERVER_ROOT_CA_EMBEDDED 0)
+set(WEB_SERVER_TLS_ISSUER_EMBEDDED 0)
 set(WEB_SERVER_WEBUI_SEED_EMBEDDED 0)
 set(WEB_SERVER_WEBUI_BUILD_ID "none")
 
@@ -55,6 +56,20 @@ if(
         "certs/prvtkey.pem"
     )
     set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 1)
+endif()
+
+# The name-constrained Device CA the board signs its own certificate with (tools/generate_geolocator_device_ca.py). Without
+# it HTTPS still starts, with the build-time certificate that names only geolocator.local.
+if(
+    EXISTS "${CMAKE_CURRENT_LIST_DIR}/certs/deviceCA.crt"
+    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/certs/deviceCA.key"
+    AND WEB_SERVER_TLS_CREDENTIALS_EMBEDDED
+)
+    list(APPEND WEB_SERVER_TLS_EMBED_FILES
+        "certs/deviceCA.crt"
+        "certs/deviceCA.key"
+    )
+    set(WEB_SERVER_TLS_ISSUER_EMBEDDED 1)
 endif()
 
 if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
@@ -309,6 +324,7 @@ idf_component_register(
         "web_server_lifecycle_policy.c"
         "web_mdns_retry_policy.c"
         "web_redirect_policy.c"
+        "web_tls_cert.c"
         "web_route_capacity.c"
         "web_server_prepare.c"
         "web_server_routes.c"
@@ -377,6 +393,8 @@ idf_component_register(
         storage_manager
         wifi_manager
         ranging_radio_pause
+        mbedtls
+        esp_hw_support
         esp_http_server
         esp_https_server
         esp_event
@@ -409,6 +427,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         PRIVATE
             WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
             WEB_SERVER_ROOT_CA_EMBEDDED=${WEB_SERVER_ROOT_CA_EMBEDDED}
+            WEB_SERVER_TLS_ISSUER_EMBEDDED=${WEB_SERVER_TLS_ISSUER_EMBEDDED}
             WEB_SERVER_WEBUI_SEED_EMBEDDED=${WEB_SERVER_WEBUI_SEED_EMBEDDED}
             WEB_SERVER_WEBUI_BUILD_ID=\"${WEB_SERVER_WEBUI_BUILD_ID}\"
     )

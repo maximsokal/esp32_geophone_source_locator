@@ -231,8 +231,10 @@ const LIGHT_ESTIMATE_INTERVAL_MS=500;
 const CLIENT_TELEMETRY_INTERVAL_MS=5000;
 const RGB_CAPTURE_INTERVAL_MS=520;
 const TAG_CAPTURE_INTERVAL_MS=330;
-const TAG_CAPTURE_WIDTH=960;
-const TAG_CAPTURE_HEIGHT=540;
+/* 1280x720, up from 960x540 (board 2026-11-17: a 32 mm tag was lost beyond ~0.6 m on a soft image). The tag detector needs >=12 px per edge,
+   so the reach grows with the frame width: x1.33. The busy gate in XrRuntimePanel keeps a slower detection from queueing frames. */
+export const TAG_CAPTURE_WIDTH=1280;
+export const TAG_CAPTURE_HEIGHT=720;
 const TAG_CAPTURE_READBACK_REQUIRED='High-resolution tag capture requires non-blocking WebGL2 readback.';
 const VISUAL_EVIDENCE_INTERVAL_MS=760;
 const PLANE_GUIDANCE_INTERVAL_MS=350;

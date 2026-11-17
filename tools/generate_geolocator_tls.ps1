@@ -76,10 +76,11 @@ prompt = no
 [req_distinguished_name]
 C = UA
 O = GeoLocator
-CN = GeoLocator Root CA
+CN = GeoLocator Root CA 2
 
 [v3_ca]
-basicConstraints = critical, CA:TRUE, pathlen:0
+# pathlen:1 so the Root CA can sign the Device CA (tools/generate_geolocator_device_ca.py), which signs the board's own certificate
+basicConstraints = critical, CA:TRUE, pathlen:1
 keyUsage = critical, keyCertSign, cRLSign
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always,issuer
