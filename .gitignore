@@ -77,3 +77,6 @@ apriltag_sheet.pdf
 apriltag_sheet1.pdf
 CLAUDE.md
 kicad/esp32_geophone_source_locator/.history/
+
+# Host tests max132_e2e_localization / max132_d3_dimensionality_persistence use a stub storage root "s/g" relative to the working directory
+/s/
