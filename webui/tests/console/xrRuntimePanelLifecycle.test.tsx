@@ -21,7 +21,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     subscribe=(listener:(state:any)=>void)=>{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);};
     subscribeTagFrames=(listener:(frame:any)=>void)=>{this.tagListeners.add(listener);return()=>{this.tagListeners.delete(listener);this.tagUnsubscribes+=1;};};
     emitTagFrame=(frame:any)=>{for(const listener of this.tagListeners)listener(frame);};
-    setTagCaptureEnabled=(enabled:boolean)=>{if(!enabled)this.tagCaptureDisables+=1;return null;};
+    tagCaptureEnables=0;setTagCaptureEnabled=(enabled:boolean)=>{if(enabled)this.tagCaptureEnables+=1;else this.tagCaptureDisables+=1;return null;};
     getPointCloudSnapshot=()=>this.finalSnapshot;getLastManualPointId=()=>null;getStructuralGuideSnapshot=()=>({positions:new Float32Array(),normals:new Float32Array(),confidence:new Float32Array(),pointCount:0,keyframeCount:0,voxelSizeMeters:0});
     projectProjectPointToNormalized=()=>null;addSuggestedManualPoint=()=>null;queueManualPointAtNormalized=()=>undefined;undoLastManualPoint=()=>undefined;
     private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
@@ -38,6 +38,7 @@ vi.mock('../../src/xr/xrLaunchPolicy',()=>({
 }));
 vi.mock('../../src/xr/optionalMonocularPrior',()=>({optionalMonocularPrior:{status:'disabled',error:null,calibrationConfidence:0,calibrationModel:null,hasStagedPostScanFrame:false,isBusy:false,subscribe:()=>()=>undefined,setEnabled:()=>undefined}}));
 vi.mock('../../src/components/StructuralGuideOverlay',()=>({StructuralGuideOverlay:()=>null}));
+vi.mock('../../src/components/LiveTagOverlay',()=>({LiveTagOverlay:()=>null}));
 vi.mock('../../src/xr/fiducial/tagDetector.worker.ts?worker&inline',()=>({default:class{
   messages:any[]=[];terminated=0;private listeners=new Map<string,Set<(event:any)=>void>>();
   constructor(){panelHarness.workers.push(this);}
@@ -109,7 +110,7 @@ async function mountPanel(props:ComponentProps<typeof XrRuntimePanel>={},strict=
 function unmount(renderer:ReactTestRenderer):void{act(()=>renderer.unmount());const index=mounted.indexOf(renderer);if(index>=0)mounted.splice(index,1);}
 function textOf(node:ReactTestInstance|string):string{return typeof node==='string'?node:node.children.map(textOf).join('');}
 function tagButton(renderer:ReactTestRenderer):ReactTestInstance{
-  const title=translate('en','xr.tag.capture_title');const result=renderer.root.findAllByType('button').find((button)=>button.props.title===title);if(result===undefined)throw new Error('Missing AprilTag button.');return result;
+  /* The title changes with the state: capture_title while off, tags_on once recognition runs (it now starts with the scan). */const titles=[translate('en','xr.tag.capture_title'),translate('en','xr.tag.tags_on')];const result=renderer.root.findAllByType('button').find((button)=>titles.includes(button.props.title));if(result===undefined)throw new Error('Missing AprilTag button.');return result;
 }
 function emitTagDetection(worker:any,options:{tagId?:number;positionX?:number}={}):void{
   const request=worker.messages.filter((item:any)=>item.type==='detect').at(-1);if(request===undefined)throw new Error('Expected an in-flight tag detection.');
@@ -211,10 +212,56 @@ describe('XrRuntimePanel lifecycle',()=>{
     unmount(renderer);
   });
 
+  it('starts tag recognition by itself with the scan, needing neither a recording nor localization geometry',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];
+    await startGeometry(runtime);await act(async()=>{await settleReact();});
+    expect(panelHarness.fetchLocalizationRuns).not.toHaveBeenCalled();
+    expect(runtime.tagCaptureEnables).toBe(1);expect(runtime.tagListeners.size).toBe(1);expect(panelHarness.workers).toHaveLength(1);
+    expect(tagButton(renderer).props['aria-pressed']).toBe(true);expect(tagButton(renderer).props.disabled).toBe(false);
+    const overlayText=renderer.root.findAll((node)=>typeof node.props.className==='string'&&node.props.className.includes('xr-overlay-')).map(textOf).join(' ');
+    expect(overlayText).not.toContain(translate('en','xr.tag.open_recording'));expect(overlayText).not.toContain(translate('en','xr.tag.geometry_unavailable'));
+    unmount(renderer);
+  });
+
+  it('decodes tags for a scan without a recording and finishes it with no tag error and no registration',async()=>{
+    const ready=vi.fn();const tagResult=vi.fn();
+    const renderer=await mountPanel({onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
+    runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
+    ready.mockClear();
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);
+    expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][0]).toBeNull();expect(tagResult.mock.calls[0][1]).toBe(true);
+    const warnings=renderer.root.findAll((node)=>node.props.className==='xr-overlay-warning').map(textOf).join(' ');
+    expect(warnings).not.toContain(translate('en','xr.tag.error.geometry_unavailable'));
+    expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();unmount(renderer);
+  });
+
+  it('keeps tags off for the rest of the scan once the operator switches them off, and restores them with the next scan',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});expect(runtime.tagListeners.size).toBe(1);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});
+    expect(tagButton(renderer).props['aria-pressed']).toBe(false);expect(runtime.tagListeners.size).toBe(0);expect(runtime.tagCaptureDisables).toBeGreaterThan(0);
+    await act(async()=>{runtime.setPhase('running',{frameCount:50});await settleReact();});
+    expect(runtime.tagListeners.size).toBe(0);expect(runtime.tagCaptureEnables).toBe(1);
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await startGeometry(runtime);await act(async()=>{await settleReact();});
+    expect(runtime.tagListeners.size).toBe(1);expect(runtime.tagCaptureEnables).toBe(2);expect(tagButton(renderer).props['aria-pressed']).toBe(true);
+    unmount(renderer);
+  });
+
+  it('does not start recognition and says why when the phone exposes no camera access',async()=>{
+    panelHarness.probeCapabilities.mockResolvedValue({...validCapabilities,rawXrRgbApi:false});
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);await act(async()=>{await settleReact();});
+    expect(runtime.tagCaptureEnables).toBe(0);expect(runtime.tagListeners.size).toBe(0);expect(panelHarness.workers).toHaveLength(0);
+    expect(tagButton(renderer).props.disabled).toBe(true);
+    expect(renderer.root.findAll((node)=>node.props.className==='xr-overlay-hint').map(textOf).join(' ')).toContain(translate('en','xr.tag.camera_unavailable'));
+    unmount(renderer);
+  });
+
   it('tears down tag worker and subscription on unmount without saving registration',async()=>{
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     expect(runtime.attached).toBe(true);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     expect(worker).toBeDefined();expect(runtime.tagListeners.size).toBe(1);unmount(renderer);await settleReact();
     expect(worker.terminated).toBe(1);expect(runtime.tagUnsubscribes).toBe(1);expect(runtime.tagListeners.size).toBe(0);
     expect(runtime.tagCaptureDisables).toBeGreaterThan(0);expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
@@ -223,7 +270,7 @@ describe('XrRuntimePanel lifecycle',()=>{
   it('returns tag workers and frame subscribers to baseline through 100 mount/unmount cycles',async()=>{
     for(let index=0;index<100;index+=1){
       const renderer=await mountPanel({objectId:`OBJ_${index}`,sessionId:`SESSION_${index}`});const runtime=panelHarness.runtimes.at(-1);
-      await startGeometry(runtime);await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});
+      await startGeometry(runtime);await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */
       const worker=panelHarness.workers.at(-1);expect(worker).toBeDefined();expect(runtime.tagListeners.size).toBe(1);
       unmount(renderer);expect(worker.terminated).toBe(1);expect(runtime.tagUnsubscribes).toBe(1);expect(runtime.tagListeners.size).toBe(0);
     }
@@ -232,7 +279,7 @@ describe('XrRuntimePanel lifecycle',()=>{
 
   it('cancels pending detection on unmount and never publishes its late result',async()=>{
     const registration=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     runtime.emitTagFrame(tagFrame());
     expect(worker.messages.some((message:any)=>message.type==='detect')).toBe(true);registration.mockClear();unmount(renderer);
     emitTagDetection(worker);await settleReact();expect(registration).not.toHaveBeenCalled();expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
@@ -241,7 +288,7 @@ describe('XrRuntimePanel lifecycle',()=>{
 
   it('hands the Finished scan over at once, delivers the tag result separately and never saves registration itself',async()=>{
     const registration=vi.fn();const tagResult=vi.fn();const ready=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration,onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     registration.mockClear();ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
@@ -254,7 +301,7 @@ describe('XrRuntimePanel lifecycle',()=>{
   it('uses camera pose from the captured frame when detector results arrive after the XR pose changes',async()=>{
     const fusionSpy=vi.spyOn(tagObservationFusion,'fuseTagObservations');
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     runtime.emitTagFrame(tagFrame(10,[0,0,0]));
     await act(async()=>{runtime.setPhase('running',{tracking:true,pose:{position:[10,0,0],orientation:[0,0,0,1],views:1}});emitTagDetection(worker);await settleReact();});
     expect(fusionSpy.mock.calls[0][0][0]).toMatchObject({capturedAtMs:10,cameraPosition:[0,0,0],cameraForward:[0,0,-1]});
@@ -267,7 +314,7 @@ describe('XrRuntimePanel lifecycle',()=>{
 
   it('does not let a repeated same-view outlier dominate diverse observations',async()=>{
     const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     for(let index=0;index<5;index+=1){runtime.emitTagFrame(tagFrame(index+1,[0.3+index*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:1});await settleReact();});}
     for(let repeat=0;repeat<20;repeat+=1){runtime.emitTagFrame(tagFrame(100+repeat,[10,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:100});await settleReact();});}
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
@@ -278,7 +325,7 @@ describe('XrRuntimePanel lifecycle',()=>{
 
   it('announces a scanned device in the scan record and names the pairs whose distance is recalculated',async()=>{
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     const notices=()=>renderer.root.findAll((node)=>node.props.className==='xr-overlay-hint xr-tag-notice');
     const observe=async(tagId:number,count:number,firstIndex:number)=>{
       for(let index=0;index<count;index+=1){runtime.emitTagFrame(tagFrame(firstIndex+index,[(firstIndex+index)*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId,positionX:tagId+1});await settleReact();});}
@@ -307,7 +354,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     });
     const fuseSpy=vi.spyOn(tagObservationFusion,'fuseTagObservations');
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
     for(let index=0;index<60;index+=1){runtime.emitTagFrame(tagFrame(index*330,[index*0.2,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:1});await settleReact();});}
     expect(retainedCounts).toHaveLength(60);expect(Math.max(...retainedCounts)).toBeLessThanOrEqual(48);
     expect(retainedCounts.slice(-10)).toEqual(Array(10).fill(48));
@@ -321,7 +368,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     vi.useFakeTimers();
     try{
       const ready=vi.fn();const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-      await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+      await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
       runtime.emitTagFrame(tagFrame());
       await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
       expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);

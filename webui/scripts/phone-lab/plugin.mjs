@@ -7,6 +7,8 @@ import { isAllowedPeer } from './lan.mjs';
 export const MAX_JSON_BYTES = 512 * 1024;
 export const MAX_ARTIFACT_BYTES = 96 * 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
+// A scan id is a frame id such as `scan-crc32:732740d9` (the ':' must be accepted, then made filename-safe).
+const SCAN_ID = /^[A-Za-z0-9_:-]{1,80}$/;
 const KINDS = new Set(['scan', 'occupancy', 'preview', 'registration']);
 const TYPE = /^[A-Z][A-Z0-9_]{1,40}$/;
 
@@ -77,8 +79,8 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
   }
 
   function artifactPath(objectId, sessionId, kind, scanId) {
-    if (!ID.test(objectId) || !ID.test(sessionId) || !KINDS.has(kind) || (scanId !== null && !ID.test(scanId))) return null;
-    return join(storeDir, `${objectId}__${sessionId}__${kind}${scanId === null ? '' : `__${scanId}`}.bin`);
+    if (!ID.test(objectId) || !ID.test(sessionId) || !KINDS.has(kind) || (scanId !== null && !SCAN_ID.test(scanId))) return null;
+    return join(storeDir, `${objectId}__${sessionId}__${kind}${scanId === null ? '' : `__${scanId.replace(/:/g, '_')}`}.bin`);
   }
 
   async function scanIdOf(bytes) {

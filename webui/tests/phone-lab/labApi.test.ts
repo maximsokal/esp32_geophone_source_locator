@@ -70,6 +70,16 @@ describe('phone lab fake device API', () => {
     expect(readdirSync(storeDir)).toEqual(['OBJ_0001__S1__registration.bin']);
   });
 
+  it('accepts the real scan ids sent by the phone (scan-crc32:xxxxxxxx) for occupancy and preview artifacts', async () => {
+    const { call, storeDir } = await start();
+    const id = 'scan-crc32%3A732740d9'; // exactly what the scanner sent in the phone run that exposed this
+    for (const kind of ['occupancy', 'preview']) {
+      expect((await call(`/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=${kind}&scan_id=${id}`, { method: 'POST', body: 'x' })).status).toBe(200);
+    }
+    expect(readdirSync(storeDir).sort()).toEqual(['OBJ_0001__staging__occupancy__scan-crc32_732740d9.bin', 'OBJ_0001__staging__preview__scan-crc32_732740d9.bin']);
+    expect((await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=..%2F..%2Fx', { method: 'POST', body: 'x' })).status).toBe(400);
+  });
+
   it('records the production client-log lines with a receive time', async () => {
     const { call, runDir } = await start();
     expect((await call('/api/client-log', { method: 'POST', body: 'INFO|10|XR_TAG_CAPTURE_ENABLED\nWARN|11|XR_TAG_CAPTURE_REFUSED\n' })).status).toBe(204);
