@@ -51,7 +51,7 @@ import {
 } from './xr/scanArtifact';
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
-import { buildTagLayout } from './xr/fiducial/tagLayout';
+import { buildTagLayout, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
 import { encodeTagPositions, tagPositionsFromLayout } from './xr/fiducial/tagPositionsArtifact';
 import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
 import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
@@ -287,6 +287,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* True once the scanner has handed over its tags for this scan (an empty list counts: it means none were seen). */
   const [tagAnchorsDelivered, setTagAnchorsDelivered] = useState(false);
   const tagUploadKeyRef = useRef<string | null>(null);
+  /* The best layout saved for the scan on screen: a weaker look at the same scan (rejected continuation) must not replace it. */
+  const savedTagLayoutRef = useRef<{ scanId: string; nodes: number; confirmed: number } | null>(null);
   /* Anchors belong to the scan just made for this target; another object/session starts without them. */
   useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
@@ -1281,6 +1283,15 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     const key = `${objectId}/${scanSessionId}/${scanId}/${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
     if (tagUploadKeyRef.current === key) return;
     tagUploadKeyRef.current = key;
+    const savedForScan = savedTagLayoutRef.current?.scanId === scanId ? savedTagLayoutRef.current : null;
+    if (!tagLayoutReplaces(built.layout, savedForScan)) {
+      clientDiagnostics.info('TAG_POSITIONS_KEPT', {
+        objectId, sessionId: scanSessionId, saved: `${savedForScan?.confirmed}/${savedForScan?.nodes}`,
+        candidate: built.layout === null ? `none:${built.reason}` : `${tagLayoutQuality(built.layout).confirmed}/${built.layout.nodes.length}`,
+      });
+      void clientDiagnostics.flush();
+      return;
+    }
     void (async () => {
       try {
         if (built.layout === null) {
@@ -1289,6 +1300,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         } else {
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(tagPositionsFromLayout(built.layout, scanId, Date.now())));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
+          savedTagLayoutRef.current = { scanId, ...tagLayoutQuality(built.layout) };
           clientDiagnostics.info('TAG_POSITIONS_SAVED', {
             objectId, sessionId: scanSessionId, nodes: built.layout.nodes.map((node) => `${node.nodeId}${node.confirmed ? '' : '?'}`).join(','),
             triangles: built.layout.triangles.length, weakestMm: built.layout.weakestMainTriangleHeightMm, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(','),

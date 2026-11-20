@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { xrToProject, type TagSensorAnchor } from '../../src/xr/fiducial/liveTagTracker';
 import {
-  buildTagLayout, compareLayoutWithReference, nodeIdForName, triangleHeightMm, TAG_LAYOUT_FRAME,
+  buildTagLayout, compareLayoutWithReference, nodeIdForName, tagLayoutReplaces, triangleHeightMm, TAG_LAYOUT_FRAME,
 } from '../../src/xr/fiducial/tagLayout';
 
 /** An anchor in the WebXR local-floor frame (metres), as the live scan produces it. */
@@ -140,5 +140,21 @@ describe('comparison with an independent reference layout (Channel Sounding)', (
     const partial = compareLayoutWithReference(layout, asReference(0, false).filter((n) => n.nodeId !== 3));
     expect(partial.pairs).toHaveLength(3);
     expect(compareLayoutWithReference(layout, [])).toMatchObject({ pairs: [], suspectNodes: [] });
+  });
+});
+
+describe('tagLayoutReplaces', () => {
+  const layoutOf = (confirmedFlags: boolean[]) => ({ nodes: confirmedFlags.map((confirmed) => ({ confirmed })) } as never);
+  it('lets anything replace nothing, never lets nothing replace something', () => {
+    expect(tagLayoutReplaces(layoutOf([true, true, true]), null)).toBe(true);
+    expect(tagLayoutReplaces(null, null)).toBe(true);
+    expect(tagLayoutReplaces(null, { nodes: 3, confirmed: 3 })).toBe(false);
+  });
+  it('lets a layout replace the saved one only when it has at least as many nodes and as many confirmed', () => {
+    const saved = { nodes: 4, confirmed: 3 };
+    expect(tagLayoutReplaces(layoutOf([true, true, true, false]), saved)).toBe(true);
+    expect(tagLayoutReplaces(layoutOf([true, true, true, true, true]), saved)).toBe(true);
+    expect(tagLayoutReplaces(layoutOf([true, true, true]), saved)).toBe(false);          // fewer nodes
+    expect(tagLayoutReplaces(layoutOf([true, true, false, false]), saved)).toBe(false);  // fewer confirmed
   });
 });

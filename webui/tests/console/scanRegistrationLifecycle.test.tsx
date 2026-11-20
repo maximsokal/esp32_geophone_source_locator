@@ -412,6 +412,28 @@ describe('App scan information: distances recalculated from the scan', () => {
       expect(h.saveTags).toHaveBeenCalledTimes(2);
     });
 
+    it('a weaker look at the same scan (a rejected continuation) never replaces or removes the saved layout', async () => {
+      await mountApp();
+      await finishScan('fresh', null);
+      const G3 = tag(3, 'G3', [0.9, 1.2, -1.5]);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, G3]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(1);
+      const info = vi.spyOn(clientDiagnostics, 'info');
+      /* Fewer tags, then fewer confirmed ones, then none at all: the scan on screen is still the same one. */
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await act(async () => { h.props.onTagAnchors([MAIN, tag(1, 'G1', [1.5, 1, -1], false), G2, G3]); });
+      await act(async () => { h.props.onTagAnchors([]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(1);
+      expect(h.delTags).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith('TAG_POSITIONS_KEPT', expect.objectContaining({ saved: '4/4' }));
+      /* A layout that is as good or better still replaces it. */
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, G3, tag(4, 'G4', [1.2, 1.1, -1.2])]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(2);
+    });
+
     it('a rejected or failed upload is logged and leaves the scan and its markers untouched', async () => {
       const warn = vi.spyOn(clientDiagnostics, 'warn');
       h.saveTags.mockResolvedValueOnce({ ok: false, error: 'ESP_ERR_INVALID_ARG' });

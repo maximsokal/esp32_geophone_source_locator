@@ -204,3 +204,21 @@ export function compareLayoutWithReference(layout: TagLayout, reference: readonl
   const suspectNodes = Object.entries(meanDeltaMm).filter(([id, mean]) => Number(id) !== 0 && mean > toleranceMm).map(([id]) => Number(id));
   return { pairs, meanDeltaMm, suspectNodes };
 }
+
+export interface TagLayoutQuality { nodes: number; confirmed: number }
+
+export function tagLayoutQuality(layout: TagLayout): TagLayoutQuality {
+  return { nodes: layout.nodes.length, confirmed: layout.nodes.filter((node) => node.confirmed).length };
+}
+
+/**
+ * Whether a layout computed for a scan may replace the one already saved for that same scan. A later, shorter look at the placement (a
+ * rejected continuation, a quick second pass) sees fewer tags and fewer of them confirmed; it must never wipe out the better layout.
+ * No saved layout: anything replaces nothing. No new layout: it never removes a saved one for the same scan.
+ */
+export function tagLayoutReplaces(candidate: TagLayout | null, saved: TagLayoutQuality | null): boolean {
+  if (saved === null) return true;
+  if (candidate === null) return false;
+  const quality = tagLayoutQuality(candidate);
+  return quality.confirmed >= saved.confirmed && quality.nodes >= saved.nodes;
+}
