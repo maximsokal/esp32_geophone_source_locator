@@ -1001,6 +1001,7 @@ export const i18nKeys = [
   "scan.marker_detail.cs_projected",
   "scan.marker_detail.cs_unregistered",
   "scan.marker_detail.visual_only",
+  "scan.marker_provisional",
   "scan.marker_status.anchored",
   "scan.marker_status.cs_projected",
   "scan.marker_status.cs_unregistered",

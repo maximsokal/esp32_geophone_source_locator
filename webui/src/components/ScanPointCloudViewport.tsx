@@ -223,13 +223,13 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
   selected: boolean;
   onSelect: (node: SensorPlacementNode) => void;
 }) {
-  const texture = useMemo(() => labelTexture(`${marker.node} · ${marker.status.replace('_', ' ')}`), [marker.node, marker.status]);
+  const texture = useMemo(() => labelTexture(`${marker.node} · ${marker.status.replace('_', ' ')}${marker.provisional === true ? ' · ?' : ''}`), [marker.node, marker.status, marker.provisional]);
   useEffect(() => () => texture?.dispose(), [texture]);
   const color = selected ? uiTheme.accent : marker.status === 'anchored' ? uiTheme.good : marker.status === 'cs_projected' ? uiTheme.linkMeasuring : uiTheme.warning;
   const size = clamp(extent * 0.018, 0.035, 0.09);
   // Cap large 1-sigma regions at 25% of scan extent (with a 5 cm minimum cap) so they remain visible without swallowing the scan.
   const uncertaintyRadius = marker.uncertaintyM === null ? 0 : Math.min(marker.uncertaintyM, Math.max(0.05, extent * 0.25));
-  const opacity = marker.status === 'cs_projected' ? 0.52 : 1;
+  const opacity = marker.provisional === true ? 0.55 : marker.status === 'cs_projected' ? 0.52 : 1;
   return <group position={[position[0], position[1], position[2]]} renderOrder={60}>
     {uncertaintyRadius > 0 && <mesh renderOrder={59}>
       <sphereGeometry args={[uncertaintyRadius, 18, 12]} />
@@ -609,6 +609,7 @@ export function ScanPointCloudViewport({
         <div><dt>{t('scan.tag_id')}</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>
       </dl>
       <p>{t(`scan.marker_detail.${selectedMarker.status}` as 'scan.marker_detail.anchored' | 'scan.marker_detail.cs_projected' | 'scan.marker_detail.visual_only' | 'scan.marker_detail.cs_unregistered')}</p>
+      {selectedMarker.provisional === true && <p data-marker-provisional="true">{t('scan.marker_provisional')}</p>}
     </section>}
     {sensorFrameScene !== null && <ViewportFailureBoundary
       key={viewportIdentityKey}

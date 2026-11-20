@@ -206,15 +206,17 @@ export interface TagSensorAnchor {
   spreadM: number;
   observationCount: number;
   independentViewCount: number;
+  /** Confirmed from several viewpoints (the fusion rule). false = a sighting with a position, not yet confirmed: shown as provisional. */
+  confirmed: boolean;
 }
 
-/** Only tags confirmed from several viewpoints become anchors; a sighting is not a position. */
+/** Every fused tag becomes an anchor; `confirmed` tells a confirmed position from a preliminary one. */
 export function tagSensorAnchorsFromFusion(fusion: TagObservationFusion): TagSensorAnchor[] {
   return Object.values(fusion.byTagId)
-    .filter((tag) => tag !== undefined && tag.confirmed)
+    .filter((tag) => tag !== undefined)
     .map((tag) => ({
       tagId: tag!.tagId, node: tagNodeForId(tag!.tagId), positionScan: [...tag!.positionScan] as [number, number, number],
-      spreadM: tag!.spreadM, observationCount: tag!.observationCount, independentViewCount: tag!.independentViewCount,
+      spreadM: tag!.spreadM, observationCount: tag!.observationCount, independentViewCount: tag!.independentViewCount, confirmed: tag!.confirmed,
     }))
     .sort((a, b) => a.tagId - b.tagId);
 }

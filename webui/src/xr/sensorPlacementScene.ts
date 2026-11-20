@@ -23,6 +23,8 @@ export interface SensorPlacementMarker {
   residualM: number | null;
   tagId: number | null;
   details: string;
+  /** A tag position that is not yet confirmed from several viewpoints. Drawn faded and labelled; never treated as a confirmed anchor. */
+  provisional?: boolean;
 }
 
 export interface SkippedSensorPlacement {
@@ -261,7 +263,8 @@ export function mergeLiveTagAnchorMarkers(markers: readonly SensorPlacementMarke
       uncertaintyM: anchor.spreadM,
       residualM: null,
       tagId: anchor.tagId,
-      details: `AprilTag position from the live scan (${anchor.observationCount} sightings from ${anchor.independentViewCount} viewpoints); not registered to a sensor geometry.`,
+      details: `AprilTag position from the live scan (${anchor.observationCount} sightings from ${anchor.independentViewCount} viewpoints); ${anchor.confirmed ? 'confirmed' : 'preliminary, not yet confirmed'}; not registered to a sensor geometry.`,
+      ...(anchor.confirmed ? {} : { provisional: true }),
     });
   }
   /* Nothing already in the scene is removed or changed: an unplaced channel-sounding marker keeps its information and the tag position stands beside it. */

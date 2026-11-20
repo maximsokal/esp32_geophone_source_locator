@@ -54,7 +54,6 @@ import {
   type XrRuntimePhase,
 } from '../xr/webxrRuntime';
 
-const AI_PRIOR_STORAGE_KEY = 'xr.optionalMonocularPrior.enabled';
 
 export type ScanStartIntent = 'fresh' | 'continue';
 
@@ -105,14 +104,6 @@ type ManualCursorPhase='scan-more'|'edge'|'corner'|'dragging'|'confirmed';
 interface ManualCursorState {u:number;v:number;phase:ManualCursorPhase;preview:ManualPlacementPreview|null;distanceMeters:number|null;}
 const LONG_PRESS_MS=380;const PREVIEW_UPDATE_MS=110;const TAP_SLOP_PX=16;
 
-function readAiPriorPreference():boolean{
-  if(typeof window==='undefined')return false;
-  try{return window.localStorage.getItem(AI_PRIOR_STORAGE_KEY)==='1';}catch{return false;}
-}
-function persistAiPriorPreference(enabled:boolean):void{
-  if(typeof window==='undefined')return;
-  try{window.localStorage.setItem(AI_PRIOR_STORAGE_KEY,enabled?'1':'0');}catch{/* optional preference only */}
-}
 function phaseLabel(state:WebXrRuntimeState,locale:'en'|'uk'):string{
   if(state.phase==='starting')return translate(locale,'xr.phase.starting');if(state.phase==='stopping')return translate(locale,'xr.phase.finishing');if(state.phase==='interrupted')return translate(locale,'xr.phase.interrupted');
   if(state.phase==='ended')return translate(locale,state.pointCount>0?'xr.phase.scan_ready':'xr.phase.no_stable_surface');if(state.phase==='error')return translate(locale,'xr.phase.error');if(state.phase!=='running')return translate(locale,'xr.phase.ready');
@@ -146,7 +137,7 @@ export function XrRuntimePanel({
   onTagAnchors,
 }:XrRuntimePanelProps){
   const {locale}=useLocale();const t=useT();
-  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
+  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiStagingAllowed,setAiStagingAllowed]=useState(true);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagNotices,setTagNotices]=useState<TagScanNotice[]>([]);const tagConfirmedRef=useRef<number[]>([]);const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
@@ -163,7 +154,9 @@ export function XrRuntimePanel({
   useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);useEffect(()=>{onRegistrationChangeRef.current=onRegistrationChange;},[onRegistrationChange]);useEffect(()=>{onTagRegistrationResultRef.current=onTagRegistrationResult;},[onTagRegistrationResult]);useEffect(()=>{scanIntentRef.current=scanIntent;},[scanIntent]);
   useEffect(()=>optionalMonocularPrior.subscribe(()=>setAiPriorRevision((revision)=>revision+1)),[]);
   useEffect(()=>subscribeCertifiedGuideRegistry(()=>setCertifiedGeometryRevision((revision)=>revision+1)),[]);
-  useEffect(()=>{optionalMonocularPrior.setEnabled(aiPriorEnabled);},[aiPriorEnabled]);
+  /* The AI depth check is automatic. It is always armed; the frame it will analyse after the scan is only STAGED while the phone has headroom
+     (scheduler pressure low, at most half of the live worker budget busy), so it never competes with the scan. Staging that already happened is kept. */
+  useEffect(()=>{optionalMonocularPrior.setEnabled(true);},[]);
   useEffect(()=>{runtime.attach();tagMountedRef.current=true;bleMountedRef.current=true;const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;tagMountedRef.current=false;bleMountedRef.current=false;tagGeometryEpoch.current+=1;bleIntentRef.current+=1;teardownTagModeForUnmount();const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.detach();};},[runtime]);
   useEffect(()=>{tagGeometryEpoch.current+=1;tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(false);setTagModeError(null);setTagRegistrationLabel(null);return()=>{tagGeometryEpoch.current+=1;};},[objectId,sessionId]);
   useEffect(()=>{const active=runtimeState.phase==='starting'||runtimeState.phase==='running'||runtimeState.phase==='stopping';onSessionActiveChangeRef.current?.(active);if(!active){setManualMode(false);manualPointer.current=null;}},[runtimeState.phase]);
@@ -314,6 +307,48 @@ export function XrRuntimePanel({
     if(runtimeState.phase!=='running'||tagModeActiveRef.current||tagManualOffRef.current||capabilities===null||tagUnavailableReason!==null)return;
     startTagMode();
   },[runtimeState.phase,capabilities,tagUnavailableReason]);
+  /* AI check staging gate: stage the post-scan frame only while the phone has headroom (pressure low, at most half of the live worker budget busy). */
+  useEffect(()=>{
+    if(runtimeState.phase!=='running'){optionalMonocularPrior.setStagingAllowed(true);setAiStagingAllowed(true);return;}
+    const evaluate=():void=>{
+      const snapshot=liveComputeScheduler.snapshot();const budget=snapshot.effectiveBudget??snapshot.maximumBudget??0;
+      const allowed=snapshot.pressure==='low'&&!snapshot.degraded&&budget>0&&snapshot.active<=budget*0.5;
+      if(optionalMonocularPrior.isStagingAllowed===allowed)return;
+      optionalMonocularPrior.setStagingAllowed(allowed);setAiStagingAllowed(allowed);
+      clientDiagnostics.info('XR_AI_STAGING',{allowed,pressure:snapshot.pressure,degraded:snapshot.degraded,active:snapshot.active,budget,staged:optionalMonocularPrior.hasStagedPostScanFrame,status:optionalMonocularPrior.status});
+    };
+    evaluate();const timer=window.setInterval(evaluate,1000);return()=>window.clearInterval(timer);
+  },[runtimeState.phase]);
+  /* Developer telemetry. Everything the camera overlay used to show (counts, motion, CPU), what is switched on/off and the frame it happened on, and
+     the load figures go to the log instead of the screen. Browsers expose no GPU utilisation: frame pacing, long frames and worker pressure stand in for it. */
+  const runtimeStateRef=useRef(runtimeState);runtimeStateRef.current=runtimeState;
+  const devFlagsRef=useRef<Record<string,string>>({});
+  useEffect(()=>{
+    if(runtimeState.phase!=='running'){devFlagsRef.current={};return;}
+    const flags:Record<string,string>={paused:String(runtimeState.scanPaused),tracking:String(runtimeState.tracking),depth:String(runtimeState.depthAvailable),rgb:String(runtimeState.rgbGuidanceAvailable),
+      guide:String(runtimeState.coverageGuideActive),motion:String(runtimeState.motionState),tags:String(tagModeEnabled),ai:String(runtimeState.monocularPriorStatus),aiStaging:String(aiStagingAllowed)};
+    const previous=devFlagsRef.current;const changed=Object.keys(flags).filter((key)=>previous[key]!==flags[key]);
+    if(changed.length>0){clientDiagnostics.info('XR_STATE_CHANGE',{frame:runtimeState.frameCount,changed:changed.map((key)=>`${key}:${previous[key]??'-'}>${flags[key]}`).join(' ')});devFlagsRef.current=flags;}
+  },[runtimeState.phase,runtimeState.scanPaused,runtimeState.tracking,runtimeState.depthAvailable,runtimeState.rgbGuidanceAvailable,runtimeState.coverageGuideActive,runtimeState.motionState,runtimeState.monocularPriorStatus,tagModeEnabled,aiStagingAllowed]);
+  useEffect(()=>{
+    if(runtimeState.phase!=='running'||runtimeState.keyframeCount===0)return;
+    clientDiagnostics.info('XR_KEYFRAME',{n:runtimeState.keyframeCount,frame:runtimeState.frameCount,depthFrame:runtimeState.depthFrameCount,integrated:runtimeState.sampledDepthFrames,points:runtimeState.pointCount,polish:runtimeState.polishFrameCount});
+  },[runtimeState.keyframeCount]);
+  useEffect(()=>{
+    if(runtimeState.phase!=='running')return;
+    const r=(value:number,digits=2)=>Number.isFinite(value)?Math.round(value*10**digits)/10**digits:null;
+    const timer=window.setInterval(()=>{
+      const s=runtimeStateRef.current;const sch=liveComputeScheduler.snapshot();const p=s.performance;const memory=(performance as unknown as {memory?:{usedJSHeapSize:number}}).memory;
+      clientDiagnostics.info('XR_VIEWPORT_STATE',{f:s.frameCount,pause:s.scanPaused,trk:s.tracking,mot:s.motionState,mq:r(s.motionQuality),v:r(s.linearSpeedMetersPerSecond),w:r(s.angularSpeedRadiansPerSecond),acc:r(s.linearAccelerationMetersPerSecond2),
+        dep:s.depthWidth&&s.depthHeight?`${s.depthWidth}x${s.depthHeight}`:'-',df:s.depthFrameCount,int:s.sampledDepthFrames,rej:s.motionRejectedFrames,pts:s.pointCount,ret:s.retainedPointCount,kf:s.keyframeCount,pol:s.polishFrameCount,
+        cells:`${s.coverageReadyCells}/${s.coverageVisibleCells}/${s.coverageTotalCells}`,weak:s.coverageWeakPoints,imp:s.coverageImprovingPoints,stb:s.coverageStablePoints,
+        rgb:s.rgbGuidanceAvailable?`${s.rgbGuidanceWidth}x${s.rgbGuidanceHeight}`:'off',vis:s.visualEvidenceFrames,light:s.lightingEstimateAvailable,wake:s.wakeLockActive,man:`${s.manualPointCount}/${s.manualEdgeCount}`});
+      clientDiagnostics.info('XR_PERF_STATE',{f:s.frameCount,p50:r(p.frameDeltaP50Ms,1),p95:r(p.frameDeltaP95Ms,1),max:r(p.frameDeltaMaxMs,1),work95:r(p.frameWorkP95Ms,1),depth95:r(p.depthAccessP95Ms,1),fus50:r(p.fusionP50Ms,1),fus95:r(p.fusionP95Ms,1),
+        cov95:r(p.coverageP95Ms,1),l33:p.longFrames33Ms,l50:p.longFrames50Ms,n:p.sampleCount,press:p.pressure,cpu:`${sch.active}/${sch.effectiveBudget}/${sch.maximumBudget}`,sched:sch.pressure,degr:sch.degraded,
+        struct:sch.structural,vis:sch.visual,covInt:p.adaptiveCoverageIntervalMs,covPts:p.adaptiveCoveragePointBudget,heapMb:memory===undefined?null:r(memory.usedJSHeapSize/1048576,1)});
+    },5000);
+    return()=>window.clearInterval(timer);
+  },[runtimeState.phase]);
   /* A tag that stops decoding becomes LOST (its anchored outline stays, dimmed). */
   useEffect(()=>{
     if(!tagModeEnabled)return;
@@ -331,17 +366,6 @@ export function XrRuntimePanel({
    * stable-surface solver, so exposing the button does not weaken geometry safety.
    */
   const showManualToggle=running;
-  const aiPriorUi=describeAiPrior({
-    enabled:aiPriorEnabled,
-    phase:runtimeState.phase,
-    providerStatus:optionalMonocularPrior.status,
-    hasStagedPostScanFrame:optionalMonocularPrior.hasStagedPostScanFrame,
-    busy:optionalMonocularPrior.isBusy,
-    calibrationConfidence:optionalMonocularPrior.calibrationConfidence,
-    calibrationModel:optionalMonocularPrior.calibrationModel,
-    error:optionalMonocularPrior.error,
-  },locale);
-  const toggleAiPrior=():void=>{setAiPriorEnabled((current)=>{const next=!current;persistAiPriorPreference(next);clientDiagnostics.info('XR_OPTIONAL_AI_PRIOR',{enabled:next,status:next?optionalMonocularPrior.status:'disabled'});void clientDiagnostics.flush();return next;});};
   const clearManualTimer=():void=>{const pointer=manualPointer.current;if(pointer?.timer!=null){window.clearTimeout(pointer.timer);pointer.timer=null;}};
   const computeManualPreview=(u:number,v:number):ManualPlacementPreview=>previewManualPlacementFromStableSurface(u,v,runtime.getStructuralGuideSnapshot(),(point)=>runtime.projectProjectPointToNormalized(point));
   const refreshManualPreview=(u:number,v:number,force=false):ManualPlacementPreview|null=>{const now=performance.now();if(!force&&now-lastPreviewUpdateMs.current<PREVIEW_UPDATE_MS){setManualCursor((current)=>({...current,u,v}));return null;}lastPreviewUpdateMs.current=now;const preview=computeManualPreview(u,v);setManualCursor({u,v,phase:previewPhase(preview),preview,distanceMeters:previewDistanceMeters(preview,runtimeState)});return preview;};
@@ -379,7 +403,7 @@ export function XrRuntimePanel({
   return <>
     <section className="xr-runtime-card xr-runtime-card-compact" aria-label={t('xr.title')}>
       <div className="xr-runtime-heading"><div><div className="panel-title">{t('xr.heading')}</div><strong>{t('xr.subtitle')}</strong></div><span className={`xr-phase ${qualityClass(runtimeState)}`}>{phaseLabel(runtimeState,locale)}</span></div>
-      <div className="xr-compact-status"><span className={capabilities?.immersiveAr?'good-text':'bad-text'}>WebXR {capabilities?.immersiveAr?'✓':capabilities===null?t('xr.value.checking'):'—'}</span><span className={runtimeState.depthAvailable?'good-text':''}>{t('xr.label.depth')} {runtimeState.depthAvailable?'✓':runtimeState.phase==='idle'?t('xr.value.on_start'):'—'}</span><span className={runtimeState.rgbGuidanceAvailable?'good-text':''}>{t('xr.label.rgb')} {runtimeState.rgbGuidanceAvailable?'✓':capabilities?.rawXrRgbApi?t('xr.value.on_start'):'—'}</span><span className={aiPriorUi.good?'good-text':''}>{t('xr.label.ai_prior')} {aiPriorUi.shortStatus}</span><span className={runtimeState.wakeLockActive?'good-text':''}>{t('xr.label.screen')} {runtimeState.wakeLockActive?t('xr.value.awake'):capabilities?.wakeLockApi?t('xr.value.wake_ready'):t('xr.value.wake_lock_off')}</span></div>
+      <div className="xr-compact-status"><span className={capabilities?.immersiveAr?'good-text':'bad-text'}>WebXR {capabilities?.immersiveAr?'✓':capabilities===null?t('xr.value.checking'):'—'}</span><span className={runtimeState.depthAvailable?'good-text':''}>{t('xr.label.depth')} {runtimeState.depthAvailable?'✓':runtimeState.phase==='idle'?t('xr.value.on_start'):'—'}</span><span className={runtimeState.rgbGuidanceAvailable?'good-text':''}>{t('xr.label.rgb')} {runtimeState.rgbGuidanceAvailable?'✓':capabilities?.rawXrRgbApi?t('xr.value.on_start'):'—'}</span><span className={runtimeState.wakeLockActive?'good-text':''}>{t('xr.label.screen')} {runtimeState.wakeLockActive?t('xr.value.awake'):capabilities?.wakeLockApi?t('xr.value.wake_ready'):t('xr.value.wake_lock_off')}</span></div>
       <div className="xr-runtime-controls xr-runtime-controls-compact">
         {savedScanAvailable ? <>
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('continue')}>{computePreparing?t('xr.starting_ar'):t('xr.continue_scan')}</button>
@@ -389,17 +413,13 @@ export function XrRuntimePanel({
         </> : <>
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>{computePreparing?t('xr.starting_ar'):runtimeState.phase==='interrupted'?t('xr.discard_partial_start'):t('xr.start_scan')}</button>
         </>}
-        <button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?t('xr.ai_check_on'):t('xr.ai_check_off')}</button>
         {bleSupport==='supported'?<button type="button" className={bleActive?'xr-undo-button active':'xr-undo-button'} aria-pressed={bleActive} disabled={runtimeState.phase!=='running'} onClick={()=>void toggleBle()} title={t('xr.ble_hints_title')}>{bleActive?t('xr.ble_hints_on'):t('xr.ble_hints_off')}</button>:<div className="xr-finish-explainer">{describeBleRssiSupport(bleSupport,locale)}</div>}
-        <div className="xr-finish-explainer">{t('xr.ai_optional_description')}</div>
       </div>
-      {aiPriorEnabled&&optionalMonocularPrior.status==='unavailable'&&<div className="xr-runtime-warning" role="status">{t('xr.ai_unavailable_warning')}</div>}
-      {aiPriorEnabled&&optionalMonocularPrior.status==='error'&&<div className="xr-runtime-warning" role="status">{t('xr.ai_failed_warning',{error:optionalMonocularPrior.error??t('calc.job_unknown_error')})}</div>}
       {runtimeState.phase==='interrupted'&&<div className="xr-runtime-warning" role="status">{t('xr.session_interrupted')}</div>}
       {runtimeState.depthError!==null&&<div className="xr-runtime-warning" role="status">{formatErrorText(locale,runtimeState.depthError)}</div>}{runtimeState.error!==null&&<div className="xr-runtime-error" role="alert">{formatErrorText(locale,runtimeState.error)}</div>}
       <details className="xr-technical-details"><summary>{t('scan.details.technical')}</summary><dl className="xr-runtime-values">
         <div><dt>{t('xr.detail.depth_type')}</dt><dd>{runtimeState.depthType??'--'}</dd></div><div><dt>{t('xr.detail.depth_usage')}</dt><dd>{runtimeState.depthUsage??'--'}</dd></div><div><dt>{t('xr.detail.depth_format')}</dt><dd>{runtimeState.depthDataFormat??'--'}</dd></div><div><dt>{t('xr.detail.depth_size')}</dt><dd>{runtimeState.depthWidth&&runtimeState.depthHeight?`${formatNumber(locale,runtimeState.depthWidth)} × ${formatNumber(locale,runtimeState.depthHeight)}`:'--'}</dd></div>
-        <div><dt>{t('xr.detail.raw_rgb')}</dt><dd>{capabilities?.rawXrRgbApi?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.rgb_guidance')}</dt><dd>{runtimeState.rgbGuidanceAvailable?`${formatNumber(locale,runtimeState.rgbGuidanceWidth??0)} × ${formatNumber(locale,runtimeState.rgbGuidanceHeight??0)}`:'--'}</dd></div><div><dt>{t('xr.detail.video_inputs')}</dt><dd>{capabilities?.videoInputsEnumerated?formatNumber(locale,capabilities.videoInputCount??0):capabilities?.videoInputEnumeration?t('xr.value.not_exposed'):'--'}</dd></div><div><dt>{t('xr.detail.hardware_depth_sensor')}</dt><dd>{capabilities?.hardwareDepthSensor?.toUpperCase()??t('xr.value.unknown')} · {t('xr.hardware_depth_not_inferred')}</dd></div><div><dt>{t('xr.detail.visual_evidence_frames')}</dt><dd>{formatNumber(locale,runtimeState.visualEvidenceFrames)}</dd></div><div><dt>{t('xr.detail.ai_depth_prior')}</dt><dd>{aiPriorUi.shortStatus}</dd></div><div><dt>{t('xr.detail.ai_calibration')}</dt><dd>{aiPriorUi.calibrationLabel}</dd></div>
+        <div><dt>{t('xr.detail.raw_rgb')}</dt><dd>{capabilities?.rawXrRgbApi?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.rgb_guidance')}</dt><dd>{runtimeState.rgbGuidanceAvailable?`${formatNumber(locale,runtimeState.rgbGuidanceWidth??0)} × ${formatNumber(locale,runtimeState.rgbGuidanceHeight??0)}`:'--'}</dd></div><div><dt>{t('xr.detail.video_inputs')}</dt><dd>{capabilities?.videoInputsEnumerated?formatNumber(locale,capabilities.videoInputCount??0):capabilities?.videoInputEnumeration?t('xr.value.not_exposed'):'--'}</dd></div><div><dt>{t('xr.detail.hardware_depth_sensor')}</dt><dd>{capabilities?.hardwareDepthSensor?.toUpperCase()??t('xr.value.unknown')} · {t('xr.hardware_depth_not_inferred')}</dd></div><div><dt>{t('xr.detail.visual_evidence_frames')}</dt><dd>{formatNumber(locale,runtimeState.visualEvidenceFrames)}</dd></div>
         <div><dt>{t('xr.detail.stable_points')}</dt><dd>{formatNumber(locale,runtimeState.pointCount)}</dd></div><div><dt>{t('xr.detail.retained_hypotheses')}</dt><dd>{formatNumber(locale,runtimeState.retainedPointCount)}</dd></div><div><dt>{t('scan.details.keyframes')}</dt><dd>{formatNumber(locale,runtimeState.keyframeCount)}</dd></div><div><dt>{t('scan.details.polish_frames')}</dt><dd>{formatNumber(locale,runtimeState.polishFrameCount)}</dd></div><div><dt>{t('xr.detail.motion_rejects')}</dt><dd>{formatNumber(locale,runtimeState.motionRejectedFrames)}</dd></div>
         <div><dt>{t('xr.detail.ready_visible_cells')}</dt><dd>{readyVisible}</dd></div><div><dt>{t('xr.detail.coverage_confidence')}</dt><dd>{formatPercent(locale,runtimeState.coverageAverageConfidence)}</dd></div><div><dt>{t('xr.detail.weak_points')}</dt><dd>{formatNumber(locale,runtimeState.coverageWeakPoints)}</dd></div><div><dt>{t('xr.detail.improving_points')}</dt><dd>{formatNumber(locale,runtimeState.coverageImprovingPoints)}</dd></div><div><dt>{t('xr.detail.stable_guide_points')}</dt><dd>{formatNumber(locale,runtimeState.coverageStablePoints)}</dd></div>
         <div><dt>{t('xr.detail.worker_api')}</dt><dd>{capabilities?.workerApi?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.shared_memory')}</dt><dd>{capabilities?.sharedMemory?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.wasm_threads')}</dt><dd>{capabilities?.wasmThreads?t('scan.compute.available'):'--'}</dd></div><div><dt>WebGPU</dt><dd>{capabilities?.webGpu?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.live_cpu_workers')}</dt><dd>{computeLabel} · {pressureLabel(computeScheduler.pressure,t)}{computeScheduler.degraded?` ${t('xr.value.throttled')}`:''}</dd></div><div><dt>{t('xr.detail.active_heavy_jobs')}</dt><dd>{formatNumber(locale,computeScheduler.active)} · S{formatNumber(locale,computeScheduler.structural)} / V{formatNumber(locale,computeScheduler.visual)}</dd></div><div><dt>{t('xr.detail.manual_corners')}</dt><dd>{formatNumber(locale,runtimeState.manualPointCount)}</dd></div><div><dt>{t('xr.detail.confirmed_edges')}</dt><dd>{formatNumber(locale,runtimeState.manualEdgeCount)}</dd></div><div><dt>{t('xr.detail.frame_p95')}</dt><dd>{formatNumber(locale,runtimeState.performance.frameDeltaP95Ms,{minimumFractionDigits:1,maximumFractionDigits:1})} ms</dd></div><div><dt>{t('xr.detail.fusion_p50_p95')}</dt><dd>{formatNumber(locale,runtimeState.performance.fusionP50Ms,{minimumFractionDigits:1,maximumFractionDigits:1})} / {formatNumber(locale,runtimeState.performance.fusionP95Ms,{minimumFractionDigits:1,maximumFractionDigits:1})} ms</dd></div><div><dt>{t('xr.detail.coverage_p95')}</dt><dd>{formatNumber(locale,runtimeState.performance.coverageP95Ms,{minimumFractionDigits:1,maximumFractionDigits:1})} ms</dd></div><div><dt>{t('xr.detail.long_frames')}</dt><dd>{formatNumber(locale,runtimeState.performance.longFrames33Ms)} / {formatNumber(locale,runtimeState.performance.longFrames50Ms)} ms</dd></div><div><dt>{t('xr.detail.live_render_pressure')}</dt><dd>{pressureLabel(runtimeState.performance.pressure,t)} · {formatNumber(locale,runtimeState.performance.adaptiveCoverageIntervalMs)} ms</dd></div>
@@ -411,16 +431,10 @@ export function XrRuntimePanel({
     <StructuralGuideOverlay runtime={runtime} runtimeState={runtimeState} interactionEnabled={running&&!manualMode}/>
     <LiveTagOverlay runtime={runtime} tracker={tagLiveRef.current} active={running&&tagModeEnabled}/>
     <div className="xr-immersive-overlay" aria-live="polite">
-      {running&&manualMode&&<div className="xr-manual-hit-surface" aria-label={t('xr.manual.manual_surface')} onPointerDown={handleManualPointerDown} onPointerMove={handleManualPointerMove} onPointerUp={handleManualPointerUp} onPointerCancel={handleManualPointerCancel}>
-        <div className={`xr-manual-reticle ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}} aria-hidden="true"/><div className={`xr-manual-cursor-state ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}}>{cursorLabel(manualCursor,runtimeState.manualPointCount,locale,t)}</div><div className="xr-manual-instruction">{t('xr.manual.instruction')}</div>
-      </div>}
       {running&&bleActive&&<BleRoughPlacementHud estimates={bleEstimates} pose={runtimeState.pose}/>}
-      <div className="xr-overlay-card xr-overlay-card-compact"><div className="xr-overlay-topline"><strong className={runtimeState.motionState==='too-fast'?'bad-text':''}>{phaseLabel(runtimeState,locale)}</strong><span>{runtimeState.wakeLockActive?t('xr.overlay.screen_lock'):''}</span></div>
-        <div className="xr-overlay-scan-grid xr-overlay-scan-grid-compact"><div><span>{t('xr.overlay.stable')}</span><strong>{formatNumber(locale,runtimeState.pointCount)}</strong></div><div><span>{t('xr.overlay.ready')}</span><strong>{readyVisible}</strong></div><div><span>{t('xr.overlay.motion')}</span><strong>{formatMotion(runtimeState,locale)}</strong></div><div><span>{t('xr.overlay.cpu')}</span><strong className={computeScheduler.degraded?'bad-text':''}>{computeLabel}</strong></div></div>
+      <div className="xr-overlay-card xr-overlay-card-compact">{/* developer figures (counts, motion, CPU) are in the log, not over the camera */}
         {running&&activeScanIntent==='continue'&&<div className="xr-overlay-hint">{t('xr.overlay.continue_hint',{sample:continuationSampleReady?t('xr.overlay.continue_enough'):t('xr.overlay.registration_sample',{count:formatNumber(locale,runtimeState.pointCount)})})}</div>}
         {runtimeState.scanPaused&&<div className="xr-overlay-warning">{t('xr.manual.paused')}</div>}{runtimeState.motionState==='too-fast'&&<div className="xr-overlay-warning">{t('xr.manual.move_slower')}</div>}{(runtimeState.motionState==='stationary'||runtimeState.motionState==='redundant')&&<div className="xr-overlay-hint">{t('xr.manual.move_viewpoint')}</div>}{runtimeState.manualPointErrorKey!==null&&<div className="xr-overlay-warning" role="status">{t(runtimeState.manualPointErrorKey)}</div>}{runtimeState.manualPointErrorKey===null&&runtimeState.manualPointError!==null&&<div className="xr-overlay-warning">{manualPlacementErrorLabel(runtimeState.manualPointError,locale)}</div>}
-        <div className="xr-manual-status"><span>{t('xr.manual.geometry_count',{points:formatNumber(locale,runtimeState.manualPointCount),edges:formatNumber(locale,runtimeState.manualEdgeCount),ready:certifiedGeometry.hasTargets?t('xr.manual.geometry_ready',{corners:formatNumber(locale,certifiedGeometry.cornerCount),edges:formatNumber(locale,certifiedGeometry.edgeCount)}):''})}</span>{manualMode&&<span>{t('xr.manual.release_rule')}</span>}</div>
-        <div className="xr-overlay-actions">{showManualToggle&&<button type="button" className={manualMode?'xr-manual-toggle active':'xr-manual-toggle'} aria-pressed={manualMode} onClick={toggleManualMode}>{manualMode?t('xr.manual.done_marking'):t('xr.manual.mark_corners')}</button>}<button type="button" className="xr-undo-button" disabled={runtimeState.manualPointCount===0} onClick={()=>runtime.undoLastManualPoint()}>{t('xr.manual.undo_pin')}</button><button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?t('xr.ai_check_on'):t('xr.ai_check_off')}</button></div>
         {running&&!tagModeEnabled&&tagUnavailableReason!==null&&<div className="xr-overlay-hint">{t('xr.tag.unavailable',{reason:tagUnavailableReason})}</div>}
         {tagModeEnabled&&tagNotices.length>0&&<div className="xr-tag-notices" role="status" aria-live="polite">{tagNotices.map((notice)=><div key={notice.tagId} className="xr-overlay-hint xr-tag-notice" data-node={notice.node}>{tagScanNoticeText(notice,locale)}</div>)}</div>}
         {tagModeError!==null&&<div className="xr-overlay-warning" role="status">{tagModeErrorLabel(tagModeError,locale)}</div>}

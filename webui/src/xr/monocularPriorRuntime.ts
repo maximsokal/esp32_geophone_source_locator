@@ -204,6 +204,8 @@ export class MonocularPriorRuntime {
     for (const listener of this.listeners) listener();
   }
 
+  private stagingAllowed = true;
+
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
@@ -217,6 +219,13 @@ export class MonocularPriorRuntime {
     this.notify();
     if (!enabled) void this.releaseProviderMemory();
   }
+
+  /**
+   * Staging the frame for the post-scan AI check costs CPU on every depth frame. The panel allows it only while the phone has headroom; a frame that was
+   * already staged is kept either way, and the inference itself always runs after the scan, when the result is processed.
+   */
+  setStagingAllowed(allowed: boolean): void { this.stagingAllowed = allowed; }
+  get isStagingAllowed(): boolean { return this.stagingAllowed; }
 
   get isEnabled(): boolean { return this.enabled; }
   get isBusy(): boolean { return this.providerBusy; }
@@ -259,7 +268,7 @@ export class MonocularPriorRuntime {
   }
 
   stagePostScan(guidance: RgbDepthGuidanceFrame, depth: CpuDepthInformationLike): boolean {
-    if (!this.enabled || !this.provider.isSupported()) return false;
+    if (!this.enabled || !this.stagingAllowed || !this.provider.isSupported()) return false;
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
     const physicalGuard = collectPhysicalDepthGuard(depth, guidance);

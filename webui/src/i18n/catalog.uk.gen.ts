@@ -1003,6 +1003,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.marker_detail.cs_projected": "Геометрію Channel Sounding спроєктовано за збереженою прив’язкою; для цього вузла мітку не закріплено.",
   "scan.marker_detail.cs_unregistered": "Геометрію Channel Sounding не прив’язано до скану; її показано лише у вставці системи координат датчиків.",
   "scan.marker_detail.visual_only": "Є лише позиція мітки AprilTag; дійсного перетворення геометрії Channel Sounding із системи датчиків у систему скану немає.",
+  "scan.marker_provisional": "Попередньо: тег помічено, але ще не з достатньої кількості ракурсів для підтвердження. Обійдіть пристрій, щоб підтвердити його.",
   "scan.marker_status.anchored": "прив’язано",
   "scan.marker_status.cs_projected": "спроєктовано за Channel Sounding",
   "scan.marker_status.cs_unregistered": "Channel Sounding без прив’язки",

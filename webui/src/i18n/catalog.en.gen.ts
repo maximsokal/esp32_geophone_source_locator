@@ -1003,6 +1003,7 @@ export const en: Record<I18nKey, string> = {
   "scan.marker_detail.cs_projected": "Channel Sounding geometry projected through the saved registration; no tag is bound to this node.",
   "scan.marker_detail.cs_unregistered": "Channel Sounding geometry has no valid scan registration; it is shown only in the sensor-frame inset.",
   "scan.marker_detail.visual_only": "AprilTag position only; there is no valid sensor-to-scan transform for Channel Sounding geometry.",
+  "scan.marker_provisional": "Preliminary: the tag was seen, but not yet from enough viewpoints to be confirmed. Move around the device to confirm it.",
   "scan.marker_status.anchored": "anchored",
   "scan.marker_status.cs_projected": "Channel Sounding projected",
   "scan.marker_status.cs_unregistered": "Channel Sounding unregistered",

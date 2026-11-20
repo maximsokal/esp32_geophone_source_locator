@@ -911,6 +911,7 @@
     "scan.marker_status.cs_projected": { "en": "Channel Sounding projected", "uk": "спроєктовано за Channel Sounding" },
     "scan.marker_status.visual_only": { "en": "visual only", "uk": "лише візуальні дані" },
     "scan.marker_status.cs_unregistered": { "en": "Channel Sounding unregistered", "uk": "Channel Sounding без прив’язки" },
+    "scan.marker_provisional": { "en": "Preliminary: the tag was seen, but not yet from enough viewpoints to be confirmed. Move around the device to confirm it.", "uk": "Попередньо: тег помічено, але ще не з достатньої кількості ракурсів для підтвердження. Обійдіть пристрій, щоб підтвердити його." },
     "scan.marker_detail.anchored": { "en": "Channel Sounding geometry transformed by the saved AprilTag registration.", "uk": "Геометрію Channel Sounding перетворено за збереженою просторовою прив’язкою AprilTag." },
     "scan.marker_detail.cs_projected": { "en": "Channel Sounding geometry projected through the saved registration; no tag is bound to this node.", "uk": "Геометрію Channel Sounding спроєктовано за збереженою прив’язкою; для цього вузла мітку не закріплено." },
     "scan.marker_detail.visual_only": { "en": "AprilTag position only; there is no valid sensor-to-scan transform for Channel Sounding geometry.", "uk": "Є лише позиція мітки AprilTag; дійсного перетворення геометрії Channel Sounding із системи датчиків у систему скану немає." },

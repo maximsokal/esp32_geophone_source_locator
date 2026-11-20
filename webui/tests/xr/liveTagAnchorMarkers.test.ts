@@ -3,8 +3,8 @@ import { tagSensorAnchorsFromFusion, type TagSensorAnchor } from '../../src/xr/f
 import { fuseTagObservations, type TagObservation } from '../../src/xr/fiducial/tagObservationFusion';
 import { mergeLiveTagAnchorMarkers, type SensorPlacementMarker } from '../../src/xr/sensorPlacementScene';
 
-const anchor = (tagId: number, node: string, position: [number, number, number] = [0.5, 1.0, -0.4]): TagSensorAnchor =>
-  ({ tagId, node, positionScan: position, spreadM: 0.004, observationCount: 9, independentViewCount: 4 });
+const anchor = (tagId: number, node: string, position: [number, number, number] = [0.5, 1.0, -0.4], confirmed = true): TagSensorAnchor =>
+  ({ tagId, node, positionScan: position, spreadM: 0.004, observationCount: 9, independentViewCount: 4, confirmed });
 
 const registered = (node: SensorPlacementMarker['node']): SensorPlacementMarker => ({
   node, status: 'anchored', source: 'apriltag', positionScanM: [1, 2, 3], uncertaintyM: 0.01, residualM: 0.002, tagId: 1, details: 'registered',
@@ -19,6 +19,15 @@ describe('live tag anchors on the result view', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ node: 'G2', status: 'visual_only', source: 'apriltag', tagId: 2, uncertaintyM: 0.004, positionScanM: [0.5, 0.4, 1.0] });
     expect(merged[0].details).toContain('9 sightings from 4 viewpoints');
+    expect(merged[0].provisional).toBeUndefined();
+  });
+
+  it('marks an unconfirmed tag position as provisional, with the same three-axis position and uncertainty', () => {
+    const merged = mergeLiveTagAnchorMarkers([], [anchor(3, 'G3', [0.1, 0.9, -0.2], false), anchor(0, 'MAIN', [0, 1, 0], true)]);
+    const g3 = merged.find((marker) => marker.node === 'G3')!;
+    expect(g3).toMatchObject({ status: 'visual_only', source: 'apriltag', provisional: true, positionScanM: [0.1, 0.2, 0.9], uncertaintyM: 0.004 });
+    expect(g3.details).toContain('preliminary');
+    expect(merged.find((marker) => marker.node === 'MAIN')!.provisional).toBeUndefined();
   });
 
   it('never replaces or removes what the scene already holds for a node', () => {
@@ -37,7 +46,7 @@ describe('live tag anchors on the result view', () => {
     expect(mergeLiveTagAnchorMarkers([], [anchor(2, 'G2', [NaN, 1, 1]), anchor(9, 'G9'), anchor(0, 'MAIN')]).map((marker) => marker.node)).toEqual(['MAIN']);
   });
 
-  it('turns only tags confirmed from several viewpoints into anchors', () => {
+  it('turns every fused tag into an anchor and says which ones are confirmed', () => {
     const obs = (tagId: number, i: number): TagObservation => ({
       tagId, positionScan: [tagId, 1, -0.5], capturedAtMs: i, cameraPosition: [i * 0.4, 1.3, 0.5], cameraForward: [0, -0.2, -1],
     });
@@ -46,7 +55,8 @@ describe('live tag anchors on the result view', () => {
     expect(fusion.byTagId[2]).toBeDefined();
     expect(fusion.byTagId[2]!.confirmed).toBe(false);
     const anchors = tagSensorAnchorsFromFusion(fusion);
-    expect(anchors.map((a) => a.node)).toEqual(['MAIN']);
+    expect(anchors.map((a) => [a.node, a.confirmed])).toEqual([['MAIN', true], ['G2', false]]);
     expect(anchors[0]).toMatchObject({ tagId: 0, observationCount: 6 });
+    expect(anchors[1]).toMatchObject({ tagId: 2, observationCount: 2 });
   });
 });

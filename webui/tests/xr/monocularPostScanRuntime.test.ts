@@ -96,6 +96,34 @@ describe('post-scan monocular prior scheduling', () => {
     expect(runtime.calibrationDiagnostics!.selectedModel).not.toBeNull();
   });
 
+  it('stages only while the phone has headroom: an earlier frame survives a busy phone, no new one is staged, and the inference still runs after the scan', async () => {
+    const provider = new CountingProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    runtime.setEnabled(true);
+    expect(runtime.isStagingAllowed).toBe(true);
+    expect(runtime.stagePostScan(guidance(100), metricDepth())).toBe(true);
+    runtime.setStagingAllowed(false);
+    expect(runtime.stagePostScan(guidance(200), metricDepth())).toBe(false);
+    expect(runtime.hasStagedPostScanFrame).toBe(true);
+    expect(provider.calls).toBe(0);
+    runtime.setStagingAllowed(true);
+    expect(runtime.stagePostScan(guidance(300), metricDepth())).toBe(true);
+    runtime.setStagingAllowed(false);
+    expect(await runtime.runStagedPostScan()).toBe(true); // gating applies to staging only, not to the post-scan run
+    expect(provider.calls).toBe(1);
+  });
+
+  it('stages nothing, and runs nothing, when the phone never had headroom during the scan', async () => {
+    const provider = new CountingProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    runtime.setEnabled(true);
+    runtime.setStagingAllowed(false);
+    for (let keyframe = 0; keyframe < 5; keyframe += 1) expect(runtime.stagePostScan(guidance(100 + keyframe), metricDepth())).toBe(false);
+    expect(runtime.hasStagedPostScanFrame).toBe(false);
+    expect(await runtime.runStagedPostScan()).toBe(false);
+    expect(provider.calls).toBe(0);
+  });
+
   it('guards AI veto with physical frontmost depth from the same staged RGB pose', () => {
     const depth = metricDepth();
     const frame = guidance(100);

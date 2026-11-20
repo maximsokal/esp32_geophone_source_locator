@@ -63,6 +63,9 @@ import type { LocalizationSessionGeometry } from '../../src/api/deviceApi';
 import { TagObservationStore } from '../../src/xr/fiducial/tagObservationStore';
 import * as tagObservationFusion from '../../src/xr/fiducial/tagObservationFusion';
 import { deferred } from '../xr/support/xrFakes';
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
+import { liveComputeScheduler } from '../../src/xr/liveComputeScheduler';
+import { optionalMonocularPrior } from '../../src/xr/monocularPriorRuntime';
 
 const mounted:ReactTestRenderer[]=[];
 type BrowserListener=EventListenerOrEventListenerObject;
@@ -153,6 +156,7 @@ beforeEach(()=>{
     listeners.get(type)?.delete(listener);
   };
   (globalThis as any).__runPanelTimeouts=()=>{for(const [id,callback] of [...timers]){timers.delete(id);callback();}};
+  (globalThis as any).__runPanelIntervals=()=>{for(const callback of [...intervals.values()])callback();};
   browserWindow={
     isSecureContext:false,
     innerWidth:1280,
@@ -238,7 +242,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();unmount(renderer);
   });
 
-  it('hands the tags confirmed from several viewpoints to the result view when the scan has no geometry, saves no registration, and never passes unconfirmed ones',async()=>{
+  it('hands every tag position to the result view when the scan has no geometry, flags the unconfirmed ones, and saves no registration',async()=>{
     const tagResult=vi.fn();const anchors=vi.fn();
     const renderer=await mountPanel({onTagRegistrationResult:tagResult,onTagAnchors:anchors});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
@@ -250,8 +254,9 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(anchors).not.toHaveBeenCalled();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
     expect(anchors).toHaveBeenCalledTimes(1);
-    expect(anchors.mock.calls[0][0].map((anchor:any)=>anchor.tagId)).toEqual([0]);
+    expect(anchors.mock.calls[0][0].map((anchor:any)=>[anchor.tagId,anchor.confirmed])).toEqual([[0,true],[2,false]]);
     expect(anchors.mock.calls[0][0][0]).toMatchObject({node:'MAIN',observationCount:6});
+    expect(anchors.mock.calls[0][0][1]).toMatchObject({node:'G2',observationCount:2});
     expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][0]).toBeNull();   /* no geometry: nothing registered */
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
     unmount(renderer);
@@ -310,6 +315,98 @@ describe('XrRuntimePanel lifecycle',()=>{
     const before=panelHarness.panelRenders;
     for(let index=2;index<=4;index+=1){runtime.emitTagFrame(tagFrame(index,[index*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:0,positionX:1});await settleReact();});}
     expect(panelHarness.panelRenders).toBe(before);
+    unmount(renderer);
+  });
+
+  it('keeps the camera view free of developer figures and of the buttons nobody needs: only Finish is left to press',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);await act(async()=>{await settleReact();});
+    const overlay=renderer.root.findAll((node)=>node.props.className==='xr-immersive-overlay')[0];
+    expect(overlay.findAllByType('button').map((button)=>button.props.className)).toEqual(['xr-finish-button']);
+    for(const className of ['xr-overlay-scan-grid xr-overlay-scan-grid-compact','xr-overlay-topline','xr-manual-status','xr-overlay-actions','xr-manual-hit-surface'])
+      expect(renderer.root.findAll((node)=>node.props.className===className)).toHaveLength(0);
+    const labels=[translate('en','xr.ai_check_on'),translate('en','xr.ai_check_off'),translate('en','xr.manual.mark_corners'),translate('en','xr.manual.undo_pin')];
+    expect(renderer.root.findAllByType('button').filter((button)=>labels.includes(textOf(button)))).toHaveLength(0);
+    unmount(renderer);
+  });
+
+  it('still tells the operator what matters while scanning: paused, too fast, move to a new viewpoint',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    const warnings=()=>renderer.root.findAll((node)=>node.props.className==='xr-overlay-warning'||node.props.className==='xr-overlay-hint').map(textOf).join(' | ');
+    await act(async()=>{runtime.setPhase('running',{motionState:'too-fast'});await settleReact();});
+    expect(warnings()).toContain(translate('en','xr.manual.move_slower'));
+    await act(async()=>{runtime.setPhase('running',{motionState:'stationary'});await settleReact();});
+    expect(warnings()).toContain(translate('en','xr.manual.move_viewpoint'));
+    await act(async()=>{runtime.setPhase('running',{motionState:'ok',scanPaused:true});await settleReact();});
+    expect(warnings()).toContain(translate('en','xr.manual.paused'));
+    unmount(renderer);
+  });
+
+  it('arms the AI check by itself, without a switch',async()=>{
+    optionalMonocularPrior.setEnabled(false);
+    const renderer=await mountPanel({});
+    expect(optionalMonocularPrior.isEnabled).toBe(true);
+    unmount(renderer);
+  });
+
+  it('stages the AI frame only while the phone has headroom, and always allows it again once the scan is over',async()=>{
+    const snapshot=(pressure:'low'|'medium'|'high',active:number,degraded=false)=>({budget:2,maximumBudget:2,effectiveBudget:2,pressure,degraded,active,structural:active,visual:0});
+    const spy=vi.spyOn(liveComputeScheduler,'snapshot');
+    const info=vi.spyOn(clientDiagnostics,'info');
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];
+    spy.mockReturnValue(snapshot('low',1));
+    await startGeometry(runtime);
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(true);       /* 1 of 2 workers busy: exactly half is free */
+    spy.mockReturnValue(snapshot('low',2));
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(false);      /* both busy */
+    expect(info).toHaveBeenCalledWith('XR_AI_STAGING',expect.objectContaining({allowed:false,active:2,budget:2}));
+    spy.mockReturnValue(snapshot('medium',0));
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(false);      /* idle workers but the phone is under pressure */
+    spy.mockReturnValue(snapshot('low',0,true));
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(false);      /* throttled */
+    spy.mockReturnValue(snapshot('low',0));
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(true);
+    spy.mockReturnValue(snapshot('high',2));
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(false);
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
+    expect(optionalMonocularPrior.isStagingAllowed).toBe(true);       /* the result is being processed: no gate any more */
+    spy.mockRestore();unmount(renderer);
+  });
+
+  it('writes the developer telemetry that used to be on screen: state, load, keyframes and what changed on which frame',async()=>{
+    const info=vi.spyOn(clientDiagnostics,'info');
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});
+    const events=(name:string)=>info.mock.calls.filter((call)=>call[0]===name).map((call)=>call[1] as Record<string,unknown>);
+    expect(events('XR_STATE_CHANGE').length).toBeGreaterThan(0);
+    expect(String(events('XR_STATE_CHANGE')[0].changed)).toContain('tags:');
+    await act(async()=>{runtime.setPhase('running',{frameCount:420,scanPaused:true,depthAvailable:true});await settleReact();});
+    const change=events('XR_STATE_CHANGE').at(-1)!;
+    expect(change.frame).toBe(420);expect(String(change.changed)).toContain('paused:false>true');expect(String(change.changed)).toContain('depth:');
+    await act(async()=>{runtime.setPhase('running',{frameCount:530,depthFrameCount:500,sampledDepthFrames:60,pointCount:900,polishFrameCount:7,keyframeCount:12});await settleReact();});
+    expect(events('XR_KEYFRAME').at(-1)).toMatchObject({n:12,frame:530,depthFrame:500,integrated:60,points:900,polish:7});
+    await act(async()=>{runtime.setPhase('running',{frameCount:600,keyframeCount:13});await settleReact();});
+    expect(events('XR_KEYFRAME').map((event)=>event.n)).toEqual([12,13]);
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    const viewport=events('XR_VIEWPORT_STATE').at(-1);const perf=events('XR_PERF_STATE').at(-1);
+    expect(viewport).toMatchObject({f:600,kf:13,pts:900,pol:7,pause:true});
+    expect(perf).toMatchObject({f:600});expect(perf).toHaveProperty('cpu');expect(perf).toHaveProperty('p95');expect(perf).toHaveProperty('l33');expect(perf).toHaveProperty('press');
+    /* The client log keeps 420 characters per line: a longer record would be cut in the middle of its JSON. */
+    for(const record of [viewport,perf,change])expect(JSON.stringify(record).length).toBeLessThan(380);
+    unmount(renderer);
+  });
+
+  it('stops the periodic telemetry when the scan ends',async()=>{
+    const info=vi.spyOn(clientDiagnostics,'info');
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);await act(async()=>{await settleReact();});
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
+    info.mockClear();
+    await act(async()=>{(globalThis as any).__runPanelIntervals();await settleReact();});
+    expect(info.mock.calls.filter((call)=>call[0]==='XR_VIEWPORT_STATE'||call[0]==='XR_PERF_STATE')).toHaveLength(0);
     unmount(renderer);
   });
 

@@ -110,6 +110,18 @@ describe('ScanPointCloudViewport', () => {
     expect(building).toContain('MESH · BUILDING…');
   });
 
+  it('tells the operator a provisional tag position is preliminary, and says nothing of the kind for a confirmed one', () => {
+    const marker: SensorPlacementMarker = {
+      node: 'G3', status: 'visual_only', source: 'apriltag', positionScanM: [0.2, 0.3, 0.95],
+      uncertaintyM: 0.02, residualM: null, tagId: 3, details: 'preliminary', provisional: true,
+    };
+    const provisional = render(scanViewForMode('quality'), snapshot(), 'perspective', { sensorMarkers: [marker], selectedSensorNode: 'G3' });
+    expect(provisional).toContain('data-marker-provisional="true"');
+    expect(provisional).toContain(translate('en', 'scan.marker_provisional'));
+    const confirmed = render(scanViewForMode('quality'), snapshot(), 'perspective', { sensorMarkers: [{ ...marker, provisional: undefined }], selectedSensorNode: 'G3' });
+    expect(confirmed).not.toContain('data-marker-provisional');
+  });
+
   it('keeps the operator-facing 3D view shell for every camera preset', () => {
     for (const preset of ['perspective', 'top', 'front'] as const) {
       const html = render(scanViewForMode('quality'), snapshot(), preset);
