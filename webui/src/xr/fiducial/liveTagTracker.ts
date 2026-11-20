@@ -1,5 +1,6 @@
 import type { Matrix3, TagPoseResult } from './tagPose';
 import { tagNodeForId } from './tagBindings.gen';
+import type { TagObservationFusion } from './tagObservationFusion';
 
 /**
  * Live (during the AR scan) view of the AprilTags, independent of any saved recording, localization geometry or registration.
@@ -195,4 +196,25 @@ export function liveTagOverlayQuads(states: readonly LiveTagState[], project: Pr
     quads.push({ tagId: state.tagId, node: state.node, style, points });
   }
   return quads;
+}
+
+/** A sensor position taken from a tag confirmed during the live scan (WebXR local-floor metres). Held in memory for the result view. */
+export interface TagSensorAnchor {
+  tagId: number;
+  node: string;
+  positionScan: readonly [number, number, number];
+  spreadM: number;
+  observationCount: number;
+  independentViewCount: number;
+}
+
+/** Only tags confirmed from several viewpoints become anchors; a sighting is not a position. */
+export function tagSensorAnchorsFromFusion(fusion: TagObservationFusion): TagSensorAnchor[] {
+  return Object.values(fusion.byTagId)
+    .filter((tag) => tag !== undefined && tag.confirmed)
+    .map((tag) => ({
+      tagId: tag!.tagId, node: tagNodeForId(tag!.tagId), positionScan: [...tag!.positionScan] as [number, number, number],
+      spreadM: tag!.spreadM, observationCount: tag!.observationCount, independentViewCount: tag!.independentViewCount,
+    }))
+    .sort((a, b) => a.tagId - b.tagId);
 }

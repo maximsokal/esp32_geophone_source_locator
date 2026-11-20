@@ -47,7 +47,8 @@ import {
 import {
   SCAN_ANNOTATION_CAPACITY_ERROR,
 } from './xr/scanArtifact';
-import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
+import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
+import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
 import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
 import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
 import {
@@ -278,6 +279,9 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     objectId === null || sessionId === null ? 'unbound' : 'loading',
   );
   const [scanStorageError, setScanStorageError] = useState<unknown | null>(null);
+  const [liveTagAnchors, setLiveTagAnchors] = useState<readonly TagSensorAnchor[]>([]);
+  /* Anchors belong to the scan just made for this target; another object/session starts without them. */
+  useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
   const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
@@ -876,6 +880,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     setScanStorageError(null);
 
     if (incoming === null) {
+      setLiveTagAnchors([]); // a new scanner generation: anchors of the previous scan do not carry over
       /*
        * The null callback marks XR startup. Keep the current durable scan and
        * its storage presentation intact until a replacement candidate exists.
@@ -1254,6 +1259,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     () => buildSensorPlacementScene(durableViewport ? localizationGeometry : null, durableViewport ? registrationArtifact : null, registrationExpected),
     [durableViewport, localizationGeometry, registrationArtifact, registrationExpected],
   );
+  /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
+  const resultSensorMarkers = useMemo(
+    () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, liveTagAnchors) : [],
+    [durableViewport, sensorPlacementScene, liveTagAnchors],
+  );
   /* Distances between the devices recalculated from the scan: only from a registration that applies to the scan on screen. */
   const distanceRefinement = useMemo(
     () => computeScanDistanceRefinement(durableViewport ? localizationGeometry : null, viewerRegistration),
@@ -1394,6 +1404,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         scanIntent={scanIntentState}
         baseScanFrameId={scanDurability.durableId}
         onTagRegistrationResult={onTagRegistrationResult}
+        onTagAnchors={setLiveTagAnchors}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
@@ -1427,7 +1438,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}
-                sensorMarkers={durableViewport ? sensorPlacementScene.markers : []}
+                sensorMarkers={resultSensorMarkers}
                 sensorGeometry={durableViewport ? localizationGeometry : null}
                 registrationArtifact={viewerRegistration}
                 currentScanId={durableViewport ? scanDurability.durableId : null}

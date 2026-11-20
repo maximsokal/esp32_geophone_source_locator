@@ -318,6 +318,45 @@ describe('App scan information: distances recalculated from the scan', () => {
     }
   });
 
+  it('places a tag confirmed during the live scan in the 3D result even though there is no registration', async () => {
+    await mountApp();
+    h.viewportProps = null; // the harness keeps the last props across tests
+    await finishScan('fresh', null);
+    expect(h.viewportProps).not.toBeNull();
+    const markersOf = () => (h.viewportProps as { sensorMarkers: { node: string; tagId: number | null; status: string; source: string | null; positionScanM: readonly number[] | null }[] }).sensorMarkers;
+    /* Without a registration the channel-sounding geometry has no position in the scan: its G2 marker is unplaced. */
+    const before = markersOf().filter((marker) => marker.node === 'G2');
+    expect(before.every((marker) => marker.positionScanM === null)).toBe(true);
+    await act(async () => { h.props.onTagAnchors([{ tagId: 2, node: 'G2', positionScan: [0.5, 1, -0.4], spreadM: 0.004, observationCount: 9, independentViewCount: 4 }]); });
+    const g2 = markersOf().filter((marker) => marker.node === 'G2');
+    expect(g2.filter((marker) => marker.status === 'visual_only')).toHaveLength(1);
+    expect(g2.find((marker) => marker.status === 'visual_only')).toMatchObject({ tagId: 2, source: 'apriltag', positionScanM: [0.5, 0.4, 1] });
+    expect(g2.slice(0, before.length)).toEqual(before); // the channel-sounding information is still there, beside the tag position
+  });
+
+  it('does not carry the live tag anchors over to the next scan', async () => {
+    await mountApp();
+    h.viewportProps = null; // the harness keeps the last props across tests
+    await finishScan('fresh', null);
+    expect(h.viewportProps).not.toBeNull();
+    await act(async () => { h.props.onTagAnchors([{ tagId: 2, node: 'G2', positionScan: [0.5, 1, -0.4], spreadM: 0.004, observationCount: 9, independentViewCount: 4 }]); });
+    const liveG2 = () => (h.viewportProps as { sensorMarkers: { node: string; status: string }[] }).sensorMarkers.some((marker) => marker.node === 'G2' && marker.status === 'visual_only');
+    expect(liveG2()).toBe(true);
+    await act(async () => { h.props.onScanIntent('fresh'); h.props.onPointCloudReady(null); });
+    expect(liveG2()).toBe(false);
+  });
+
+  it('keeps the registered marker of a node when a live anchor exists for the same node', async () => {
+    await mountApp();
+    h.viewportProps = null; // the harness keeps the last props across tests
+    await finishScan('fresh', registration({ bindings: scannedDevices }));
+    const markers = () => (h.viewportProps as { sensorMarkers: { node: string; positionScanM: readonly number[] | null; source: string | null }[] }).sensorMarkers;
+    const before = markers().filter((marker) => marker.node === 'G1');
+    expect(before).toHaveLength(1);
+    await act(async () => { h.props.onTagAnchors([{ tagId: 1, node: 'G1', positionScan: [9, 9, 9], spreadM: 0.5, observationCount: 5, independentViewCount: 3 }]); });
+    expect(markers().filter((marker) => marker.node === 'G1')).toEqual(before);
+  });
+
   it('explains that no device was scanned when the scan has no tag result', async () => {
     const renderer = await mountApp();
     await finishScan('fresh', null);

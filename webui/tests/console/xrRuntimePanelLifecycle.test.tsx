@@ -238,6 +238,35 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();unmount(renderer);
   });
 
+  it('hands the tags confirmed from several viewpoints to the result view when the scan has no geometry, saves no registration, and never passes unconfirmed ones',async()=>{
+    const tagResult=vi.fn();const anchors=vi.fn();
+    const renderer=await mountPanel({onTagRegistrationResult:tagResult,onTagAnchors:anchors});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
+    const observe=async(tagId:number,count:number,firstIndex:number)=>{
+      for(let index=0;index<count;index+=1){runtime.emitTagFrame(tagFrame(firstIndex+index,[(firstIndex+index)*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId,positionX:tagId+1});await settleReact();});}
+    };
+    await observe(0,6,1);   /* MAIN: 6 observations from different places -> confirmed */
+    await observe(2,2,10);  /* G2: seen twice -> not confirmed */
+    expect(anchors).not.toHaveBeenCalled();
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
+    expect(anchors).toHaveBeenCalledTimes(1);
+    expect(anchors.mock.calls[0][0].map((anchor:any)=>anchor.tagId)).toEqual([0]);
+    expect(anchors.mock.calls[0][0][0]).toMatchObject({node:'MAIN',observationCount:6});
+    expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][0]).toBeNull();   /* no geometry: nothing registered */
+    expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
+    unmount(renderer);
+  });
+
+  it('hands over no anchors for a scan that was interrupted',async()=>{
+    const anchors=vi.fn();
+    const renderer=await mountPanel({onTagAnchors:anchors});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
+    for(let index=1;index<=6;index+=1){runtime.emitTagFrame(tagFrame(index,[index*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:0,positionX:1});await settleReact();});}
+    await act(async()=>{runtime.setPhase('interrupted',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
+    expect(anchors).not.toHaveBeenCalled();
+    unmount(renderer);
+  });
+
   it('keeps tags off for the rest of the scan once the operator switches them off, and restores them with the next scan',async()=>{
     const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{await settleReact();});expect(runtime.tagListeners.size).toBe(1);

@@ -7,6 +7,7 @@ import {
   type RegistrationExpectation,
 } from './registrationApplicability';
 import { webXrLocalFloorToProject } from './scanViewportScene';
+import type { TagSensorAnchor } from './fiducial/liveTagTracker';
 
 export type SensorPlacementNode = 'MAIN' | 'G1' | 'G2' | 'G3' | 'G4';
 export type SensorPlacementStatus = 'anchored' | 'cs_projected' | 'visual_only' | 'cs_unregistered';
@@ -239,4 +240,30 @@ export function buildSensorPlacementScene(
   }
 
   return { markers, skipped };
+}
+
+/**
+ * Adds markers for tags confirmed during the live scan to the scene's markers, for the scan on screen. A node that already has a marker
+ * (a saved registration or channel-sounding geometry) keeps it: the live anchor never replaces or overwrites that information.
+ */
+export function mergeLiveTagAnchorMarkers(markers: readonly SensorPlacementMarker[], anchors: readonly TagSensorAnchor[]): SensorPlacementMarker[] {
+  const have = new Set(markers.filter((marker) => marker.positionScanM !== null).map((marker) => marker.node));
+  const extra: SensorPlacementMarker[] = [];
+  for (const anchor of anchors) {
+    const node = anchor.node as SensorPlacementNode;
+    if (!NODES.includes(node) || have.has(node)) continue;
+    if (!anchor.positionScan.every(Number.isFinite)) continue;
+    extra.push({
+      node,
+      status: 'visual_only',
+      source: 'apriltag',
+      positionScanM: webXrLocalFloorToProject(anchor.positionScan[0], anchor.positionScan[1], anchor.positionScan[2]),
+      uncertaintyM: anchor.spreadM,
+      residualM: null,
+      tagId: anchor.tagId,
+      details: `AprilTag position from the live scan (${anchor.observationCount} sightings from ${anchor.independentViewCount} viewpoints); not registered to a sensor geometry.`,
+    });
+  }
+  /* Nothing already in the scene is removed or changed: an unplaced channel-sounding marker keeps its information and the tag position stands beside it. */
+  return [...markers, ...extra];
 }

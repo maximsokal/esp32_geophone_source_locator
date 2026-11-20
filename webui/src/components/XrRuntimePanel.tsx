@@ -29,7 +29,7 @@ import {
 import { optionalMonocularPrior } from '../xr/monocularPriorRuntime';
 import { emptyXrPerformanceSnapshot } from '../xr/xrPerformanceProfiler';
 import { TagDetectorClient } from '../xr/fiducial/tagDetectorClient';
-import { LiveTagTracker } from '../xr/fiducial/liveTagTracker';
+import { LiveTagTracker, tagSensorAnchorsFromFusion, type TagSensorAnchor } from '../xr/fiducial/liveTagTracker';
 import { tagNodeForId } from '../xr/fiducial/tagBindings.gen';
 import { LiveTagOverlay } from './LiveTagOverlay';
 import { defaultRegistrationTagSizes, decodeRegistrationArtifact, encodeRegistrationArtifact, type RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
@@ -91,6 +91,8 @@ interface XrRuntimePanelProps {
    * after Finish, always after onPointCloudReady, and is the signal that tag finalization is done.
    */
   onTagRegistrationResult?: (artifact:RegistrationArtifact|null,final:boolean)=>void;
+  /** Tags confirmed from several viewpoints during this scan, for the result view (memory only; not part of the registration contract). */
+  onTagAnchors?: (anchors:TagSensorAnchor[])=>void;
 }
 function boundedWait(promise:Promise<unknown>,ms:number):Promise<void>{
   return new Promise<void>((resolve)=>{const timer=setTimeout(resolve,ms);promise.then(()=>{clearTimeout(timer);resolve();},()=>{clearTimeout(timer);resolve();});});
@@ -141,15 +143,16 @@ export function XrRuntimePanel({
   scanIntent='fresh',
   baseScanFrameId=null,
   onTagRegistrationResult,
+  onTagAnchors,
 }:XrRuntimePanelProps){
   const {locale}=useLocale();const t=useT();
   const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagNotices,setTagNotices]=useState<TagScanNotice[]>([]);const tagConfirmedRef=useRef<number[]>([]);const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
-  const tagGeometryRef=useRef<{objectId:string;sessionId:string;geometry:LocalizationSessionGeometry;geometryComputedAtMs:number}|null>(null);const tagObservationsRef=useRef(new TagObservationStore());const tagClientRef=useRef<TagDetectorClient|null>(null);const tagFramesUnsubscribeRef=useRef<(()=>void)|null>(null);const tagTaskRef=useRef<Promise<void>|null>(null);const tagModeActiveRef=useRef(false);const tagAcceptPendingRef=useRef(false);const tagStopRef=useRef<(options?:{discard?:boolean})=>Promise<RegistrationArtifact|null>>(async()=>null);const tagGeometryEpoch=useRef(0);const tagLiveRef=useRef(new LiveTagTracker());const tagManualOffRef=useRef(false);const tagStatsRef=useRef({frames:0,busy:0,detections:0,poses:0,posesRejected:0,decodeMs:[] as number[],workerMs:[] as number[],fullPasses:0,lastLogMs:0});const tagConfirmedKeyRef=useRef('');const tagPoseLoggedRef=useRef<Record<number,number>>({});
+  const tagGeometryRef=useRef<{objectId:string;sessionId:string;geometry:LocalizationSessionGeometry;geometryComputedAtMs:number}|null>(null);const tagObservationsRef=useRef(new TagObservationStore());const tagClientRef=useRef<TagDetectorClient|null>(null);const tagFramesUnsubscribeRef=useRef<(()=>void)|null>(null);const tagTaskRef=useRef<Promise<void>|null>(null);const tagModeActiveRef=useRef(false);const tagAcceptPendingRef=useRef(false);const tagStopRef=useRef<(options?:{discard?:boolean})=>Promise<RegistrationArtifact|null>>(async()=>null);const tagGeometryEpoch=useRef(0);const tagLiveRef=useRef(new LiveTagTracker());const tagManualOffRef=useRef(false);const tagStatsRef=useRef({frames:0,busy:0,detections:0,poses:0,posesRejected:0,decodeMs:[] as number[],workerMs:[] as number[],fullPasses:0,coarsePasses:0,lastLogMs:0});const tagConfirmedKeyRef=useRef('');const tagPoseLoggedRef=useRef<Record<number,number>>({});
   const scanIntentRef=useRef<ScanStartIntent>(scanIntent);const baseScanFrameIdRef=useRef<string|null>(baseScanFrameId);baseScanFrameIdRef.current=baseScanFrameId;
-  const onTagRegistrationResultRef=useRef(onTagRegistrationResult);const sessionTagResultRef=useRef<RegistrationArtifact|null>(null);const tagSessionToken=useRef(0);
+  const onTagRegistrationResultRef=useRef(onTagRegistrationResult);const onTagAnchorsRef=useRef(onTagAnchors);onTagAnchorsRef.current=onTagAnchors;const sessionTagResultRef=useRef<RegistrationArtifact|null>(null);const tagSessionToken=useRef(0);
   const[staleRegistrationReason,setStaleRegistrationReason]=useState<RegistrationInapplicableReason|null>(null);
   const tagMountedRef=useRef(true);const tagTargetRef=useRef({objectId,sessionId});tagTargetRef.current={objectId,sessionId};const previousTagTargetRef=useRef({objectId,sessionId});
   const bleMountedRef=useRef(true);const bleIntentRef=useRef(0);
@@ -234,8 +237,11 @@ export function XrRuntimePanel({
     if(!tagMountedRef.current||options.discard===true)return null;
     const fusion=fuseTagObservations(tagObservationsRef.current.getObservations(),{minObservations:5,minIndependentViews:3});
     tagObservationsRef.current.recordOutliers(fusion.rejectedCount);setTagFusion(fusion);tagLiveRef.current.setConfirmed(confirmedTagIds(fusion));
+    onTagAnchorsRef.current?.(tagSensorAnchorsFromFusion(fusion));
     const bound=tagGeometryRef.current;
     /* Live recognition needs no recording. Registration does: without frozen geometry for this scan target the observations are kept in memory only, and that is not an operator-facing error. */
+    /* Live recognition needs no recording; registration does. Without frozen geometry for this scan target nothing is registered or persisted here (the
+       registration contract requires a geometry generation). The tags confirmed during the scan still reach the result view through onTagAnchors above. */
     if(bound===null||bound.objectId!==objectId||bound.sessionId!==sessionId){clientDiagnostics.info('XR_TAG_REGISTRATION_SKIPPED',{reason:'no_localization_geometry',confirmed:confirmedTagIds(fusion).join(','),observations:tagObservationsRef.current.retainedCount});void clientDiagnostics.flush();return null;}
     clientDiagnostics.info('XR_TAG_OBSERVATION_STORE_FINALIZED',{retained:tagObservationsRef.current.retainedCount,rejected:tagObservationsRef.current.rejectedCount,outliers:tagObservationsRef.current.outlierCount,evicted:tagObservationsRef.current.evictedCount});void clientDiagnostics.flush();
     const result=registerSensorToScan({tags:fusion.byTagId,geometry:bound.geometry,geometryComputedAtMs:bound.geometryComputedAtMs});
@@ -253,7 +259,7 @@ export function XrRuntimePanel({
     const captureError=runtime.setTagCaptureEnabled(true);if(captureError!==null){setTagModeError(captureError);return;}
     const client=new TagDetectorClient();
     if(!client.workerBacked){client.dispose();runtime.setTagCaptureEnabled(false);setTagModeError('AprilTag detector worker could not start.');return;}
-    tagObservationsRef.current.clear();tagLiveRef.current.reset();tagStatsRef.current={frames:0,busy:0,detections:0,poses:0,posesRejected:0,decodeMs:[],workerMs:[],fullPasses:0,lastLogMs:performance.now()};tagConfirmedKeyRef.current='';tagPoseLoggedRef.current={};tagAcceptPendingRef.current=false;setTagFusion({byTagId:{},rejectedCount:0});setTagNotices([]);tagConfirmedRef.current=[];setTagRegistrationLabel(null);setTagModeError(null);
+    tagObservationsRef.current.clear();tagLiveRef.current.reset();tagStatsRef.current={frames:0,busy:0,detections:0,poses:0,posesRejected:0,decodeMs:[],workerMs:[],fullPasses:0,coarsePasses:0,lastLogMs:performance.now()};tagConfirmedKeyRef.current='';tagPoseLoggedRef.current={};tagAcceptPendingRef.current=false;setTagFusion({byTagId:{},rejectedCount:0});setTagNotices([]);tagConfirmedRef.current=[];setTagRegistrationLabel(null);setTagModeError(null);
     clientDiagnostics.info('XR_TAG_LIVE_START',{recording:objectId!==null&&sessionId!==null,geometryBound:tagGeometryRef.current!==null});
     const token=++tagSessionToken.current;
     tagClientRef.current=client;tagModeActiveRef.current=true;setTagModeEnabled(true);
@@ -266,7 +272,7 @@ export function XrRuntimePanel({
       const task=client.detect(frame).then((detected)=>{
         if(detected===null||(!tagModeActiveRef.current&&!tagAcceptPendingRef.current)||tagSessionToken.current!==token||!tagMountedRef.current)return;
         const nowMs=performance.now();stats.decodeMs.push(nowMs-decodeStartedMs);if(stats.decodeMs.length>120)stats.decodeMs.shift();
-        if(detected.workerMs!==undefined){stats.workerMs.push(detected.workerMs);if(stats.workerMs.length>120)stats.workerMs.shift();}if(detected.pass==='full')stats.fullPasses+=1;
+        if(detected.workerMs!==undefined){stats.workerMs.push(detected.workerMs);if(stats.workerMs.length>120)stats.workerMs.shift();}if(detected.pass==='full')stats.fullPasses+=1;else if(detected.pass==='coarse')stats.coarsePasses+=1;
         for(const detection of detected.detections){
           const size=defaultRegistrationTagSizes()[String(detection.tagId) as '0'|'1'|'2'|'3'|'4'];
           const pose=estimateTagPose({corners:detection.corners,projectionMatrix:detected.projectionMatrix,worldFromView:detected.worldFromView,tagSizeM:size,capturedAtMs:detected.capturedAtMs,cameraPosition:detected.cameraPosition,cameraForward:detected.cameraForward});
@@ -279,7 +285,7 @@ export function XrRuntimePanel({
         }
         if(nowMs-stats.lastLogMs>=5000){
           const sorted=[...stats.decodeMs].sort((a,b)=>a-b);const pick=(q:number)=>sorted.length===0?null:Math.round(sorted[Math.min(sorted.length-1,Math.ceil(q*sorted.length)-1)]);const sortedWorker=[...stats.workerMs].sort((a,b)=>a-b);const pickWorker=(q:number)=>sortedWorker.length===0?null:Math.round(sortedWorker[Math.min(sortedWorker.length-1,Math.ceil(q*sortedWorker.length)-1)]);
-          clientDiagnostics.info('XR_TAG_STATS',{frames:stats.frames,busyDrops:stats.busy,detections:stats.detections,poses:stats.poses,posesRejected:stats.posesRejected,decodeP50:pick(0.5),decodeP95:pick(0.95),workerP50:pickWorker(0.5),workerP95:pickWorker(0.95),fullPasses:stats.fullPasses,outliers:tagLiveRef.current.outliersRejected,live:tagLiveRef.current.states().map((state)=>`${state.node}:${state.status}`).join(',')});
+          clientDiagnostics.info('XR_TAG_STATS',{frames:stats.frames,busyDrops:stats.busy,detections:stats.detections,poses:stats.poses,posesRejected:stats.posesRejected,decodeP50:pick(0.5),decodeP95:pick(0.95),workerP50:pickWorker(0.5),workerP95:pickWorker(0.95),fullPasses:stats.fullPasses,coarsePasses:stats.coarsePasses,outliers:tagLiveRef.current.outliersRejected,live:tagLiveRef.current.states().map((state)=>`${state.node}:${state.status}`).join(',')});
           stats.lastLogMs=nowMs;
         }
         if(detected.detections.length===0)return;
