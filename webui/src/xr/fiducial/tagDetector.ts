@@ -68,18 +68,33 @@ export function detectAprilTags(width: number, height: number, rgba: Uint8Array)
   return collectDetections(markers, (x, y) => [x, y], TAG_DETECTOR_MIN_EDGE_PX, width, height, rgba);
 }
 
-/** Half-size RGBA by 2x2 averaging; a low-image pixel index i covers full pixels 2i and 2i+1 (centre 2i + 0.5). */
-function downscaleHalf(width: number, height: number, rgba: Uint8Array): { width: number; height: number; rgba: Uint8Array } {
-  const w = width >> 1; const h = height >> 1;
+/** RGBA reduced by an integer factor (2 or 4) with box averaging; a low-image pixel index i covers full pixels f*i .. f*i+f-1 (centre f*i + (f-1)/2). */
+function downscale(width: number, height: number, rgba: Uint8Array, factor: 2 | 4): { width: number; height: number; rgba: Uint8Array } {
+  const w = Math.floor(width / factor); const h = Math.floor(height / factor);
   const out = new Uint8Array(w * h * 4);
+  const shift = factor === 2 ? 2 : 4; // log2(factor * factor)
+  if (factor === 2) { // the hot path of every frame: unrolled
+    for (let y = 0; y < h; y += 1) {
+      const top = (2 * y) * width * 4; const bottom = top + width * 4;
+      for (let x = 0; x < w; x += 1) {
+        const a = top + 8 * x; const b = bottom + 8 * x; const o = (y * w + x) * 4;
+        out[o] = (rgba[a] + rgba[a + 4] + rgba[b] + rgba[b + 4]) >> 2;
+        out[o + 1] = (rgba[a + 1] + rgba[a + 5] + rgba[b + 1] + rgba[b + 5]) >> 2;
+        out[o + 2] = (rgba[a + 2] + rgba[a + 6] + rgba[b + 2] + rgba[b + 6]) >> 2;
+        out[o + 3] = 255;
+      }
+    }
+    return { width: w, height: h, rgba: out };
+  }
   for (let y = 0; y < h; y += 1) {
-    const top = (2 * y) * width * 4; const bottom = top + width * 4;
     for (let x = 0; x < w; x += 1) {
-      const a = top + 8 * x; const b = bottom + 8 * x; const o = (y * w + x) * 4;
-      out[o] = (rgba[a] + rgba[a + 4] + rgba[b] + rgba[b + 4]) >> 2;
-      out[o + 1] = (rgba[a + 1] + rgba[a + 5] + rgba[b + 1] + rgba[b + 5]) >> 2;
-      out[o + 2] = (rgba[a + 2] + rgba[a + 6] + rgba[b + 2] + rgba[b + 6]) >> 2;
-      out[o + 3] = 255;
+      let r = 0; let g = 0; let b = 0;
+      for (let dy = 0; dy < factor; dy += 1) {
+        const row = ((y * factor + dy) * width + x * factor) * 4;
+        for (let dx = 0; dx < factor; dx += 1) { const o = row + dx * 4; r += rgba[o]; g += rgba[o + 1]; b += rgba[o + 2]; }
+      }
+      const o = (y * w + x) * 4;
+      out[o] = r >> shift; out[o + 1] = g >> shift; out[o + 2] = b >> shift; out[o + 3] = 255;
     }
   }
   return { width: w, height: h, rgba: out };
@@ -87,24 +102,46 @@ function downscaleHalf(width: number, height: number, rgba: Uint8Array): { width
 
 /**
  * Fast pass: decode on a half-size image (about a quarter of the work), then refine the corners on the FULL-resolution frame,
- * so accuracy stays subpixel. Tags with a full-resolution edge under about 2 x TAG_DETECTOR_MIN_EDGE_PX are not decodable at
- * half size; that is what the periodic full pass (chooseDetectionPass) is for.
+ * so accuracy stays subpixel. Averaging 2x2 also halves the image noise: on a dim, noisy frame it finds tags the full-resolution
+ * pass cannot (measured: brightness x0.35, noise +-14: full 0/6, fast 6/6). Tags with a full-resolution edge under about
+ * 2 x TAG_DETECTOR_MIN_EDGE_PX are not decodable at half size; the periodic full pass covers those.
  */
 export function detectAprilTagsFast(width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
   if (width < 16 || height < 16 || rgba.length < width * height * 4) return [];
-  const low = downscaleHalf(width, height, rgba);
+  const low = downscale(width, height, rgba, 2);
   const markers = detector().detectImage(low.width, low.height, low.rgba);
   return collectDetections(markers, (x, y) => [2 * x + 0.5, 2 * y + 0.5], TAG_DETECTOR_MIN_EDGE_PX / 2, width, height, rgba);
 }
 
+/**
+ * Coarse pass: a quarter-size image, 1/16 of the work. The noise is cut a further 2x, which rescues very dark frames the other passes
+ * lose (measured on a 64 px tag: brightness x0.25, noise +-22: fast 1/6, coarse 5/6; x0.15: fast 0/6, coarse 4/6). It only reaches tags
+ * with a full-resolution edge of roughly 48 px or more, so it is a fallback after the fast pass, not a replacement for it.
+ */
+export function detectAprilTagsCoarse(width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
+  if (width < 32 || height < 32 || rgba.length < width * height * 4) return [];
+  const low = downscale(width, height, rgba, 4);
+  const markers = detector().detectImage(low.width, low.height, low.rgba);
+  return collectDetections(markers, (x, y) => [4 * x + 1.5, 4 * y + 1.5], TAG_DETECTOR_MIN_EDGE_PX / 4, width, height, rgba);
+}
+
 export type DetectionPass = 'full' | 'fast';
+/** What actually produced a result: a 'fast' request falls back to the coarse pass when the half-size image shows nothing. */
+export type DetectionPassUsed = 'full' | 'fast' | 'coarse';
 /** A full pass every Nth frame (and the first), so a far or small tag is never missed for long. */
 export const TAG_FULL_PASS_EVERY = 4;
 export function chooseDetectionPass(frameIndex: number, fullEvery: number = TAG_FULL_PASS_EVERY): DetectionPass {
   return frameIndex % fullEvery === 0 ? 'full' : 'fast';
 }
+export function detectAprilTagsPassDetailed(pass: DetectionPass, width: number, height: number, rgba: Uint8Array): { detections: DetectedAprilTag[]; used: DetectionPassUsed } {
+  if (pass === 'full') return { detections: detectAprilTags(width, height, rgba), used: 'full' };
+  const fast = detectAprilTagsFast(width, height, rgba);
+  if (fast.length > 0) return { detections: fast, used: 'fast' };
+  const coarse = detectAprilTagsCoarse(width, height, rgba);
+  return coarse.length > 0 ? { detections: coarse, used: 'coarse' } : { detections: fast, used: 'fast' };
+}
 export function detectAprilTagsPass(pass: DetectionPass, width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
-  return pass === 'full' ? detectAprilTags(width, height, rgba) : detectAprilTagsFast(width, height, rgba);
+  return detectAprilTagsPassDetailed(pass, width, height, rgba).detections;
 }
 
 function quadArea(corners: DetectedAprilTag['corners']): number {

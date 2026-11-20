@@ -24,11 +24,11 @@ export interface DetectedAprilTagFrame {
   projectionMatrix: Float32Array;
   worldFromView: Float32Array;
   /** Which detector pass produced this result, and the Worker's own compute time (excludes queueing and transfer). */
-  pass?: 'full' | 'fast';
+  pass?: 'full' | 'fast' | 'coarse';
   workerMs?: number;
 }
 
-type WorkerResult = { type: 'result'; requestId: number; epoch: number; detections: DetectedAprilTag[]; pass?: 'full' | 'fast'; workerMs?: number };
+type WorkerResult = { type: 'result'; requestId: number; epoch: number; detections: DetectedAprilTag[]; pass?: 'full' | 'fast' | 'coarse'; workerMs?: number };
 type WorkerLike = Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>;
 interface Pending {
   epoch: number; width: number; height: number; capturedAtMs: number;

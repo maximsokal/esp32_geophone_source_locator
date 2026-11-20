@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { chooseDetectionPass, detectAprilTagsPass } from './tagDetector';
+import { chooseDetectionPass, detectAprilTagsPassDetailed } from './tagDetector';
 
 interface ResetMessage { type: 'reset'; epoch: number; }
 interface DetectMessage {
@@ -14,10 +14,10 @@ self.addEventListener('message', (event: MessageEvent<TagWorkerRequest>) => {
   const request = event.data;
   if (request.type === 'reset') { activeEpoch = request.epoch; frameIndex = 0; return; }
   if (request.epoch !== activeEpoch) return;
-  const pass = chooseDetectionPass(frameIndex);
+  const requested = chooseDetectionPass(frameIndex);
   frameIndex += 1;
   const started = performance.now();
-  const detections = detectAprilTagsPass(pass, request.width, request.height, request.rgba);
+  const { detections, used: pass } = detectAprilTagsPassDetailed(requested, request.width, request.height, request.rgba);
   const workerMs = performance.now() - started;
   if (request.epoch === activeEpoch) self.postMessage({
     type: 'result', requestId: request.requestId, epoch: request.epoch,
