@@ -205,6 +205,7 @@ export const i18nKeys = [
   "console.api_error",
   "console.api_link",
   "console.back_object",
+  "console.continue_recording",
   "console.error.acquisition_unavailable",
   "console.error.cache_timeout",
   "console.error.geolocation_unsupported",

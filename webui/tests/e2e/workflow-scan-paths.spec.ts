@@ -152,6 +152,9 @@ for (const locale of ['en', 'uk'] as const) {
       await expect.poll(() => journeyXrState(page)).toEqual({ requests: 2, active: true });
       await driveJourneyXr(page);
       await page.locator('.xr-finish-button').click();
+      /* After Finish the operator stays on the result and continues with the button (they are not thrown to the recording page). */
+      await expect(page.locator('.console-floating-back')).toHaveText(t['console.continue_recording']);
+      await page.locator('.console-floating-back').click();
       await expect(page.locator('.workflow-page h2')).toHaveText(t['workflow.title.record_ready']);
       expect(device.commands).toEqual(['SCAN_START', 'BACK', 'SCAN_START', 'SCAN_COMPLETE']);
       expect(device.uploads.filter(upload => upload.kind === 'scan')).toHaveLength(1);
@@ -168,6 +171,9 @@ for (const locale of ['en', 'uk'] as const) {
       await expect.poll(() => journeyXrState(page)).toEqual({ requests: 1, active: true });
       await driveJourneyXr(page);
       await page.locator('.xr-finish-button').click();
+      /* After Finish the operator stays on the result and continues with the button (they are not thrown to the recording page). */
+      await expect(page.locator('.console-floating-back')).toHaveText(t['console.continue_recording']);
+      await page.locator('.console-floating-back').click();
       await expect(page.locator('.workflow-page h2')).toHaveText(t['workflow.title.record_ready']);
       const first = expectOccupancyOfLastScan(device.uploads);
 
@@ -178,6 +184,9 @@ for (const locale of ['en', 'uk'] as const) {
       await expect.poll(() => journeyXrState(page)).toEqual({ requests: 2, active: true });
       await driveFrames(page, 8, 24); /* another path through the room: another scan */
       await page.locator('.xr-finish-button').click();
+      /* After Finish the operator stays on the result and continues with the button (they are not thrown to the recording page). */
+      await expect(page.locator('.console-floating-back')).toHaveText(t['console.continue_recording']);
+      await page.locator('.console-floating-back').click();
       await expect(page.locator('.workflow-page h2')).toHaveText(t['workflow.title.record_ready']);
       const second = expectOccupancyOfLastScan(device.uploads);
       expect(second, 'the fresh scan is a new scan').not.toBe(first);
@@ -209,6 +218,9 @@ for (const locale of ['en', 'uk'] as const) {
 
       device.wifiDownForOccupancy = false;
       await retry.click();
+      /* The device is told as soon as the voxels are saved; the operator stays on the result and continues with the button. */
+      await expect(page.locator('.console-floating-back')).toHaveText(t['console.continue_recording']);
+      await page.locator('.console-floating-back').click();
       await expect(page.locator('.workflow-page h2')).toHaveText(t['workflow.title.record_ready']);
       expect(device.commands).toEqual(['SCAN_START', 'SCAN_COMPLETE']);
       expect(device.uploads.filter(upload => upload.kind === 'scan'), 'the retry does not upload the scan again').toHaveLength(1);

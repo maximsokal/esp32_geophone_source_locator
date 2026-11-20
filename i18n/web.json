@@ -854,6 +854,7 @@
     "calc.stack_below": { "en": " — below the {margin} safety margin", "uk": " — нижче безпечного запасу {margin}" },
     "console.loading_xr": { "en": "Loading WebXR scanner…", "uk": "Завантаження сканера WebXR…" },
     "console.back_object": { "en": "← Object", "uk": "← Об’єкт" },
+    "console.continue_recording": { "en": "Continue to recording →", "uk": "Продовжити до запису →" },
     "console.scanner.chunk_load_failed": { "en": "The scanner could not be loaded.", "uk": "Не вдалося завантажити сканер." },
     "console.scanner.reload_page": { "en": "Reload page", "uk": "Перезавантажити сторінку" },
     "console.api_connecting": { "en": "CONNECTING", "uk": "З’ЄДНАННЯ" },

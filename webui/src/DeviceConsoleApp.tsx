@@ -640,8 +640,9 @@ export default function DeviceConsoleApp() {
     }
   };
 
+  /* The device is told the scan is complete as soon as it is saved, but the operator stays on the result: the scan (and the sensors on
+     it) is what they want to look at. They continue to the recording page with the button, not by being thrown there. */
   const completeWorkflowScan = async (): Promise<void> => {
-    setScreen('workflow');
     const owner = requestOwnerRef.current;
     if (owner === null) return;
     try {
@@ -666,7 +667,7 @@ export default function DeviceConsoleApp() {
     const scannerObjectId = selectedId ?? objects?.active_id ?? null;
     return (
       <div className="scanner-feature-shell">
-        <button className="console-floating-back" onClick={() => { void returnToWorkflowFromScanner(); }}>{t('console.back_object')}</button>
+        <button className="console-floating-back" onClick={() => { void returnToWorkflowFromScanner(); }}>{scannerSessionId === null && status?.workflow?.step === 'RECORD_READY' ? t('console.continue_recording') : t('console.back_object')}</button>
         <StorageUnavailableBanner status={status} />
         <ScannerFeatureHost
           objectId={scannerObjectId}

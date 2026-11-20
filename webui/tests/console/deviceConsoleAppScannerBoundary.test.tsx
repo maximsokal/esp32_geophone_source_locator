@@ -283,8 +283,28 @@ describe('DeviceConsoleApp scanner chunk boundary', () => {
       command: 'SCAN_COMPLETE',
       generation: 61,
     });
+    /* The device is told the scan is complete, but the operator stays on the result and continues with the button. */
+    expect(renderer.root.findAllByType(WorkflowPanel)).toHaveLength(0);
+    expect(renderer.root.findByType(ScannerFeatureHost).props.status.workflow.step).toBe('RECORD_READY');
+    const floating = () => renderer.root.findAll((node) => node.props.className === 'console-floating-back')[0];
+    expect(textOf(floating())).toBe(translate('en', 'console.continue_recording'));
+    /* The device now reports the new step, as it would after SCAN_COMPLETE. */
+    api.fetchDeviceStatus.mockResolvedValue({ ...scanning, workflow: { ...scanning.workflow, step: 'RECORD_READY', generation: 62, allowed_actions: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'] } } as DeviceStatus);
+    await act(async () => { floating().props.onClick(); await settleReact(); await settleReact(); });
     expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('RECORD_READY');
     expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(62);
+  });
+
+  it('keeps the plain back label on the scanner while the scan is still running', async () => {
+    const browser = stubBrowser();
+    const scanning = {
+      ...deviceStatus(false), workflow: { step: 'SCANNING', generation: 7, allowed_actions: ['BACK'], object_id: 'OBJ_0001', session_id: null },
+    } as DeviceStatus;
+    api.fetchDeviceStatus.mockResolvedValue(scanning);
+    void browser;
+    const renderer = await mountConsole();
+    const floating = renderer.root.findAll((node) => node.props.className === 'console-floating-back')[0];
+    expect(textOf(floating)).toBe(translate('en', 'console.back_object'));
   });
 
   // Expected RED on old code: a rejected lazy import escapes the root instead of rendering an in-place failure.

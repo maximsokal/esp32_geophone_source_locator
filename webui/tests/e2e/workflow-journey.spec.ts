@@ -160,6 +160,8 @@ for (const locale of ['en', 'uk'] as const) {
           await driveJourneyXr(page);
           await scenarioScreenshot(page, `${locale}-primary-scanner-running`);
           await page.locator('.xr-finish-button').click();
+          await expect(page.locator('.console-floating-back')).toHaveText(t['console.continue_recording']);
+          await page.locator('.console-floating-back').click();
           await stage('RECORD_READY');
           expect((await journeyXrState(page)).active).toBe(false);
         } else await click('SCAN_SKIP', 'RECORD_READY');

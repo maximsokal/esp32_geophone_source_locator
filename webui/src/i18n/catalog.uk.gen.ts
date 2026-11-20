@@ -207,6 +207,7 @@ export const uk: Record<I18nKey, string> = {
   "console.api_error": "ПОМИЛКА API",
   "console.api_link": "ЗВ’ЯЗОК З ESP",
   "console.back_object": "← Об’єкт",
+  "console.continue_recording": "Продовжити до запису →",
   "console.error.acquisition_unavailable": "Збір даних недоступний: {detail}",
   "console.error.cache_timeout": "Кеш сховища не перейшов у стан спокою за {duration} мс.",
   "console.error.geolocation_unsupported": "Цей браузер не підтримує геолокацію.",

@@ -207,6 +207,7 @@ export const en: Record<I18nKey, string> = {
   "console.api_error": "API ERROR",
   "console.api_link": "ESP LINK",
   "console.back_object": "← Object",
+  "console.continue_recording": "Continue to recording →",
   "console.error.acquisition_unavailable": "Acquisition unavailable: {detail}",
   "console.error.cache_timeout": "Storage cache did not become idle within {duration} ms.",
   "console.error.geolocation_unsupported": "This browser does not support geolocation.",
