@@ -1985,6 +1985,222 @@ static void assert_recording_busy(
 }
 
 
+/* ------------------------------------------------------------------------------ kind=tags (tag-positions-v1.json) */
+
+static size_t make_tags_json(unsigned char *buffer, size_t capacity, const char *scan_id_json, const char *nodes)
+{
+    const int written = snprintf(
+        (char *)buffer, capacity,
+        "{\"schema\":1,\"kind\":\"tag_positions\",\"frame\":\"sensor_main_origin_z_up_mm\",\"scan_frame_id\":%s,\"created_at_ms\":1700000000000,"
+        "\"main_scan_position_mm\":[1000,2000,1000],\"weakest_main_triangle_height_mm\":250,\"nodes\":[%s]}",
+        scan_id_json,
+        nodes != NULL ? nodes :
+        "{\"node_id\":0,\"tag_id\":0,\"x_mm\":0,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":0,\"confirmed\":true,\"observations\":9,\"views\":4},"
+        "{\"node_id\":1,\"tag_id\":1,\"x_mm\":500,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":8,\"views\":4},"
+        "{\"node_id\":2,\"tag_id\":2,\"x_mm\":0,\"y_mm\":800,\"z_mm\":0,\"uncertainty_mm\":6,\"confirmed\":false,\"observations\":3,\"views\":2}");
+    assert(written > 0 && (size_t)written < capacity);
+    return (size_t)written;
+}
+
+static size_t make_tags_json_for(unsigned char *buffer, size_t capacity, const char *scan_id)
+{
+    char quoted[40];
+    assert(snprintf(quoted, sizeof(quoted), "\"%s\"", scan_id) > 0);
+    return make_tags_json(buffer, capacity, quoted, NULL);
+}
+
+static void test_tags_round_trip_is_json_bound_and_removed_with_its_scan(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {21U, 22U, 23U};
+    unsigned char tags[1024];
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const size_t tags_size = make_tags_json_for(tags, sizeof(tags), scan_id);
+    const char *tags_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json";
+    const char *tags_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json.tmp";
+    const char *tags_backup = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json.bak";
+    char response[1200] = {0};
+    bool handled = false;
+
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    assert(save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, tags_size));
+    assert(path_exists(tags_path));
+
+    httpd_req_t load = make_request("scan=load&kind=tags&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&load, &handled) == ESP_OK && handled);
+    assert(load.content_type != NULL && strcmp(load.content_type, "application/json; charset=utf-8") == 0);
+    assert(load.response_length == tags_size && memcmp(response, tags, tags_size) == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t info = make_request("scan=info&kind=tags&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+    char expected_bytes[32];
+    assert(snprintf(expected_bytes, sizeof(expected_bytes), "\"bytes\":%u", (unsigned)tags_size) > 0);
+    assert(strstr(response, "\"ok\":true") != NULL && strstr(response, expected_bytes) != NULL);
+
+    /* A tags delete removes just that file. */
+    memset(response, 0, sizeof(response));
+    httpd_req_t remove_tags = make_request("scan=delete&kind=tags&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&remove_tags, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL && !path_exists(tags_path));
+    memset(response, 0, sizeof(response));
+    info = make_request("scan=info&kind=tags&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+    assert(strstr(response, "ESP_ERR_NOT_FOUND") != NULL);
+
+    /* Deleting the scan removes its tag positions with the rest of what hangs on it (and any leftover temp/backup). */
+    assert(save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, tags_size));
+    write_bytes(tags_temp, tags, tags_size);
+    write_bytes(tags_backup, tags, tags_size);
+    assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
+    assert(!path_exists(tags_path) && !path_exists(tags_temp) && !path_exists(tags_backup));
+    remove_layout();
+}
+
+static void test_tags_must_name_the_current_scan_and_keep_the_contract(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {31U, 32U, 33U};
+    static const unsigned char other_scan[] = {41U, 42U};
+    unsigned char tags[1024];
+    char scan_id[20], other_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    make_scan_id(reference_crc32(other_scan, sizeof(other_scan)), other_id);
+    const char *tags_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json";
+    char response[512] = {0};
+    bool handled = false;
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+
+    /* Unbound (the phone did not know the scan): refused like an unbound registration. */
+    size_t size = make_tags_json(tags, sizeof(tags), "null", NULL);
+    httpd_req_t unbound = make_request("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, size, response, sizeof(response));
+    assert(web_scan_store_try_handle(&unbound, &handled) == ESP_OK && handled);
+    assert(unbound.response_status != NULL && strcmp(unbound.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "registration_unbound") != NULL && !path_exists(tags_path));
+
+    /* Bound to another scan (a late upload for a replaced scan): refused, nothing stored. */
+    size = make_tags_json_for(tags, sizeof(tags), other_id);
+    memset(response, 0, sizeof(response));
+    httpd_req_t stale = make_request("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, size, response, sizeof(response));
+    assert(web_scan_store_try_handle(&stale, &handled) == ESP_OK && handled);
+    assert(stale.response_status != NULL && strcmp(stale.response_status, "409 Conflict") == 0);
+    assert(!path_exists(tags_path));
+
+    /* Valid JSON that breaks the contract the localization reads it under is refused to the phone, not stored to be ignored later. */
+    static const char *const broken[] = {
+        "{\"node_id\":0,\"tag_id\":0,\"x_mm\":1,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":0,\"confirmed\":true,\"observations\":1,\"views\":1},"
+            "{\"node_id\":1,\"tag_id\":1,\"x_mm\":500,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":1,\"views\":1},"
+            "{\"node_id\":2,\"tag_id\":2,\"x_mm\":0,\"y_mm\":800,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":1,\"views\":1}",   /* MAIN off the origin */
+        "{\"node_id\":0,\"tag_id\":0,\"x_mm\":0,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":0,\"confirmed\":true,\"observations\":1,\"views\":1},"
+            "{\"node_id\":1,\"tag_id\":1,\"x_mm\":500,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":1,\"views\":1}",   /* two nodes only */
+        "{\"node_id\":0,\"tag_id\":0,\"x_mm\":0,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":0,\"confirmed\":true,\"observations\":1,\"views\":1},"
+            "{\"node_id\":1,\"tag_id\":3,\"x_mm\":500,\"y_mm\":0,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":1,\"views\":1},"
+            "{\"node_id\":2,\"tag_id\":2,\"x_mm\":0,\"y_mm\":800,\"z_mm\":0,\"uncertainty_mm\":5,\"confirmed\":true,\"observations\":1,\"views\":1}",   /* tag of another node */
+    };
+    char quoted[40];
+    assert(snprintf(quoted, sizeof(quoted), "\"%s\"", scan_id) > 0);
+    for (size_t i = 0U; i < sizeof(broken) / sizeof(broken[0]); ++i) {
+        size = make_tags_json(tags, sizeof(tags), quoted, broken[i]);
+        assert(!save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, size));
+        assert(!path_exists(tags_path));
+    }
+    /* Not JSON at all, and a JSON text without the contract's own keys. */
+    static const unsigned char junk[] = "not json";
+    assert(!save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", junk, sizeof(junk) - 1U));
+    static const unsigned char thin[] = "{\"schema\":1}";
+    assert(!save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", thin, sizeof(thin) - 1U));
+    assert(!path_exists(tags_path));
+
+    /* The contract's size limit is 4096 bytes. */
+    static unsigned char oversized[4097] = {0U};
+    memset(response, 0, sizeof(response));
+    httpd_req_t too_large = make_request("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", oversized, sizeof(oversized), response, sizeof(response));
+    assert(web_scan_store_try_handle(&too_large, &handled) == ESP_OK && handled);
+    assert(too_large.response_status != NULL && strcmp(too_large.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+
+    /* And a valid, bound file is accepted after all that. */
+    size = make_tags_json_for(tags, sizeof(tags), scan_id);
+    assert(save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, size));
+    assert(path_exists(tags_path));
+    remove_layout();
+}
+
+static void test_a_replaced_scan_takes_its_tag_positions_with_it(void)
+{
+    make_layout();
+    static const unsigned char scan_a[] = {51U, 52U, 53U};
+    static const unsigned char scan_b[] = {61U, 62U, 63U, 64U};
+    unsigned char tags[1024];
+    char id_a[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), id_a);
+    const size_t size = make_tags_json_for(tags, sizeof(tags), id_a);
+    const char *tags_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json";
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    assert(save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001", tags, size));
+    assert(path_exists(tags_path));
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_b, sizeof(scan_b)));
+    assert(!path_exists(tags_path));       /* positions seen in the old scan are not carried into the new one */
+    remove_layout();
+}
+
+static void test_tags_follow_the_staging_and_recording_rules_of_the_registration(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {71U, 72U, 73U};
+    unsigned char tags[1024];
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const size_t size = make_tags_json_for(tags, sizeof(tags), scan_id);
+    char response[512] = {0};
+    bool handled = false;
+
+    /* Staging: stored beside the staged scan and cleared with it when the object changes. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=staging", scan, sizeof(scan)));
+    assert(save_kind("scan=save&kind=tags&object_id=OBJ_0001&session_id=staging", tags, size));
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+    assert(web_scan_paths("OBJ_0001", "staging", &WEB_SCAN_KIND_TAGS, final_path, temp_path, backup_path) == ESP_OK);
+    assert(path_exists(final_path));
+    assert(web_scan_store_clear_staging("OBJ_0001") == ESP_OK);
+    assert(!path_exists(final_path) && !path_exists(temp_path) && !path_exists(backup_path));
+
+    /* A session that is recording does not take new tag positions (staging is exempt, another session is not affected). */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+    s_recorder_snapshot.running = true;
+    (void)snprintf(s_recorder_snapshot.object_id, sizeof(s_recorder_snapshot.object_id), "OBJ_0001");
+    (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000001");
+    const char *query = "scan=save&kind=tags&object_id=OBJ_0001&session_id=S000001";
+    httpd_req_t save = make_request(query, tags, size, response, sizeof(response));
+    assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
+    assert(save.response_status != NULL && strcmp(save.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "this session is recording") != NULL);
+    memset(response, 0, sizeof(response));
+    httpd_req_t remove_request = make_request("scan=delete&kind=tags&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&remove_request, &handled) == ESP_OK && handled);
+    assert(remove_request.response_status != NULL && strcmp(remove_request.response_status, "409 Conflict") == 0);
+    s_recorder_snapshot.running = false;
+    storage_bulk_admission_exit_protected();
+    assert(save_kind(query, tags, size));
+    remove_layout();
+}
+
+static void test_unknown_kind_is_still_refused(void)
+{
+    make_layout();
+    char response[512] = {0};
+    bool handled = false;
+    httpd_req_t request = make_request("scan=info&kind=tag&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    memset(response, 0, sizeof(response));
+    request = make_request("scan=info&kind=tagsx&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    remove_layout();
+}
+
 static void test_recording_admission_truth_table(void)
 {
     make_layout();
@@ -2447,6 +2663,11 @@ int main(void)
     test_identity_cache_publish_preserves_replacement();
     test_registration_unbound_is_rejected();
     test_registration_round_trip_bounds_and_session_validation();
+    test_tags_round_trip_is_json_bound_and_removed_with_its_scan();
+    test_tags_must_name_the_current_scan_and_keep_the_contract();
+    test_a_replaced_scan_takes_its_tag_positions_with_it();
+    test_tags_follow_the_staging_and_recording_rules_of_the_registration();
+    test_unknown_kind_is_still_refused();
     test_recording_admission_truth_table();
     test_mid_transfer_admission_aborts_save_and_preserves_final();
     test_mid_transfer_preview_admission_abort_preserves_final();

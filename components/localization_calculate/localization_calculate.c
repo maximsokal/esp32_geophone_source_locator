@@ -2236,7 +2236,27 @@ esp_err_t localization_calculate_run(
         const char *registration_reason = scan_identity_matches
             ? scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)
             : NULL;
+        /*
+         * The tag layout is expressed in the sensor frame (MAIN at the origin, Z up) like the Channel Sounding one, but its
+         * orientation comes from the scan's vertical and azimuth, so it maps onto the scan by translation alone: MAIN's
+         * position in the scan. Without a readable layout the stored (Channel Sounding) transform would be wrong for these
+         * points, so the constraint is not applied.
+         */
+        seismic_recorder_tag_layout_t tag_layout;
+        memset(&tag_layout, 0, sizeof(tag_layout));
+        if (scan_identity_matches && registration_reason == NULL &&
+            geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT &&
+            !(seismic_recorder_read_session_tag_layout(object_id, session_id, &tag_layout) == ESP_OK && tag_layout.available)) {
+            registration_reason = "tag_layout_unavailable";
+        }
         const bool usable = scan_identity_matches && registration_reason == NULL;
+        if (usable && geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT) {
+            double translation[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+            translation[3] = (double)tag_layout.main_scan_mm[0] / 1000.0;
+            translation[7] = (double)tag_layout.main_scan_mm[1] / 1000.0;
+            translation[11] = (double)tag_layout.main_scan_mm[2] / 1000.0;
+            memcpy(occupancy.registration.sensor_to_scan, translation, sizeof(translation));
+        }
         if (usable && geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED) {
             /*
              * The registered AprilTag centres are already positions in the scan's project frame (Z up): the sensor ->

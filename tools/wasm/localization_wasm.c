@@ -67,6 +67,15 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
     return ESP_OK;
 }
 
+/* The tag layout the localization may read beside the geometry: none in this fixture. */
+esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
+{
+    (void)object_id;
+    (void)session_id;
+    if (layout != NULL) memset(layout, 0, sizeof(*layout));
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t seismic_recorder_read_session_range_ex(
     const char *object_id, const char *session_id, uint64_t start_index, size_t max_frames, seismic_frame_t *frames,
     uint64_t *source_sample_indices, bool *gap_before, size_t *frame_count_out,

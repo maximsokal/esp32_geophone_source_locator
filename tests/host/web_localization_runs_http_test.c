@@ -147,6 +147,7 @@ esp_err_t seismic_recorder_read_session_geometry(
 
 
 static bool s_registered_positions;
+static bool s_tag_layout_positions;
 static unsigned s_localization_geometry_calls;
 
 /* The geometry the localization of this session worked with: the frozen layout, or the registered tag centres. */
@@ -169,6 +170,11 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
         geometry->pods[1].x_mm = -4100;
         geometry->pods[1].y_mm = 2200;
         if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+    }
+    if (err == ESP_OK && s_tag_layout_positions) {
+        geometry->pods[0].x_mm = 510; /* sensor-frame tag positions, MAIN at the origin */
+        geometry->pods[0].y_mm = 20;
+        if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT;
     }
     return err;
 }
@@ -838,6 +844,27 @@ static void test_response_geometry_is_the_localization_geometry_with_its_source(
     assert(strstr(response, "apriltag_center_approx") == NULL);
 }
 
+/* A session localized from the phone's tag layout says so, in the listing and in the pod rows. */
+static void test_tag_layout_geometry_is_reported_as_its_own_source(void)
+{
+    reset_fakes();
+    s_tag_layout_positions = true;
+    s_participation.pods[0].node_id_known = true;
+    s_participation.pods[0].node_id = 1U;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "\"x_mm\":510,\"y_mm\":20") != NULL);
+    assert(strstr(response, "\"position_source\":\"apriltag_layout\"") != NULL);
+    assert(strstr(response, "apriltag_center_approx") == NULL);
+    s_tag_layout_positions = false;
+    reset_fakes();
+    memset(response, 0, sizeof(response));
+    request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "apriltag_layout") == NULL);
+}
+
 static void test_runs_listing_requires_both_query_parameters(void)
 {
     reset_fakes();
@@ -1277,6 +1304,7 @@ int main(void)
     test_unknown_provenance_is_omitted_and_source_age_is_null();
     test_remote_only_session_reports_topology_anchor_and_tag();
     test_response_geometry_is_the_localization_geometry_with_its_source();
+    test_tag_layout_geometry_is_reported_as_its_own_source();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_absent_picks_directory_is_empty_without_partial_error();

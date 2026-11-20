@@ -471,3 +471,72 @@ esp_err_t seismic_recorder_geometry_apply_registered_positions(
     geometry->anchored = true;
     return ESP_OK;
 }
+
+
+esp_err_t seismic_recorder_geometry_apply_tag_layout(
+    const seismic_recorder_session_participation_t *participation,
+    const seismic_recorder_tag_layout_t *layout,
+    const object_store_geometry_t *cs_geometry,
+    object_store_geometry_t *out,
+    size_t *remote_count_out
+)
+{
+    if (participation == NULL || layout == NULL || cs_geometry == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
+    if (remote_count_out != NULL) *remote_count_out = 0U;
+    if (!layout->available || !layout->nodes[0].valid) return ESP_ERR_NOT_FOUND;
+
+    uint64_t identity_ms = 0U;
+    size_t cs_computed = 0U;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        if (!cs_geometry->pods[i].computed) continue;
+        ++cs_computed;
+        if (cs_geometry->pods[i].computed_at_ms > identity_ms) identity_ms = cs_geometry->pods[i].computed_at_ms;
+    }
+
+    object_store_geometry_t candidate = *cs_geometry;
+    size_t tagged = 0U;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        const unsigned node = (unsigned)(i + 1U);
+        const seismic_recorder_tag_node_t *tag = &layout->nodes[node];
+        const seismic_recorder_pod_participation_t *pod_info = &participation->pods[i];
+        const bool belongs = tag->valid && tag->node_id == node && tag->tag_id == node &&
+            pod_info->assigned && pod_info->node_id_known && pod_info->node_id == node;
+        object_store_pod_geometry_t *pod = &candidate.pods[i];
+        if (!belongs) {
+            /* No tag for this remote: it does not take part in a tag-layout computation (no mixing with Channel Sounding). */
+            const bool leveled = pod->leveled;
+            memset(pod, 0, sizeof(*pod));
+            pod->leveled = leveled;
+            continue;
+        }
+        pod->computed = true;
+        pod->x_mm = tag->x_mm;
+        pod->y_mm = tag->y_mm;
+        pod->z_mm = tag->z_mm;
+        pod->residual_mm = 0;
+        pod->uncertainty_mm = tag->uncertainty_mm;
+        pod->computed_at_ms = identity_ms;
+        ++tagged;
+    }
+    if (tagged < SEISMIC_RECORDER_TAG_LAYOUT_MIN_REMOTES) return ESP_ERR_NOT_FOUND;
+    if (tagged < cs_computed) return ESP_ERR_INVALID_SIZE;
+
+    /* Two sensors cannot share a place (MAIN is the origin and a sensor too): that is a mix-up of tags, not a layout. */
+    for (size_t a = 0U; a < OBJECT_STORE_POD_COUNT; ++a) {
+        if (!candidate.pods[a].computed) continue;
+        const double ox = candidate.pods[a].x_mm, oy = candidate.pods[a].y_mm, oz = candidate.pods[a].z_mm;
+        if (ox * ox + oy * oy + oz * oz < 100.0) return ESP_ERR_INVALID_ARG;
+        for (size_t b = a + 1U; b < OBJECT_STORE_POD_COUNT; ++b) {
+            if (!candidate.pods[b].computed) continue;
+            const double dx = ox - candidate.pods[b].x_mm;
+            const double dy = oy - candidate.pods[b].y_mm;
+            const double dz = oz - candidate.pods[b].z_mm;
+            if (dx * dx + dy * dy + dz * dz < 100.0) return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    candidate.anchored = true;
+    *out = candidate;
+    if (remote_count_out != NULL) *remote_count_out = tagged;
+    return ESP_OK;
+}

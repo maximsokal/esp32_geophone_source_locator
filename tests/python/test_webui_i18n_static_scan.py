@@ -59,7 +59,7 @@ def _included_source(path: Path) -> bool:
         path.suffix in {".tsx", ".ts"}
         and not name.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"))
         and ".gen." not in name
-        and not parts.intersection({"tests", "test", "__tests__", "dev", "debug"})
+        and not parts.intersection({"tests", "test", "__tests__", "dev", "debug", "tag-lab"})
         and not any(marker in name for marker in (".dev.", ".debug."))
     )
 

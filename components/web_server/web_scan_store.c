@@ -21,6 +21,7 @@
 #include "object_format.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "seismic_recorder_tag_layout.h"
 #include "scan_artifact_path.h"
 #include "storage_bulk_admission.h"
 #include "storage_manager.h"
@@ -77,6 +78,23 @@ static const web_scan_kind_t WEB_SCAN_KIND_REGISTRATION = {
     .max_bytes = WEB_REGISTRATION_MAX_BYTES,
     .label = "AprilTag registration",
 };
+
+/*
+ * The tag-derived sensor layout the phone computed (tag-positions-v1.json): a JSON file that names the scan it belongs to by `scan_frame_id`,
+ * like the registration, so it is committed, bound, replaced and removed the same way. Unlike the registration it is not tied to a
+ * localization geometry: it is an alternative layout stored beside the Channel Sounding one, never over it.
+ */
+static const web_scan_kind_t WEB_SCAN_KIND_TAGS = {
+    .file_name = SEISMIC_RECORDER_TAG_POSITIONS_FILE,
+    .max_bytes = SEISMIC_RECORDER_TAG_POSITIONS_MAX_BYTES,
+    .label = "AprilTag sensor positions",
+};
+
+/* The JSON kinds that name their scan: committed only when bound to the scan that is current. */
+static bool web_scan_kind_is_bound_json(const web_scan_kind_t *kind)
+{
+    return kind == &WEB_SCAN_KIND_REGISTRATION || kind == &WEB_SCAN_KIND_TAGS;
+}
 
 typedef struct
 {
@@ -945,6 +963,9 @@ static esp_err_t web_scan_commit_scan_temp(
         err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_PREVIEW);
     }
     if (err == ESP_OK) {
+        err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_TAGS);
+    }
+    if (err == ESP_OK) {
         err = web_scan_commit_temp_locked(
             final_path,
             temp_path,
@@ -1091,7 +1112,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
     if (
-        kind == &WEB_SCAN_KIND_REGISTRATION && !web_scan_session_is_staging(session_id) &&
+        web_scan_kind_is_bound_json(kind) && !web_scan_session_is_staging(session_id) &&
         web_scan_registration_session_is_recording(object_id, session_id)
     ) {
         return web_scan_send_registration_conflict(request);
@@ -1208,7 +1229,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     if (err == ESP_OK) {
         if (
             kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW ||
-            kind == &WEB_SCAN_KIND_REGISTRATION
+            web_scan_kind_is_bound_json(kind)
         ) {
             bool valid = false;
             bool registration_bound = false;
@@ -1237,7 +1258,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
                 }
                 generation_rejected = true;
             }
-            else if (err == ESP_OK && kind == &WEB_SCAN_KIND_REGISTRATION && !registration_bound) {
+            else if (err == ESP_OK && web_scan_kind_is_bound_json(kind) && !registration_bound) {
                 registration_unbound = true;
             }
             else if (err == ESP_OK) {
@@ -2041,20 +2062,25 @@ static esp_err_t web_scan_validate_artifact(
         return ESP_OK;
     }
 
-    if (kind == &WEB_SCAN_KIND_REGISTRATION) {
-        if (file_size == 0U || file_size > WEB_REGISTRATION_MAX_BYTES) return ESP_OK;
+    if (web_scan_kind_is_bound_json(kind)) {
+        if (file_size == 0U || file_size > kind->max_bytes) return ESP_OK;
         char *json = heap_caps_malloc(file_size + 1U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (json == NULL) return ESP_ERR_NO_MEM;
         esp_err_t err = web_scan_seek_file(file, 0U, storage_locked);
         if (err == ESP_OK) err = web_scan_read_bounded(file, (unsigned char *)json, file_size, storage_locked);
         uint32_t source_crc32 = 0U;
         bool registration_bound = false;
-        const bool parsed = err == ESP_OK && web_scan_parse_registration_json(
+        bool parsed = err == ESP_OK && web_scan_parse_registration_json(
             json,
             file_size,
             &source_crc32,
             &registration_bound
         );
+        /* The tag positions are held to the contract the localization reads them under: a file it would ignore is refused here, to the phone. */
+        if (parsed && kind == &WEB_SCAN_KIND_TAGS) {
+            seismic_recorder_tag_layout_t layout;
+            parsed = seismic_recorder_tag_layout_parse(json, &layout) == ESP_OK;
+        }
         free(json);
         if (err != ESP_OK) return err;
         *valid_out = parsed;
@@ -2113,7 +2139,7 @@ static esp_err_t web_scan_validate_uploaded_temp(
 {
     if (temp_path == NULL || kind == NULL || valid_out == NULL) return ESP_ERR_INVALID_ARG;
     *valid_out = false;
-    const bool registration = kind == &WEB_SCAN_KIND_REGISTRATION;
+    const bool registration = web_scan_kind_is_bound_json(kind);
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
     FILE *file = fopen(temp_path, "rb");
@@ -2205,7 +2231,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
 
     char size_header[24];
     (void)snprintf(size_header, sizeof(size_header), "%u", (unsigned)size);
-    httpd_resp_set_type(request, kind == &WEB_SCAN_KIND_REGISTRATION
+    httpd_resp_set_type(request, web_scan_kind_is_bound_json(kind)
         ? "application/json; charset=utf-8"
         : "application/octet-stream");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -2293,7 +2319,7 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
     if (
-        kind == &WEB_SCAN_KIND_REGISTRATION && !web_scan_session_is_staging(session_id) &&
+        web_scan_kind_is_bound_json(kind) && !web_scan_session_is_staging(session_id) &&
         web_scan_registration_session_is_recording(object_id, session_id)
     ) {
         return web_scan_send_registration_conflict(request);
@@ -2310,6 +2336,7 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
         /* Remove registration before the scan so a failed cascade cannot leave
          * a registration that a later scan could inherit. */
         err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_REGISTRATION);
+        if (err == ESP_OK) err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_TAGS);
         if (err == ESP_OK) {
             err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_OCCUPANCY);
         }
@@ -2449,6 +2476,7 @@ esp_err_t web_scan_store_clear_staging(const char *object_id)
         &WEB_SCAN_KIND_OCCUPANCY,
         &WEB_SCAN_KIND_PREVIEW,
         &WEB_SCAN_KIND_REGISTRATION,
+        &WEB_SCAN_KIND_TAGS,
     };
     for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
         char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
@@ -2501,6 +2529,8 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
             kind = &WEB_SCAN_KIND_PREVIEW;
         } else if (strcmp(kind_value, "registration") == 0) {
             kind = &WEB_SCAN_KIND_REGISTRATION;
+        } else if (strcmp(kind_value, "tags") == 0) {
+            kind = &WEB_SCAN_KIND_TAGS;
         } else if (strcmp(kind_value, "scan") != 0) {
             return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_INVALID_ARG, 0U);
         }

@@ -2382,6 +2382,8 @@
       "name": "web_scan_store_http",
       "sources": [
         "components/storage_manager/storage_bulk_admission.c",
+        "components/seismic_recorder/seismic_recorder_tag_layout.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/web_scan_store_http_test.c"
       ],
       "include_dirs": [
@@ -2391,8 +2393,10 @@
         "components/storage_manager/include",
         "components/app_config/include",
         "components/object_format/include",
+        "components/seismic_recorder/include",
         "components/web_server"
-      ]
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "scan_preview",

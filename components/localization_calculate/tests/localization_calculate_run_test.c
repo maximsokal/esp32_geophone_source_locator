@@ -116,6 +116,18 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
     return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
 }
 
+/* The tag layout the fake hands the localization (available = false: none stored). */
+static seismic_recorder_tag_layout_t g_fixture_tag_layout;
+
+esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
+{
+    (void)object_id;
+    (void)session_id;
+    if (layout == NULL) return ESP_ERR_INVALID_ARG;
+    *layout = g_fixture_tag_layout;
+    return g_fixture_tag_layout.available ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t seismic_recorder_get_session_summary(
     const char *object_id,
     const char *session_id,
@@ -2143,6 +2155,48 @@ static void test_apriltag_geometry_reads_voxels_without_a_second_transform(void)
 }
 
 /*
+ * Tag layout geometry: the tag positions are in the sensor frame, so they reach the scan by translation to MAIN's scan position
+ * ONLY. The occupancy's own registration (here a 10 m shift of the Channel Sounding layout) must not be applied to them, and
+ * without a readable layout the constraint is not applied rather than applied with the wrong transform.
+ */
+static void run_with_tag_layout(const char *session_id, bool layout_available, int32_t main_x_mm)
+{
+    memset(&g_fixture_tag_layout, 0, sizeof(g_fixture_tag_layout));
+    g_fixture_tag_layout.available = layout_available;
+    g_fixture_tag_layout.main_scan_mm[0] = main_x_mm;
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT;
+    run_with_void_block_registered(session_id, 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    memset(&g_fixture_tag_layout, 0, sizeof(g_fixture_tag_layout));
+}
+
+static void test_tag_layout_geometry_maps_onto_the_scan_by_main_translation(void)
+{
+    /* MAIN at the scan origin: the geometry coordinates ARE scan coordinates, the 10 m registration is ignored. */
+    run_with_tag_layout("S098073", true, 0);
+    const localization_run_record_t *free_run = find_record("traveltime_inversion");
+    const localization_run_record_t *scan_run = find_record("traveltime_scan_constrained");
+    assert(free_run != NULL && scan_run != NULL);
+    assert(free_run->solved && scan_run->solved && scan_run->scan_constraint_applied);
+    assert(in_void_block(&free_run->source_position, 0, 1, 0));
+    assert(!in_void_block(&scan_run->source_position, 0, 1, 0));
+
+    /* MAIN 10 m along X: the same geometry now lies outside the scanned voids, so the void no longer moves the solution. */
+    run_with_tag_layout("S098074", true, 10000);
+    free_run = find_record("traveltime_inversion");
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(free_run != NULL && scan_run != NULL);
+    assert(scan_run->scan_constraint_applied);
+    assert(in_void_block(&scan_run->source_position, 0, 1, 0) == in_void_block(&free_run->source_position, 0, 1, 0));
+
+    /* No readable layout: fail closed. */
+    run_with_tag_layout("S098075", false, 0);
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && !scan_run->scan_constraint_applied);
+    puts("  Tag layout geometry: scan transform is MAIN's translation only; no layout -> constraint not applied -- OK");
+}
+
+/*
  * The scan's voxels reach the math in a full run, not only its "applied" flag: a FREE (scanned empty) block over the
  * true source pushes every candidate-filtered method out of it, while the same block elsewhere leaves them where the
  * unconstrained search is. The earlier full-run scan test carried zero voxels.
@@ -2202,6 +2256,8 @@ int main(void)
     test_full_run_feeds_free_and_occupied_voxels_to_the_math();
 #elif SEARCH_SCENARIO == 5
     test_apriltag_geometry_reads_voxels_without_a_second_transform();
+#elif SEARCH_SCENARIO == 6
+    test_tag_layout_geometry_maps_onto_the_scan_by_main_translation();
 #endif
     free_fixture_frames();
     return 0;
@@ -2264,6 +2320,7 @@ int main(void)
     test_search_without_an_event_analyses_the_start();
     test_full_run_feeds_free_and_occupied_voxels_to_the_math();
     test_apriltag_geometry_reads_voxels_without_a_second_transform();
+    test_tag_layout_geometry_maps_onto_the_scan_by_main_translation();
 
     free_fixture_frames();
     puts("localization_calculate_run integration tests passed");

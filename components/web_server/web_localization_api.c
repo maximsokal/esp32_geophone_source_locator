@@ -456,7 +456,9 @@ static esp_err_t web_localization_export_meta_handler(
         cJSON_AddNumberToObject(root, "frames", (double)summary.samples_written) == NULL ||
         cJSON_AddNumberToObject(root, "format_version", (double)summary.format_version) == NULL ||
         cJSON_AddStringToObject(root, "geometry_source",
-            source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED ? "apriltag" : "channel_sounding") == NULL ||
+            source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED ? "apriltag"
+            : source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT ? "apriltag_layout"
+            : "channel_sounding") == NULL ||
         !web_localization_export_add_geometry(root, &geometry)) {
         cJSON_Delete(root);
         return httpd_resp_send_err(request, 500, "Out of memory");
@@ -865,6 +867,9 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             /* A pod placed from the registered tag centres says so, whatever the recording's own metadata recorded. */
             const bool registered_pod = geometry_available && geometry.anchored && geometry.pods[pod].computed &&
                 geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+            /* Placed from the phone's tag layout (the Channel Sounding/barometer values stay stored beside it, untouched). */
+            const bool layout_pod = geometry_available && geometry.pods[pod].computed &&
+                geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT;
             const size_t hardware_id_length =
                 pod_participation->hardware_id_length > SEISMIC_RECORDER_HARDWARE_ID_MAX
                     ? SEISMIC_RECORDER_HARDWARE_ID_MAX
@@ -897,6 +902,8 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
                 ",\"position_source\":\"%s\"",
                 registered_pod
                     ? "apriltag_center_approx"
+                    : layout_pod
+                    ? "apriltag_layout"
                     : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
                         ? "channel_sounding"
                         : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO

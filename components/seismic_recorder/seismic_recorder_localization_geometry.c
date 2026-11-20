@@ -87,6 +87,25 @@ esp_err_t seismic_recorder_registered_positions_parse(const char *json, seismic_
     return ESP_OK;
 }
 
+esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
+{
+    if (object_id == NULL || session_id == NULL || layout == NULL) return ESP_ERR_INVALID_ARG;
+    memset(layout, 0, sizeof(*layout));
+    char session_path[256];
+    char path[288];
+    esp_err_t err = seismic_recorder_fs_build_session_path(object_id, session_id, session_path, sizeof(session_path));
+    if (err == ESP_OK && snprintf(path, sizeof(path), "%s/%s", session_path, SEISMIC_RECORDER_TAG_POSITIONS_FILE) >= (int)sizeof(path)) {
+        err = ESP_ERR_INVALID_SIZE;
+    }
+    if (err != ESP_OK) return err;
+    char *text = malloc(SEISMIC_RECORDER_TAG_POSITIONS_MAX_BYTES + 1U);
+    if (text == NULL) return ESP_ERR_NO_MEM;
+    err = storage_manager_read_text(path, text, SEISMIC_RECORDER_TAG_POSITIONS_MAX_BYTES + 1U);
+    if (err == ESP_OK) err = seismic_recorder_tag_layout_parse(text, layout);
+    free(text);
+    return err;
+}
+
 static void note_status(esp_err_t *registered_status, esp_err_t value)
 {
     if (registered_status != NULL) *registered_status = value;
@@ -113,6 +132,21 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
     if (err != ESP_OK) {
         note_status(registered_status, err);
         return ESP_OK;
+    }
+
+    /*
+     * The phone's tag layout, if it has one for this session and it can be used in full (MAIN, at least three tagged remotes, not fewer than the
+     * Channel Sounding layout has): it is then the geometry of this computation, for every participating node. The stored Channel Sounding /
+     * barometer layout is not touched; if the layout cannot be used, the answer is exactly what it was before.
+     */
+    seismic_recorder_tag_layout_t tag_layout;
+    if (seismic_recorder_read_session_tag_layout(object_id, session_id, &tag_layout) == ESP_OK) {
+        object_store_geometry_t from_tags;
+        if (seismic_recorder_geometry_apply_tag_layout(&participation, &tag_layout, geometry, &from_tags, NULL) == ESP_OK) {
+            *geometry = from_tags;
+            if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT;
+            return ESP_OK;
+        }
     }
     if (!participation.geometry_provenance.available || !participation.geometry_provenance.anchor_known ||
         strcmp(participation.geometry_provenance.topology_mode, "remote_only") != 0) {

@@ -64,6 +64,13 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
     return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
 }
 
+esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
+{
+    (void)object_id; (void)session_id;
+    if (layout != NULL) memset(layout, 0, sizeof(*layout));
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t seismic_recorder_get_session_summary(
     const char *object_id,
     const char *session_id,

@@ -201,3 +201,25 @@ esp_err_t seismic_recorder_geometry_apply_registered_positions(
     const seismic_recorder_registered_positions_t *registered,
     object_store_geometry_t *geometry
 );
+
+/*
+ * The geometry of a localization built from the phone's tag layout, as an ALTERNATIVE to `cs_geometry` (which is only read, never changed).
+ * Only remotes that have a tag position AND are assigned to the session under that node id take part: a remote without a tag is not computed
+ * in this geometry, so one computation never mixes tag positions with Channel Sounding / barometer ones. The layout is used only if
+ *   - MAIN (node 0) is in it,
+ *   - at least SEISMIC_RECORDER_TAG_LAYOUT_MIN_REMOTES remotes are tagged (a localization needs three), and
+ *   - it covers at least as many remotes as `cs_geometry` does (a smaller set would lower the dimensionality of the result).
+ * `leveled` and `computed_at_ms` stay the sensors' state / the geometry's identity; `uncertainty_mm` is the tag's, `residual_mm` 0; the result is
+ * anchored (it has the scan's azimuth). On any refusal `out` is left untouched:
+ *  ESP_ERR_NOT_FOUND     no layout, no MAIN, or too few tagged remotes;
+ *  ESP_ERR_INVALID_SIZE  the layout covers fewer remotes than the Channel Sounding layout: that stays;
+ *  ESP_ERR_INVALID_ARG   NULL argument, or two sensors (MAIN included) closer than 10 mm - a tag mix-up, not a layout.
+ * `remote_count_out` (optional) receives the number of tagged remotes used.
+ */
+esp_err_t seismic_recorder_geometry_apply_tag_layout(
+    const seismic_recorder_session_participation_t *participation,
+    const seismic_recorder_tag_layout_t *layout,
+    const object_store_geometry_t *cs_geometry,
+    object_store_geometry_t *out,
+    size_t *remote_count_out
+);

@@ -531,16 +531,28 @@ esp_err_t seismic_recorder_read_session_participation(
 );
 
 
+#include "seismic_recorder_tag_layout.h"
+
+/* ESP_ERR_NOT_FOUND: the session has no tag layout; ESP_ERR_INVALID_RESPONSE: the file breaks the contract (nothing is partially accepted). */
+esp_err_t seismic_recorder_read_session_tag_layout(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_tag_layout_t *layout
+);
+
 typedef enum
 {
     SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING = 0,
     SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED,
+    /* The tag layout of the session: MAIN-origin sensor frame, tagged remotes only, translated to the scan by `main_scan_mm`. */
+    SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT,
 } seismic_recorder_localization_geometry_source_t;
 
 /*
- * The geometry a localization of this session works with: the frozen Channel Sounding layout, or - for a session recorded in
+ * The geometry a localization of this session works with: the tag layout when the phone saved one that covers enough remotes (see
+ * seismic_recorder_geometry_apply_tag_layout), else the frozen Channel Sounding layout, or - for a session recorded in
  * REMOTE_ONLY whose registration carries valid positions made for exactly that layout - the registered AprilTag-centre
- * positions. Any reason the positions cannot be used leaves the Channel Sounding layout and is reported in
+ * positions. One source for ALL participating nodes of a computation, never a mix; the stored Channel Sounding / barometer layout is untouched. Any reason the positions cannot be used leaves the Channel Sounding layout and is reported in
  * `registered_status` (may be NULL); only a failure to read the layout itself is an error. See
  * seismic_recorder_localization_geometry.h for the registration block.
  */
