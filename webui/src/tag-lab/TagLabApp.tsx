@@ -71,6 +71,7 @@ export function TagLabApp() {
   const teardown = useCallback(async (reason: string) => {
     unsubscribeRef.current?.(); unsubscribeRef.current = null;
     sourceRef.current?.stop(); sourceRef.current = null;
+    pipelineRef.current?.close();
     clientRef.current?.dispose(); clientRef.current = null;
     await diag.stopSession((kind as LabSourceType), { reason, ...(pipelineRef.current?.counters ?? {}) });
     setRunning(false);

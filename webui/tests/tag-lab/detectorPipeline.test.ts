@@ -110,6 +110,22 @@ describe('tag lab detection pipeline (real detector)', () => {
     expect(h.pipeline.lastDetectedTagId).toBeNull();
   });
 
+  it('does not report a disposed detector rejecting its pending decode after close() as a fault, and stops LOST decay', async () => {
+    let reject: ((e: Error) => void) | undefined;
+    const hanging: LabDetector = { busy: false, detect: () => new Promise((_, r) => { reject = r; }) };
+    const h = harness(hanging);
+    const pending = h.pipeline.submit(h.frame(blankFrame(), 1));
+    h.pipeline.close();
+    reject!(new Error('Tag detector client disposed.'));
+    expect(await pending).toBe('dropped-stale-epoch');
+    expect(h.pipeline.lastError).toBeNull();
+    expect(h.pipeline.counters.workerErrors).toBe(0);
+    const seen = harness();
+    await seen.pipeline.submit(seen.frame(rasterTag(1).rgba, 1));
+    seen.pipeline.close(); seen.advance(5000); seen.pipeline.tick();
+    expect(seen.pipeline.tagStates()[1].status).toBe('DETECTED 2D');
+  });
+
   it('rejects frames stamped with another epoch and reports worker faults without crashing', async () => {
     const h = harness();
     expect(await h.pipeline.submit(h.frame(blankFrame(), 1, 99))).toBe('dropped-stale-epoch');

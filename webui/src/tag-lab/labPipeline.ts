@@ -64,6 +64,7 @@ export class LabPipeline {
   private lastAggregateMs = Number.NEGATIVE_INFINITY;
   private sourceType: LabSourceType = 'lab';
   private firstDecodeLogged = false;
+  private closed = false;
   readonly counters: LabCounters = { decoded: 0, framesSubmitted: 0, framesProcessed: 0, framesDropped: 0, workerErrors: 0, staleResults: 0 };
   readonly latencyMs = new RollingSamples();
   readonly processingMs = new RollingSamples();
@@ -98,9 +99,19 @@ export class LabPipeline {
     this.diag.emit('WORKER_BUSY', this.sourceType, { droppedTotal: this.counters.framesDropped }, { sessionEpoch: this.epoch, ...(frameId === null ? {} : { frameId }) });
   }
 
+  /**
+   * Capture stopped: in-flight decodes belong to the old epoch (a disposed detector rejecting them is not a fault) and
+   * the last tag states are kept for inspection instead of decaying to LOST.
+   */
+  close(): void {
+    this.epoch += 1;
+    this.closed = true;
+  }
+
   /** A new capture session: old results must not come back. */
   newSession(): number {
     this.epoch += 1;
+    this.closed = false;
     this.resetTags();
     this.latencyMs.clear(); this.processingMs.clear(); this.captureRate.clear(); this.detectorRate.clear();
     Object.assign(this.counters, { decoded: 0, framesSubmitted: 0, framesProcessed: 0, framesDropped: 0, workerErrors: 0, staleResults: 0 });
@@ -153,6 +164,7 @@ export class LabPipeline {
 
   /** Mark tags that have not decoded recently as LOST. Call regularly (e.g. per animation frame). */
   tick(nowMs: number = this.now()): void {
+    if (this.closed) return;
     for (const state of this.tags.values()) {
       if (state.status === 'DETECTED 2D' && state.lastSeenMs !== null && nowMs - state.lastSeenMs > this.staleMs) {
         state.status = 'LOST';
