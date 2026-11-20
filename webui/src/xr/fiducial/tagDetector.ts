@@ -1,4 +1,4 @@
-import { refineTagCorners, type PixelQuad } from './cornerRefine';
+import { grayscaleLuma, refineTagCornersLuma, type PixelQuad } from './cornerRefine';
 import { AR, type ArucoMarker } from './jsAruco2';
 import type { NormalizedTagCorner } from './tagPose';
 
@@ -30,16 +30,27 @@ function edgeSize(corners: PixelQuad): number {
   )));
 }
 
-export function detectAprilTags(width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
-  if (width <= 0 || height <= 0 || rgba.length < width * height * 4) return [];
-  const detector = new AR.Detector({ dictionaryName: 'APRILTAG_36h11', maxHammingDistance: TAG_DETECTOR_MAX_HAMMING_DISTANCE });
-  const markers = detector.detectImage(width, height, rgba);
+/* The dictionary tables are built once; a detector instance keeps only reusable scratch images between frames. */
+let sharedDetector: InstanceType<typeof AR.Detector> | null = null;
+function detector(): InstanceType<typeof AR.Detector> {
+  sharedDetector ??= new AR.Detector({ dictionaryName: 'APRILTAG_36h11', maxHammingDistance: TAG_DETECTOR_MAX_HAMMING_DISTANCE });
+  return sharedDetector;
+}
+
+/** `toFull` maps a detector-image point into full-frame pixel coordinates (identity for a full-resolution pass). */
+function collectDetections(
+  markers: ArucoMarker[], toFull: (x: number, y: number) => readonly [number, number], minEdgePx: number,
+  width: number, height: number, rgba: Uint8Array,
+): DetectedAprilTag[] {
   const result: DetectedAprilTag[] = [];
+  let luma: Float32Array | null = null;
   for (const marker of markers) {
     if (marker.id < 0 || marker.id > 4 || marker.corners.length !== 4) continue;
-    const raw = pixelCorners(marker);
-    if (edgeSize(raw) < TAG_DETECTOR_MIN_EDGE_PX) continue;
-    const refined = refineTagCorners(raw, rgba, width, height);
+    const found = pixelCorners(marker);
+    if (edgeSize(found) < minEdgePx) continue;
+    const raw = found.map(([x, y]) => toFull(x, y)) as unknown as PixelQuad;
+    luma ??= width >= 3 && height >= 3 ? grayscaleLuma(rgba, width, height) : null; // once per frame, not once per tag
+    const refined = luma === null ? raw : refineTagCornersLuma(raw, luma, width, height);
     const ordered = mapArucoCornersToTagPose(refined);
     result.push({
       tagId: marker.id as 0 | 1 | 2 | 3 | 4,
@@ -48,6 +59,52 @@ export function detectAprilTags(width: number, height: number, rgba: Uint8Array)
     });
   }
   return onePerTagId(result);
+}
+
+/** Full-resolution pass: the reference behaviour, finds the smallest tags (>= TAG_DETECTOR_MIN_EDGE_PX). */
+export function detectAprilTags(width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
+  if (width <= 0 || height <= 0 || rgba.length < width * height * 4) return [];
+  const markers = detector().detectImage(width, height, rgba);
+  return collectDetections(markers, (x, y) => [x, y], TAG_DETECTOR_MIN_EDGE_PX, width, height, rgba);
+}
+
+/** Half-size RGBA by 2x2 averaging; a low-image pixel index i covers full pixels 2i and 2i+1 (centre 2i + 0.5). */
+function downscaleHalf(width: number, height: number, rgba: Uint8Array): { width: number; height: number; rgba: Uint8Array } {
+  const w = width >> 1; const h = height >> 1;
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y += 1) {
+    const top = (2 * y) * width * 4; const bottom = top + width * 4;
+    for (let x = 0; x < w; x += 1) {
+      const a = top + 8 * x; const b = bottom + 8 * x; const o = (y * w + x) * 4;
+      out[o] = (rgba[a] + rgba[a + 4] + rgba[b] + rgba[b + 4]) >> 2;
+      out[o + 1] = (rgba[a + 1] + rgba[a + 5] + rgba[b + 1] + rgba[b + 5]) >> 2;
+      out[o + 2] = (rgba[a + 2] + rgba[a + 6] + rgba[b + 2] + rgba[b + 6]) >> 2;
+      out[o + 3] = 255;
+    }
+  }
+  return { width: w, height: h, rgba: out };
+}
+
+/**
+ * Fast pass: decode on a half-size image (about a quarter of the work), then refine the corners on the FULL-resolution frame,
+ * so accuracy stays subpixel. Tags with a full-resolution edge under about 2 x TAG_DETECTOR_MIN_EDGE_PX are not decodable at
+ * half size; that is what the periodic full pass (chooseDetectionPass) is for.
+ */
+export function detectAprilTagsFast(width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
+  if (width < 16 || height < 16 || rgba.length < width * height * 4) return [];
+  const low = downscaleHalf(width, height, rgba);
+  const markers = detector().detectImage(low.width, low.height, low.rgba);
+  return collectDetections(markers, (x, y) => [2 * x + 0.5, 2 * y + 0.5], TAG_DETECTOR_MIN_EDGE_PX / 2, width, height, rgba);
+}
+
+export type DetectionPass = 'full' | 'fast';
+/** A full pass every Nth frame (and the first), so a far or small tag is never missed for long. */
+export const TAG_FULL_PASS_EVERY = 4;
+export function chooseDetectionPass(frameIndex: number, fullEvery: number = TAG_FULL_PASS_EVERY): DetectionPass {
+  return frameIndex % fullEvery === 0 ? 'full' : 'fast';
+}
+export function detectAprilTagsPass(pass: DetectionPass, width: number, height: number, rgba: Uint8Array): DetectedAprilTag[] {
+  return pass === 'full' ? detectAprilTags(width, height, rgba) : detectAprilTagsFast(width, height, rgba);
 }
 
 function quadArea(corners: DetectedAprilTag['corners']): number {

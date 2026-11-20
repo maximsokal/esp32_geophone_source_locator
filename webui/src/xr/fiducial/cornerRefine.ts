@@ -3,7 +3,8 @@ export type PixelQuad = readonly [PixelPoint, PixelPoint, PixelPoint, PixelPoint
 
 interface Line { nx: number; ny: number; c: number; }
 
-function grayscale(rgba: Uint8Array, width: number, height: number): Float32Array {
+/** Luma plane of a frame. A detector pass computes it once and refines every tag of the frame from it. */
+export function grayscaleLuma(rgba: Uint8Array, width: number, height: number): Float32Array {
   const output = new Float32Array(width * height);
   for (let pixel = 0; pixel < output.length; pixel += 1) {
     const offset = pixel * 4;
@@ -81,7 +82,11 @@ function intersect(a: Line, b: Line): [number, number] | null {
  */
 export function refineTagCorners(corners: PixelQuad, rgba: Uint8Array, width: number, height: number): PixelQuad {
   if (width < 3 || height < 3 || rgba.length < width * height * 4) return corners;
-  const luma = grayscale(rgba, width, height);
+  return refineTagCornersLuma(corners, grayscaleLuma(rgba, width, height), width, height);
+}
+
+/** Same refinement from a luma plane that was already computed for this frame (valid dimensions assumed). */
+export function refineTagCornersLuma(corners: PixelQuad, luma: Float32Array, width: number, height: number): PixelQuad {
   const lines = corners.map((corner, index) => edgeLine(corner, corners[(index + 1) % 4], luma, width, height));
   if (lines.some((line) => line === null)) return corners;
   const fitted = lines as Line[];

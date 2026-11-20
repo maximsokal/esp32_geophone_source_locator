@@ -5,7 +5,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 const panelHarness=vi.hoisted(()=>({
   runtimes:[] as any[],workers:[] as any[],
   fetchLocalizationRuns:vi.fn(),loadSessionRegistration:vi.fn(),saveSessionRegistration:vi.fn(),probeCapabilities:vi.fn(),
-  makeState:(()=>({})) as (()=>any)|null,
+  makeState:(()=>({})) as (()=>any)|null,panelRenders:0,
 }));
 
 vi.mock('../../src/api/deviceApi',async(importOriginal)=>{
@@ -37,7 +37,7 @@ vi.mock('../../src/xr/xrLaunchPolicy',()=>({
   launchImmersiveArFromUserGesture:async(options:any)=>options.startRuntime(),
 }));
 vi.mock('../../src/xr/optionalMonocularPrior',()=>({optionalMonocularPrior:{status:'disabled',error:null,calibrationConfidence:0,calibrationModel:null,hasStagedPostScanFrame:false,isBusy:false,subscribe:()=>()=>undefined,setEnabled:()=>undefined}}));
-vi.mock('../../src/components/StructuralGuideOverlay',()=>({StructuralGuideOverlay:()=>null}));
+vi.mock('../../src/components/StructuralGuideOverlay',()=>({StructuralGuideOverlay:()=>{panelHarness.panelRenders+=1;return null;}}));/* counts panel renders: a non-memo child renders whenever the panel does */
 vi.mock('../../src/components/LiveTagOverlay',()=>({LiveTagOverlay:()=>null}));
 vi.mock('../../src/xr/fiducial/tagDetector.worker.ts?worker&inline',()=>({default:class{
   messages:any[]=[];terminated=0;private listeners=new Map<string,Set<(event:any)=>void>>();
@@ -152,6 +152,7 @@ beforeEach(()=>{
     if(listener===null)return;
     listeners.get(type)?.delete(listener);
   };
+  (globalThis as any).__runPanelTimeouts=()=>{for(const [id,callback] of [...timers]){timers.delete(id);callback();}};
   browserWindow={
     isSecureContext:false,
     innerWidth:1280,
@@ -249,6 +250,40 @@ describe('XrRuntimePanel lifecycle',()=>{
     unmount(renderer);
   });
 
+  it('keeps the Tags switch and every tag status out of the camera view',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);await act(async()=>{await settleReact();});
+    const worker=panelHarness.workers[0];runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
+    const titles=[translate('en','xr.tag.capture_title'),translate('en','xr.tag.tags_on')];
+    const overlay=renderer.root.findAll((node)=>node.props.className==='xr-immersive-overlay')[0];
+    expect(overlay.findAllByType('button').filter((button)=>titles.includes(button.props.title))).toHaveLength(0);
+    expect(renderer.root.findAll((node)=>node.props['aria-label']===translate('en','xr.tag.observations'))).toHaveLength(0);
+    const details=renderer.root.findAll((node)=>node.props.className==='xr-technical-details')[0];
+    expect(details.findAllByType('button').filter((button)=>titles.includes(button.props.title))).toHaveLength(1);
+    expect(tagButton(renderer).props['aria-pressed']).toBe(true);
+    unmount(renderer);
+  });
+
+  it('lets a device announcement fade by itself instead of staying over the camera',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
+    const notices=()=>renderer.root.findAll((node)=>node.props.className==='xr-overlay-hint xr-tag-notice');
+    for(let index=0;index<6;index+=1){runtime.emitTagFrame(tagFrame(index+1,[(index+1)*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:0,positionX:1});await settleReact();});}
+    expect(notices().length).toBeGreaterThan(0);
+    await act(async()=>{(globalThis as any).__runPanelTimeouts();await settleReact();});
+    expect(notices()).toHaveLength(0);
+    unmount(renderer);
+  });
+
+  it('does not re-render the whole scanner panel for detections that confirm nothing new',async()=>{
+    const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
+    runtime.emitTagFrame(tagFrame(1,[0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:0,positionX:1});await settleReact();});
+    const before=panelHarness.panelRenders;
+    for(let index=2;index<=4;index+=1){runtime.emitTagFrame(tagFrame(index,[index*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:0,positionX:1});await settleReact();});}
+    expect(panelHarness.panelRenders).toBe(before);
+    unmount(renderer);
+  });
+
   it('does not start recognition and says why when the phone exposes no camera access',async()=>{
     panelHarness.probeCapabilities.mockResolvedValue({...validCapabilities,rawXrRgbApi:false});
     const renderer=await mountPanel({});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);await act(async()=>{await settleReact();});
@@ -307,8 +342,9 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(fusionSpy.mock.calls[0][0][0]).toMatchObject({capturedAtMs:10,cameraPosition:[0,0,0],cameraForward:[0,0,-1]});
     runtime.emitTagFrame(tagFrame(20,[0,0,0]));
     await act(async()=>{runtime.setPhase('running',{tracking:true,pose:{position:[20,0,0],orientation:[0,0,0,1],views:1}});emitTagDetection(worker);await settleReact();});
-    const chips=renderer.root.findAll((node)=>node.props['aria-label']===translate('en','xr.tag.observations'))[0];
-    expect(textOf(chips)).toContain(translate('en','xr.tag.chip.views_seen',{node:'MAIN',views:'1',minimum:'3'}));
+    /* Two detections from the same camera position are one independent view: not confirmed yet. (The status chips over the camera are gone.) */
+    const latest=fusionSpy.mock.results.at(-1)?.value as any;
+    expect(latest.byTagId[0]).toMatchObject({independentViewCount:1,confirmed:false});
     unmount(renderer);
   });
 

@@ -23,9 +23,12 @@ export interface DetectedAprilTagFrame {
   detections: DetectedAprilTag[];
   projectionMatrix: Float32Array;
   worldFromView: Float32Array;
+  /** Which detector pass produced this result, and the Worker's own compute time (excludes queueing and transfer). */
+  pass?: 'full' | 'fast';
+  workerMs?: number;
 }
 
-type WorkerResult = { type: 'result'; requestId: number; epoch: number; detections: DetectedAprilTag[] };
+type WorkerResult = { type: 'result'; requestId: number; epoch: number; detections: DetectedAprilTag[]; pass?: 'full' | 'fast'; workerMs?: number };
 type WorkerLike = Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>;
 interface Pending {
   epoch: number; width: number; height: number; capturedAtMs: number;
@@ -115,6 +118,7 @@ export class TagDetectorClient {
       width: request.width, height: request.height, capturedAtMs: request.capturedAtMs,
       cameraPosition: request.cameraPosition, cameraForward: request.cameraForward,
       detections: message.detections, projectionMatrix: request.projectionMatrix, worldFromView: request.worldFromView,
+      pass: message.pass, workerMs: message.workerMs,
     });
   };
 

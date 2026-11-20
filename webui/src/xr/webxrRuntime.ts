@@ -327,7 +327,7 @@ export class WebXrRuntime{
   private rafHandle:number|null=null;
   private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
-  private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
+  private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private tagGeometryLogged=false;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
   private lightProbe:XrLightProbeLike|null=null;private wakeLock:WakeLockSentinelLike|null=null;
   private wakeLockReleaseListener:(()=>void)|null=null;private wakeLockRequest:{generation:number;promise:Promise<void>}|null=null;
@@ -409,7 +409,7 @@ export class WebXrRuntime{
         const tagReadbackMode=this.tagCameraCapture.tagReadbackMode;this.tagCameraCapture.dispose();this.tagCameraCapture=null;
         clientDiagnostics.warn('XR_TAG_CAPTURE_REFUSED',{tagReadbackMode,width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT,reason:'nonblocking-readback-unavailable'});void clientDiagnostics.flush();return TAG_CAPTURE_READBACK_REQUIRED;
       }
-      this.tagCaptureEnabled=true;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;
+      this.tagCaptureEnabled=true;this.tagGeometryLogged=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;
       clientDiagnostics.info('XR_TAG_CAPTURE_ENABLED',{tagReadbackMode:this.tagCameraCapture.tagReadbackMode,width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT});void clientDiagnostics.flush();
       return null;
     }
@@ -767,6 +767,15 @@ export class WebXrRuntime{
     try{this.acceptTagFrame(capture.pollReadyTag());}catch(error){this.disableCameraGuidance('tag',error,'tag-camera-readback');return;}
     if(this.cameraBinding===null||view.camera==null||time-this.lastTagCaptureMs<TAG_CAPTURE_INTERVAL_MS)return;
     this.lastTagCaptureMs=time;
+    if(!this.tagGeometryLogged){
+      /* Once per session: does the camera image share the aspect/FOV of the view the pose maths assumes? A mismatch would offset anchored tags. */
+      this.tagGeometryLogged=true;
+      const projection=view.projectionMatrix;const p00=projection===undefined?NaN:Number(projection[0]);const p11=projection===undefined?NaN:Number(projection[5]);
+      const round=(value:number,digits:number)=>Number.isFinite(value)?Math.round(value*10**digits)/10**digits:null;
+      clientDiagnostics.info('XR_TAG_CAMERA_GEOMETRY',{cameraWidth:view.camera.width,cameraHeight:view.camera.height,cameraAspect:round(view.camera.width/view.camera.height,4),
+        captureWidth:TAG_CAPTURE_WIDTH,captureHeight:TAG_CAPTURE_HEIGHT,projectionAspect:round(p11/p00,4),fovYDeg:round(2*Math.atan(1/p11)*180/Math.PI,2),fovXDeg:round(2*Math.atan(1/p00)*180/Math.PI,2),
+        window:`${window.innerWidth}x${window.innerHeight}`,orientation:typeof screen!=='undefined'&&screen.orientation?screen.orientation.type:null});void clientDiagnostics.flush();
+    }
     try{this.acceptTagFrame(capture.captureTag(this.cameraBinding,view,time));}
     catch(error){this.disableCameraGuidance('tag',error,'tag-camera-capture');}
   }
