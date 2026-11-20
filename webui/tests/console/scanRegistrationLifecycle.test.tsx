@@ -7,7 +7,7 @@ const h = vi.hoisted(() => ({
   viewportProps: null as any,
   useRealScanLoad: false,
   fetchRuns: vi.fn(), loadScan: vi.fn(), loadReg: vi.fn(), saveReg: vi.fn(), delReg: vi.fn(),
-  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(),
+  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(), saveTags: vi.fn(), delTags: vi.fn(),
 }));
 
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
@@ -21,6 +21,7 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
     saveSessionRegistration: h.saveReg, deleteSessionRegistration: h.delReg, saveObjectScanArtifact: h.saveScan,
     saveSessionOccupancyArtifact: h.saveOcc, saveSessionPreviewArtifact: h.savePrev, fetchScanInfo: h.info,
     deleteObjectScanArtifact: h.delScan,
+    saveSessionTagPositions: h.saveTags, deleteSessionTagPositions: h.delTags,
   };
 });
 vi.mock('../../src/components/XrRuntimePanel', () => ({ XrRuntimePanel: (props: unknown) => { h.props = props; return null; } }));
@@ -37,6 +38,8 @@ import {
   decodeRegistrationArtifact, defaultRegistrationTagSizes, encodeRegistrationArtifact, type RegistrationArtifact,
 } from '../../src/xr/fiducial/registrationArtifact';
 import { makeValidScanSnapshot } from '../xr/support/validScanSnapshot';
+import { decodeTagPositions } from '../../src/xr/fiducial/tagPositionsArtifact';
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 
 const GEOMETRY_MS = 500;
 const mounted: ReactTestRenderer[] = [];
@@ -84,6 +87,8 @@ beforeEach(() => {
   h.loadReg.mockReset().mockResolvedValue(null);
   h.saveReg.mockReset().mockResolvedValue({ ok: true, action: 'registration' });
   h.delReg.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
+  h.saveTags.mockReset().mockResolvedValue({ ok: true, action: 'tags' });
+  h.delTags.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
   h.delScan.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
   h.saveScan.mockReset().mockImplementation(async (_o: string, _s: string, bytes: Uint8Array) => {
     device.scan = bytes.slice(); device.occupancy = null; device.preview = null;
@@ -348,6 +353,93 @@ describe('App scan information: distances recalculated from the scan', () => {
       .filter((marker) => marker.status === 'visual_only');
     expect(live.find((marker) => marker.node === 'MAIN')!.provisional).toBeUndefined();
     expect(live.find((marker) => marker.node === 'G3')).toMatchObject({ provisional: true, positionScanM: [0.2, 0.3, 0.95] });
+  });
+
+  describe('tag layout upload (computed on the phone, only the result goes to the ESP32)', () => {
+    const tag = (tagId: number, node: string, xr: [number, number, number], confirmed = true, spreadM = 0.003) =>
+      ({ tagId, node, positionScan: xr, spreadM, observationCount: 8, independentViewCount: 4, confirmed });
+    const MAIN = tag(0, 'MAIN', [1, 1, -1]); const G1 = tag(1, 'G1', [1.5, 1, -1]); const G2 = tag(2, 'G2', [1, 1, -1.8]);
+
+    it('saves the finished layout once the scan is durable, bound to that scan, with preliminary tags flagged', async () => {
+      await mountApp();
+      await finishScan('fresh', null);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, tag(2, 'G2', [1, 1, -1.8], false, 0.02)]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(1);
+      const [objectId, , json] = h.saveTags.mock.calls[0] as [string, string, string];
+      expect(objectId).toBe('OBJ');
+      const saved = decodeTagPositions(json);
+      expect(saved.scan_frame_id).toBe(scanIdOf(device.scan!));
+      expect(saved.nodes.map((n) => [n.node_id, n.x_mm, n.y_mm, n.z_mm, n.confirmed])).toEqual([[0, 0, 0, 0, true], [1, 500, 0, 0, true], [2, 0, 800, 0, false]]);
+      expect(h.delTags).not.toHaveBeenCalled();
+    });
+
+    it('does not upload while the scan is not durable yet, and does upload once it is', async () => {
+      await mountApp();
+      await act(async () => { h.props.onScanIntent('fresh'); h.props.onPointCloudReady(null); });
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await flush();
+      expect(h.saveTags).not.toHaveBeenCalled();
+      await act(async () => { h.props.onPointCloudReady(variantSnapshot()); });
+      await flush();
+      await act(async () => { h.props.onTagRegistrationResult(null, true); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes the old file when the new scan has no usable layout (no MAIN, too few tags, or tags in a line)', async () => {
+      await mountApp();
+      for (const anchors of [[G1, G2], [MAIN, G1], [MAIN, G1, tag(2, 'G2', [2, 1, -1])]]) {
+        h.saveTags.mockClear(); h.delTags.mockClear();
+        await finishScan('fresh', null);
+        await act(async () => { h.props.onTagAnchors(anchors); });
+        await flush();
+        expect(h.saveTags).not.toHaveBeenCalled();
+        expect(h.delTags).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does not upload the same layout twice, but uploads again when it changes', async () => {
+      await mountApp();
+      await finishScan('fresh', null);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await flush();
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(1);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, tag(3, 'G3', [0.9, 1.2, -1.5])]); });
+      await flush();
+      expect(h.saveTags).toHaveBeenCalledTimes(2);
+    });
+
+    it('a rejected or failed upload is logged and leaves the scan and its markers untouched', async () => {
+      const warn = vi.spyOn(clientDiagnostics, 'warn');
+      h.saveTags.mockResolvedValueOnce({ ok: false, error: 'ESP_ERR_INVALID_ARG' });
+      await mountApp();
+      h.viewportProps = null;
+      await finishScan('fresh', null);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await flush();
+      expect(warn).toHaveBeenCalledWith('TAG_POSITIONS_SAVE_FAILED', expect.objectContaining({ error: 'ESP_ERR_INVALID_ARG' }));
+      const markers = (h.viewportProps as { sensorMarkers: { node: string; status: string }[] }).sensorMarkers;
+      expect(markers.some((marker) => marker.node === 'G1' && marker.status === 'visual_only')).toBe(true);
+      h.saveTags.mockRejectedValueOnce(new Error('network down'));
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, tag(3, 'G3', [0.9, 1.2, -1.5])]); });
+      await flush();
+      expect(warn).toHaveBeenCalledWith('TAG_POSITIONS_SAVE_FAILED', expect.objectContaining({ error: 'network down' }));
+    });
+
+    it('a new scan clears the delivered state, so nothing is re-sent for the old tags', async () => {
+      await mountApp();
+      await finishScan('fresh', null);
+      await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+      await flush();
+      h.saveTags.mockClear(); h.delTags.mockClear();
+      await finishScan('fresh', null); // a new scan whose scanner delivers no tags callback at all (an interrupted session)
+      await flush();
+      expect(h.saveTags).not.toHaveBeenCalled();
+      expect(h.delTags).not.toHaveBeenCalled();
+    });
   });
 
   it('does not carry the live tag anchors over to the next scan', async () => {

@@ -469,7 +469,7 @@ function jsonRequest<T>(
   });
 }
 
-export type ScanStoreKind = 'scan' | 'occupancy' | 'preview' | 'registration';
+export type ScanStoreKind = 'scan' | 'occupancy' | 'preview' | 'registration' | 'tags';
 
 function scanControlUrl(
   action: 'save' | 'load' | 'delete' | 'info',
@@ -512,7 +512,7 @@ async function performScanSave(
         signal: context.controller.signal,
         headers: {
           Accept: 'application/json',
-          'Content-Type': kind === 'registration' ? 'application/json; charset=utf-8' : 'application/octet-stream',
+          'Content-Type': kind === 'registration' || kind === 'tags' ? 'application/json; charset=utf-8' : 'application/octet-stream',
         },
         body,
       });
@@ -904,6 +904,27 @@ export function loadSessionRegistration(objectId: string, sessionId: string): Pr
     const bytes = await performScanLoad(objectId, sessionId, context, 'registration');
     return bytes === null ? null : new TextDecoder().decode(bytes);
   }, 'bulk');
+}
+
+/** The tag-derived sensor layout (tag-positions-v1.json), computed on the phone and stored beside the session's other artifacts. */
+export function saveSessionTagPositions(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'tags'), 'bulk');
+}
+
+export function loadSessionTagPositions(objectId: string, sessionId: string): Promise<string | null> {
+  return queuedApiRequest(async (context) => {
+    const bytes = await performScanLoad(objectId, sessionId, context, 'tags');
+    return bytes === null ? null : new TextDecoder().decode(bytes);
+  }, 'bulk');
+}
+
+export function deleteSessionTagPositions(objectId: string, sessionId: string): Promise<ControlResult> {
+  return queuedApiRequest((context) => performJsonRequest<ControlResult>(
+    scanControlUrl('delete', objectId, sessionId, 'tags'),
+    context,
+    { method: 'POST' },
+    DEVICE_API_EXTENDED_TIMEOUT_MS,
+  ), 'bulk');
 }
 
 export function deleteSessionRegistration(objectId: string, sessionId: string): Promise<ControlResult> {

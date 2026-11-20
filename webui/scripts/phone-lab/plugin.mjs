@@ -9,7 +9,7 @@ export const MAX_ARTIFACT_BYTES = 96 * 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 // A scan id is a frame id such as `scan-crc32:732740d9` (the ':' must be accepted, then made filename-safe).
 const SCAN_ID = /^[A-Za-z0-9_:-]{1,80}$/;
-const KINDS = new Set(['scan', 'occupancy', 'preview', 'registration']);
+const KINDS = new Set(['scan', 'occupancy', 'preview', 'registration', 'tags']);
 const TYPE = /^[A-Z][A-Z0-9_]{1,40}$/;
 
 /**
@@ -125,7 +125,7 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
       if (!existsSync(path)) return send(200, { ok: false, error: 'ESP_ERR_NOT_FOUND' });
       const bytes = readFileSync(path);
       if (kind === 'scan') return send(200, { ok: true, bytes: bytes.length, id: await scanIdOf(bytes) });
-      if (kind === 'registration') return send(200, { ok: true, bytes: bytes.length, id: null });
+      if (kind === 'registration' || kind === 'tags') return send(200, { ok: true, bytes: bytes.length, id: null });
       const scanPath = artifactPath(q.get('object_id'), q.get('session_id'), 'scan', null);
       return send(200, { ok: true, bytes: bytes.length, source_id: scanPath !== null && existsSync(scanPath) ? await scanIdOf(readFileSync(scanPath)) : null });
     }

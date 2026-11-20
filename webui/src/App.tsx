@@ -8,10 +8,12 @@ import {
   fetchScanInfo,
   isRequestCancellation,
   deleteSessionRegistration,
+  deleteSessionTagPositions,
   loadObjectScanArtifact,
   loadSessionRegistration,
   saveObjectScanArtifact,
   saveSessionRegistration,
+  saveSessionTagPositions,
   saveSessionOccupancyArtifact,
   saveSessionPreviewArtifact,
   retryPreemptedRead,
@@ -49,6 +51,8 @@ import {
 } from './xr/scanArtifact';
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
+import { buildTagLayout } from './xr/fiducial/tagLayout';
+import { encodeTagPositions, tagPositionsFromLayout } from './xr/fiducial/tagPositionsArtifact';
 import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
 import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
 import {
@@ -280,6 +284,9 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   );
   const [scanStorageError, setScanStorageError] = useState<unknown | null>(null);
   const [liveTagAnchors, setLiveTagAnchors] = useState<readonly TagSensorAnchor[]>([]);
+  /* True once the scanner has handed over its tags for this scan (an empty list counts: it means none were seen). */
+  const [tagAnchorsDelivered, setTagAnchorsDelivered] = useState(false);
+  const tagUploadKeyRef = useRef<string | null>(null);
   /* Anchors belong to the scan just made for this target; another object/session starts without them. */
   useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
@@ -881,6 +888,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
 
     if (incoming === null) {
       setLiveTagAnchors([]); // a new scanner generation: anchors of the previous scan do not carry over
+      setTagAnchorsDelivered(false);
+      tagUploadKeyRef.current = null;
       /*
        * The null callback marks XR startup. Keep the current durable scan and
        * its storage presentation intact until a replacement candidate exists.
@@ -1259,6 +1268,38 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     () => buildSensorPlacementScene(durableViewport ? localizationGeometry : null, durableViewport ? registrationArtifact : null, registrationExpected),
     [durableViewport, localizationGeometry, registrationArtifact, registrationExpected],
   );
+  /*
+   * The tag layout is computed HERE, on the phone, and only the finished result goes to the ESP32 (tag-positions-v1.json beside the session's other
+   * artifacts). It is saved once the scan itself is durable, so it can name the scan it belongs to. No layout (no MAIN, fewer than three tags, tags in
+   * a line) removes an older file, because a new scan makes the previous positions stale. A failure here never touches the scan.
+   */
+  useEffect(() => {
+    if (!tagAnchorsDelivered || !durableViewport || objectId === null || scanDurability.durableId === null) return;
+    const scanId = scanDurability.durableId;
+    const built = buildTagLayout(liveTagAnchors);
+    const artifact = built.layout === null ? null : tagPositionsFromLayout(built.layout, scanId, 0);
+    const key = `${objectId}/${scanSessionId}/${scanId}/${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
+    if (tagUploadKeyRef.current === key) return;
+    tagUploadKeyRef.current = key;
+    void (async () => {
+      try {
+        if (built.layout === null) {
+          await deleteSessionTagPositions(objectId, scanSessionId).catch(() => undefined);
+          clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: liveTagAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
+        } else {
+          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(tagPositionsFromLayout(built.layout, scanId, Date.now())));
+          if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
+          clientDiagnostics.info('TAG_POSITIONS_SAVED', {
+            objectId, sessionId: scanSessionId, nodes: built.layout.nodes.map((node) => `${node.nodeId}${node.confirmed ? '' : '?'}`).join(','),
+            triangles: built.layout.triangles.length, weakestMm: built.layout.weakestMainTriangleHeightMm, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(','),
+          });
+        }
+      } catch (reason) {
+        clientDiagnostics.warn('TAG_POSITIONS_SAVE_FAILED', { objectId, sessionId: scanSessionId, error: reason instanceof Error ? reason.message : String(reason) });
+      }
+      void clientDiagnostics.flush();
+    })();
+  }, [tagAnchorsDelivered, durableViewport, objectId, scanSessionId, scanDurability.durableId, liveTagAnchors]);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(
     () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, liveTagAnchors) : [],
@@ -1404,7 +1445,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         scanIntent={scanIntentState}
         baseScanFrameId={scanDurability.durableId}
         onTagRegistrationResult={onTagRegistrationResult}
-        onTagAnchors={setLiveTagAnchors}
+        onTagAnchors={(anchors) => { setLiveTagAnchors(anchors); setTagAnchorsDelivered(true); }}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (

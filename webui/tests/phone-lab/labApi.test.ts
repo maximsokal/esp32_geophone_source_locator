@@ -99,6 +99,18 @@ describe('phone lab fake device API', () => {
     expect(readdirSync(storeDir)).toEqual(['OBJ_0001__S1__registration.bin']);
   });
 
+  it('stores the tag positions file under its own kind and round-trips it', async () => {
+    const { call, storeDir } = await start();
+    const q = 'object_id=OBJ_0001&session_id=staging&kind=tags';
+    const body = '{"schema":1,"kind":"tag_positions"}';
+    expect((await call(`/api/control?scan=save&${q}`, { method: 'POST', body })).status).toBe(200);
+    expect(readdirSync(storeDir)).toEqual(['OBJ_0001__staging__tags.bin']);
+    expect(await (await call(`/api/control?scan=info&${q}`, { method: 'POST' })).json()).toMatchObject({ ok: true, bytes: body.length, id: null });
+    expect(await (await call(`/api/control?scan=load&${q}`, { method: 'POST' })).text()).toBe(body);
+    await call(`/api/control?scan=delete&${q}`, { method: 'POST' });
+    expect(readdirSync(storeDir)).toEqual([]);
+  });
+
   it('accepts the real scan ids sent by the phone (scan-crc32:xxxxxxxx) for occupancy and preview artifacts', async () => {
     const { call, storeDir } = await start();
     const id = 'scan-crc32%3A732740d9'; // exactly what the scanner sent in the phone run that exposed this
