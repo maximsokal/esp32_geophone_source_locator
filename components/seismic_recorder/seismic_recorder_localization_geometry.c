@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "seismic_recorder.h"
 #include "seismic_recorder_internal.h"
+#include "scan_artifact_path.h"
 #include "storage_manager.h"
 
 #define REGISTERED_POSITION_LIMIT_MM 1000000.0
@@ -91,13 +92,12 @@ esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const 
 {
     if (object_id == NULL || session_id == NULL || layout == NULL) return ESP_ERR_INVALID_ARG;
     memset(layout, 0, sizeof(*layout));
-    char session_path[256];
+    /* The file may have moved from staging into the shared scan of this placement: resolve it like every other scan artifact. */
     char path[288];
-    esp_err_t err = seismic_recorder_fs_build_session_path(object_id, session_id, session_path, sizeof(session_path));
-    if (err == ESP_OK && snprintf(path, sizeof(path), "%s/%s", session_path, SEISMIC_RECORDER_TAG_POSITIONS_FILE) >= (int)sizeof(path)) {
-        err = ESP_ERR_INVALID_SIZE;
+    if (scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, SEISMIC_RECORDER_TAG_POSITIONS_FILE, path, sizeof(path)) != 0) {
+        return ESP_ERR_INVALID_SIZE;
     }
-    if (err != ESP_OK) return err;
+    esp_err_t err = ESP_OK;
     char *text = malloc(SEISMIC_RECORDER_TAG_POSITIONS_MAX_BYTES + 1U);
     if (text == NULL) return ESP_ERR_NO_MEM;
     err = storage_manager_read_text(path, text, SEISMIC_RECORDER_TAG_POSITIONS_MAX_BYTES + 1U);

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "seismic_recorder_localization_geometry.h"
+#include "storage_manager.h"
 
 /* Fakes for what the reader sits on: the frozen layout, the session metadata and the registration file. */
 static object_store_geometry_t s_frozen;
@@ -389,7 +390,7 @@ static void the_tag_layout_is_read_from_the_session_directory(void)
     assert(seismic_recorder_read_session_tag_layout("OBJ_0001", "S000001", &layout) == ESP_ERR_NOT_FOUND && !layout.available);
     set_good_tag_file();
     assert(seismic_recorder_read_session_tag_layout("OBJ_0001", "S000001", &layout) == ESP_OK && layout.available && layout.node_count == 5U);
-    assert(strcmp(s_tag_path, "/objects/OBJ_0001/sessions/S000001/tag-positions-v1.json") == 0);
+    assert(strcmp(s_tag_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json") == 0);
     set_tag_file_text("{\"schema\":1}");
     assert(seismic_recorder_read_session_tag_layout("OBJ_0001", "S000001", &layout) == ESP_ERR_INVALID_RESPONSE && !layout.available);
     s_tag_error = ESP_ERR_INVALID_SIZE;
@@ -415,7 +416,7 @@ static void localization_geometry_uses_the_tag_layout_beside_the_stored_one(void
     assert(geometry.pods[0].computed && geometry.pods[0].x_mm == 500 && geometry.pods[1].y_mm == 800 && geometry.pods[2].z_mm == 200 && geometry.pods[3].x_mm == 900);
     assert(geometry.pods[1].uncertainty_mm == 6 && geometry.pods[0].residual_mm == 0);
     assert(memcmp(&s_frozen, &stored, sizeof(stored)) == 0);   /* the Channel Sounding / barometer layout of the session is untouched */
-    assert(strcmp(s_tag_path, "/objects/OBJ_0001/sessions/S000001/tag-positions-v1.json") == 0);
+    assert(strcmp(s_tag_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/tag-positions-v1.json") == 0);
 
     /* It takes precedence over registered positions of a REMOTE_ONLY session: it is the more complete answer. */
     reset_world(4U, true);

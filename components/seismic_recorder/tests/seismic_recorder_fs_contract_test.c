@@ -260,11 +260,11 @@ static void make_layout(void)
 }
 
 static const char *const staged_artifact_names[] = {
-    "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+    "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json", "tag-positions-v1.json",
 };
 
 static const char *const staged_artifact_contents[] = {
-    "scan", "occupancy", "preview", "registration",
+    "scan", "occupancy", "preview", "registration", "tags",
 };
 
 static bool path_exists(const char *path)
@@ -334,7 +334,7 @@ static void remove_layout(void)
             char metadata_path[256];
             char backup_path[256];
             static const char *const artifact_names[] = {
-                "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+                "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json", "tag-positions-v1.json",
             };
             (void)snprintf(session_path, sizeof(session_path), "%s/%s", sessions_path, entry->d_name);
             (void)snprintf(samples_path, sizeof(samples_path), "%s/samples.bin", session_path);
@@ -361,7 +361,7 @@ static void remove_layout(void)
     /* The shared scans (one folder per scan) and their files. */
     for (unsigned scan_number = 1U; scan_number <= 4U; ++scan_number) {
         static const char *const shared_names[] = {
-            "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+            "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json", "tag-positions-v1.json",
         };
         for (size_t i = 0U; i < sizeof(shared_names) / sizeof(shared_names[0]); ++i) {
             char shared_path[256];
@@ -374,7 +374,7 @@ static void remove_layout(void)
     }
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans");
     static const char *const staged_names[] = {
-        "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+        "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json", "tag-positions-v1.json",
     };
     for (size_t i = 0U; i < sizeof(staged_names) / sizeof(staged_names[0]); ++i) {
         char staged_path[256];

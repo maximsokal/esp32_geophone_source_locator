@@ -42,6 +42,7 @@ static const seismic_recorder_staged_artifact_t s_staged_artifacts[] = {
     {.file_name = "occupancy-v1.bin", .mask = 1U << 1U},
     {.file_name = "preview-v1.bin", .mask = 1U << 2U},
     {.file_name = "registration-v1.json", .mask = 1U << 3U},
+    {.file_name = "tag-positions-v1.json", .mask = 1U << 4U},
 };
 
 
