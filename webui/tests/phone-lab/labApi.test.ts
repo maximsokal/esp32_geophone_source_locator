@@ -37,6 +37,35 @@ describe('phone lab fake device API', () => {
     expect((await (await call('/api/status')).json()).workflow.step).toBe('SCANNING');
   });
 
+  it('completes a scan like the firmware: SCAN_COMPLETE needs a saved scan and moves SCANNING to RECORD_READY', async () => {
+    const { call, runDir } = await start();
+    const command = async (name: string) => {
+      const status = await (await call('/api/status')).json();
+      return (await call('/api/control', { method: 'POST', body: JSON.stringify({ action: 'workflow_command', command: name, generation: status.workflow.generation }) })).json();
+    };
+    expect((await command('SCAN_START')).workflow.step).toBe('SCANNING');
+    expect(await command('SCAN_COMPLETE')).toEqual({ ok: false, reason: 'not_allowed' }); // nothing saved yet: the UI must not wait for it
+    await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging', { method: 'POST', body: 'scan-bytes' });
+    const done = await command('SCAN_COMPLETE');
+    expect(done.ok).toBe(true);
+    expect(done.workflow.step).toBe('RECORD_READY');
+    expect(done.workflow.allowed_actions).toEqual(['START_RECORDING', 'MOVE_SENSORS', 'BACK']);
+    expect((await (await call('/api/status')).json()).workflow.step).toBe('RECORD_READY');
+    expect((await command('BACK')).workflow.step).toBe('SCAN_CHOICE');
+    expect((await command('SCAN_SKIP')).workflow.step).toBe('RECORD_READY');
+    expect(readFileSync(join(runDir, 'problems.log'), 'utf8')).toContain('SCAN_COMPLETE in step SCANNING (no saved scan)');
+  });
+
+  it('refuses stale generations and commands the model has no transition for, instead of pretending success', async () => {
+    const { call, runDir } = await start();
+    const status = await (await call('/api/status')).json();
+    const send = async (command: string, generation: number) => (await call('/api/control', { method: 'POST', body: JSON.stringify({ action: 'workflow_command', command, generation }) })).json();
+    expect(await send('SCAN_START', status.workflow.generation + 3)).toEqual({ ok: false, reason: 'stale' });
+    expect(await send('START_RECORDING', status.workflow.generation)).toEqual({ ok: false, reason: 'not_allowed' });
+    expect(readFileSync(join(runDir, 'problems.log'), 'utf8')).toContain('START_RECORDING in step SCAN_CHOICE');
+    expect((await (await call('/api/status')).json()).workflow.step).toBe('SCAN_CHOICE');
+  });
+
   it('reports available localization geometry and passes non-API paths to the next handler', async () => {
     const { call } = await start();
     const runs = await (await call('/api/localization/runs?object_id=OBJ_0001&session_id=S000001')).json();

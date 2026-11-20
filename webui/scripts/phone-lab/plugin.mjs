@@ -12,6 +12,24 @@ const SCAN_ID = /^[A-Za-z0-9_:-]{1,80}$/;
 const KINDS = new Set(['scan', 'occupancy', 'preview', 'registration']);
 const TYPE = /^[A-Z][A-Z0-9_]{1,40}$/;
 
+/**
+ * The scan part of the firmware workflow (components/workflow_service/workflow_core.c): which command moves which step where,
+ * and which actions each step offers. A command outside this table is refused as not_allowed (never silently accepted), so a
+ * missing transition shows up as a visible failure and in problems.log instead of a UI that waits forever.
+ */
+export const WORKFLOW_ALLOWED = Object.freeze({
+  SCAN_CHOICE: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
+  SCANNING: ['BACK'],
+  RECORD_READY: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
+});
+export const WORKFLOW_TRANSITIONS = Object.freeze({
+  'SCAN_CHOICE:SCAN_START': 'SCANNING',
+  'SCAN_CHOICE:SCAN_SKIP': 'RECORD_READY',
+  'SCANNING:SCAN_COMPLETE': 'RECORD_READY',
+  'SCANNING:BACK': 'SCAN_CHOICE',
+  'RECORD_READY:BACK': 'SCAN_CHOICE',
+});
+
 export const PODS = [
   { pod: 0, node_id: 0, computed: true, assigned: true, leveled: true, computed_at_ms: 500 },
   { pod: 1, node_id: 1, computed: true, assigned: true, leveled: true, x_mm: 3000, y_mm: 0, z_mm: 0, computed_at_ms: 500 },
@@ -70,7 +88,7 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
         { id: 'power_monitor', state: 'present', required: false, reason: 'sensor_ok', reason_code: 'sensor_ok' },
       ] };
       next.workflow.step = 'SCAN_CHOICE';
-      next.workflow.allowed_actions = ['SCAN_START'];
+      next.workflow.allowed_actions = [...WORKFLOW_ALLOWED.SCAN_CHOICE];
       for (const pod of next.pods) pod.state = 'READY';
       status = next;
       return next;
@@ -150,10 +168,17 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
       let body = {};
       try { body = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8') || '{}'); } catch { return send(400, { ok: false, error: 'bad json' }); }
       const wf = state.workflow;
-      if (body.action === 'workflow_command' && body.generation === wf.generation &&
-          ((body.command === 'SCAN_START' && wf.step === 'SCAN_CHOICE') || (body.command === 'BACK' && wf.step === 'SCANNING'))) {
-        wf.step = body.command === 'SCAN_START' ? 'SCANNING' : 'SCAN_CHOICE';
-        wf.allowed_actions = wf.step === 'SCANNING' ? ['BACK'] : ['SCAN_START'];
+      if (body.action === 'workflow_command') {
+        if (body.generation !== wf.generation) return send(200, { ok: false, reason: 'stale' });
+        const next = WORKFLOW_TRANSITIONS[`${wf.step}:${body.command}`];
+        // Like the firmware: SCAN_COMPLETE needs a saved scan for the active object.
+        const hasScan = readdirSync(storeDir).some((name) => name.endsWith('__scan.bin'));
+        if (next === undefined || (body.command === 'SCAN_COMPLETE' && !hasScan)) {
+          problem(`workflow command refused ${String(body.command)} in step ${wf.step}${next === undefined ? ' (no such transition modeled)' : ' (no saved scan)'}`);
+          return send(200, { ok: false, reason: 'not_allowed' });
+        }
+        wf.step = next;
+        wf.allowed_actions = [...(WORKFLOW_ALLOWED[next] ?? [])];
         wf.generation += 1;
         return send(200, { ok: true, workflow: wf });
       }
