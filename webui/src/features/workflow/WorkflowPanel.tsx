@@ -26,6 +26,10 @@ import {
 } from './workflowViewModel';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
+const WorkflowScanView = lazy(() => import('./WorkflowScanView'));
+
+/** The 3D scan of the placement is shown on the recording page from the moment recording is possible, and with the result afterwards. */
+const SCAN_VIEW_STEPS = new Set(['RECORD_READY', 'RECORDING', 'STOPPED', 'RESULT']);
 
 /**
  * The live geophone signals are offered once the BLE Channel Sounding positions have been calculated, not
@@ -714,6 +718,15 @@ export default function WorkflowPanel({
               onSaved={onRefreshStatus}
             />
           </>
+        )}
+        {workflow?.has_scan === true && workflow.object_id && SCAN_VIEW_STEPS.has(workflow.step) && (
+          <Suspense fallback={<p role="status">{t('workflow.scan3d.loading')}</p>}>
+            <WorkflowScanView
+              objectId={workflow.object_id}
+              sessionId={workflow.step === 'RECORD_READY' ? null : workflow.session_id ?? null}
+              finished={workflow.step === 'STOPPED' || workflow.step === 'RESULT'}
+            />
+          </Suspense>
         )}
         {deleteArmed && <p role="alert">{t('workflow.delete_confirm.prompt')}</p>}
         {liveStep && onAcquisition !== undefined && showLive && (

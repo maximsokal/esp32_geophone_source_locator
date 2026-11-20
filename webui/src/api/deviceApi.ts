@@ -1357,7 +1357,7 @@ export interface LocalizationSessionPodGeometry {
   assigned?: boolean;
   node_id?: number | null;
   hardware_id?: string | null;
-  position_source?: 'none' | 'channel_sounding' | 'channel_sounding_baro' | 'apriltag_center_approx';
+  position_source?: 'none' | 'channel_sounding' | 'channel_sounding_baro' | 'apriltag_center_approx' | 'apriltag_layout';
   /** The AprilTag whose centre gave the position (apriltag_center_approx only). */
   tag_id?: number;
   x_mm?: number;

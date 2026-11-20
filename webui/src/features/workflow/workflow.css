@@ -64,3 +64,9 @@
 .sample-rate-select small {
   display: block;
 }
+
+.workflow-scan3d { display: grid; gap: 0.5rem; margin-block: 1rem; }
+.workflow-scan3d .viewport-shell,
+.workflow-scan3d .scan-viewport,
+.workflow-scan3d .scan-webgl-canvas { min-height: 22rem; }
+.workflow-scan3d .viewport-shell { position: relative; }
