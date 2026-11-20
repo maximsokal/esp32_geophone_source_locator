@@ -12,8 +12,8 @@ try { openssl = findOpenssl(); } catch { openssl = null; }
 const maybe = openssl === null ? describe.skip : describe;
 let n = 0;
 
-function makeCa(): string {
-  const dir = join(base, `ca-${process.pid}-${n += 1}`);
+function makeCa(existing?: string): string {
+  const dir = existing ?? join(base, `ca-${process.pid}-${n += 1}`);
   mkdirSync(dir, { recursive: true });
   const run = (...args: string[]) => execFileSync(openssl!, args, { stdio: 'pipe' });
   run('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', join(dir, 'rootCA.key'), '-out', join(dir, 'rootCA.crt'), '-subj', '/CN=Test Root', '-days', '30', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign');
@@ -46,6 +46,16 @@ maybe('phone-lab certificate issuing (throwaway CA)', () => {
     expect(san).not.toContain('127.0.0.1');
     expect(ensureLeafCert({ ip: '192.168.0.148', outDir, caDir, openssl })).toMatchObject({ reused: true });
     expect(ensureLeafCert({ ip: '192.168.0.149', outDir, caDir, openssl })).toMatchObject({ reused: false, chainVerified: true });
+  });
+
+  it('does not reuse a leaf that was signed by a CA which has since been replaced', () => {
+    const caDir = makeCa();
+    const outDir = join(base, `out-${process.pid}-${n += 1}`);
+    expect(ensureLeafCert({ ip: '192.168.0.148', outDir, caDir, openssl })).toMatchObject({ reused: false });
+    expect(ensureLeafCert({ ip: '192.168.0.148', outDir, caDir, openssl })).toMatchObject({ reused: true });
+    makeCa(caDir); // a regenerated Device CA at the same location
+    const after = ensureLeafCert({ ip: '192.168.0.148', outDir, caDir, openssl });
+    expect(after).toMatchObject({ reused: false, chainVerified: true });
   });
 
   it('refuses an address outside the CA name constraints instead of serving a chain Android would reject', () => {

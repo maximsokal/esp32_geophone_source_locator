@@ -6,6 +6,6 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   appType: 'mpa',
-  /* The synthetic source reads the printable-pattern JSON in ../tools, one level above webui. */
-  server: { host: '127.0.0.1', port: 5188, strictPort: true, fs: { allow: ['..'] } },
+  /* The synthetic source reads the printable-pattern JSON in ../tools; allow exactly that folder, not the whole repository. */
+  server: { host: '127.0.0.1', port: 5188, strictPort: true, fs: { allow: ['.', '../tools/apriltag_sheet'] } },
 });

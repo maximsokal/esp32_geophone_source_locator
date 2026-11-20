@@ -213,13 +213,21 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
   return { middleware, counts, storeFiles: () => readdirSync(storeDir) };
 }
 
-/** Vite plugin wrapper: middleware first, telemetry script at the top of index.html. */
+/** First middleware of the server: nothing (app files, /@fs/, API) is served to a peer outside loopback/private ranges. */
+export function peerGuard(req, res, next) {
+  if (isAllowedPeer(req.socket?.remoteAddress)) { next(); return; }
+  res.writeHead(403, { 'content-type': 'text/plain' });
+  res.end('private network only');
+}
+
+/** Vite plugin wrapper: peer guard and middleware first, telemetry script at the top of index.html. */
 export function phoneLabPlugin(options) {
   return {
     name: 'geolocator-phone-lab',
     configureServer(server) {
       const lab = createPhoneLab({ ...options, loadModule: (path) => server.ssrLoadModule(path) });
       options.onReady?.(lab);
+      server.middlewares.use(peerGuard);
       server.middlewares.use((req, res, next) => { void lab.middleware(req, res, next); });
     },
     transformIndexHtml() {

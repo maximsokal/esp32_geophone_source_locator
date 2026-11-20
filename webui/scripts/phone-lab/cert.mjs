@@ -2,6 +2,7 @@
 // this code never opens, prints or copies it.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 export const LEAF_DAYS = 30;
@@ -37,6 +38,11 @@ export function buildLeafExtensions(ip) {
   ].join('\n');
 }
 
+/** SHA-256 of the PUBLIC Device CA certificate; a leaf signed by an older CA must not be reused. */
+function caFingerprint(caCrt) {
+  return createHash('sha256').update(readFileSync(caCrt)).digest('hex');
+}
+
 function run(openssl, args, env) {
   return execFileSync(openssl, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env }, encoding: 'utf8' });
 }
@@ -66,7 +72,8 @@ export function ensureLeafCert({ ip, outDir, caDir, openssl, selfSigned = false,
   if (existsSync(metaPath) && existsSync(keyPath) && existsSync(certPath)) {
     try {
       const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
-      if (meta.ip === ip && meta.mode === mode && meta.notAfterMs - now() > REUSE_MARGIN_DAYS * 86400000) {
+      const sameCa = !useCa || meta.caSha256 === caFingerprint(caCrt);
+      if (meta.ip === ip && meta.mode === mode && sameCa && meta.notAfterMs - now() > REUSE_MARGIN_DAYS * 86400000) {
         return { key: keyPath, cert: certPath, mode, reused: true, ip, notAfterMs: meta.notAfterMs, chainVerified: meta.chainVerified };
       }
     } catch { /* reissue */ }
@@ -102,6 +109,6 @@ export function ensureLeafCert({ ip, outDir, caDir, openssl, selfSigned = false,
       '-addext', `subjectAltName=IP:${ip},IP:127.0.0.1`]);
   }
   const expires = notAfter(openssl, certPath);
-  writeFileSync(metaPath, JSON.stringify({ ip, mode, notAfterMs: expires, chainVerified }, null, 2));
+  writeFileSync(metaPath, JSON.stringify({ ip, mode, notAfterMs: expires, chainVerified, caSha256: useCa ? caFingerprint(caCrt) : null }, null, 2));
   return { key: keyPath, cert: certPath, mode, reused: false, ip, notAfterMs: expires, chainVerified };
 }

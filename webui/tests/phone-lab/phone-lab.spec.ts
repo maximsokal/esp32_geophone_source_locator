@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const logsRoot = resolve(import.meta.dirname, '../../../logs/phone-lab');
@@ -42,4 +42,18 @@ test('scan artifacts saved by the phone are stored, round-trip byte-exact and ar
   expect((await request.post('/api/control?scan=info&object_id=../x&session_id=S1')).status()).toBe(400);
   await request.post(`/api/control?scan=delete&${q}`);
   expect(await (await request.post(`/api/control?scan=info&${q}`)).json()).toMatchObject({ ok: false, error: 'ESP_ERR_NOT_FOUND' });
+});
+
+test('files outside webui (the rest of the repository, certificates) are not served to LAN clients', async ({ request }) => {
+  const repo = resolve(import.meta.dirname, '../../..').split(String.fromCharCode(92)).join('/');
+  const decoyDir = resolve(import.meta.dirname, '../../../.test-build/phone-lab-e2e/decoy');
+  mkdirSync(decoyDir, { recursive: true });
+  writeFileSync(resolve(decoyDir, 'decoy.txt'), 'DECOY-OUTSIDE-WEBUI');
+  writeFileSync(resolve(decoyDir, 'decoy.key'), 'DECOY-KEY');
+  for (const rel of ['.test-build/phone-lab-e2e/decoy/decoy.txt', '.test-build/phone-lab-e2e/decoy/decoy.key', 'CLAUDE.md', 'components/web_server/certs/README.md']) {
+    const response = await request.get(`/@fs/${repo}/${rel}`);
+    expect(response.status(), rel).toBe(403);
+    expect(await response.text()).not.toContain('DECOY');
+  }
+  expect((await request.get('/src/main.tsx')).status()).toBe(200); // the app itself is still served
 });

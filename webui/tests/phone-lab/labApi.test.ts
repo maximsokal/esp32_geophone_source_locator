@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs dev scripts without type declarations
-import { createPhoneLab, sanitizeLabEvent } from '../../scripts/phone-lab/plugin.mjs';
+import { createPhoneLab, peerGuard, sanitizeLabEvent } from '../../scripts/phone-lab/plugin.mjs';
 
 const webuiRoot = resolve(import.meta.dirname, '../..');
 const base = resolve(webuiRoot, '../.test-build/phone-lab-api-test');
@@ -91,6 +91,27 @@ describe('phone lab fake device API', () => {
     await lab.middleware({ url: '/api/status', method: 'GET', socket: { remoteAddress: '8.8.8.8' } }, res, () => { throw new Error('must not pass through'); });
     expect(out.code).toBe(403);
     expect(lab.counts.rejectedPeers).toBe(1);
+  });
+});
+
+describe('peer guard (applies to every path, not only /api and /lab)', () => {
+  const run = (remoteAddress: string | undefined, url: string) => {
+    const out: { code?: number; passed: boolean } = { passed: false };
+    const res = { writeHead(code: number) { out.code = code; }, end() {} };
+    peerGuard({ url, socket: { remoteAddress } }, res, () => { out.passed = true; });
+    return out;
+  };
+  it('lets loopback and private peers through', () => {
+    for (const peer of ['127.0.0.1', '::1', '192.168.0.50', '::ffff:10.1.2.3']) expect(run(peer, '/src/main.tsx').passed).toBe(true);
+  });
+  it('blocks public and unknown peers on app files and /@fs/ alike', () => {
+    for (const peer of ['8.8.8.8', '::ffff:8.8.8.8', '2001:db8::1', undefined]) {
+      for (const url of ['/', '/src/main.tsx', '/@fs/C:/anything', '/api/status']) {
+        const out = run(peer, url);
+        expect(out.passed).toBe(false);
+        expect(out.code).toBe(403);
+      }
+    }
   });
 });
 
