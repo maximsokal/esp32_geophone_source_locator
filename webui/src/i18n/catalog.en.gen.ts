@@ -1077,6 +1077,7 @@ export const en: Record<I18nKey, string> = {
   "scan.renderer.failed": "3D result renderer failed: {error}",
   "scan.renderer.retry": "Retry",
   "scan.residual": "Residual",
+  "scan.retry.load": "Retry loading the scan",
   "scan.retry.occupancy": "Retry occupancy save",
   "scan.retry.preview": "Retry preview save",
   "scan.retry.scan": "Retry scan save",

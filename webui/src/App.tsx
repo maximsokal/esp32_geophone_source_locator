@@ -319,6 +319,9 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const scanEncodePreviousPhase = useRef<ScanStoragePhase | null>(null);
   const scanLoadSession = useRef<string | null>(null);
   const sessionEvidenceLoad = useRef<string | null>(null);
+  /* A failed READ of the saved scan (HTTP/SD hiccup, decode worker crash) is retryable in place; a scan with no usable surface is not. */
+  const [scanReadRetryable, setScanReadRetryable] = useState(false);
+  const [scanLoadAttempt, setScanLoadAttempt] = useState(0);
   /* Raw mirror of registrationArtifact. Builders and viewers never use it without the applicability predicate. */
   const registrationForSession = useRef<{ objectId: string; sessionId: string; artifact: RegistrationArtifact } | null>(null);
   const geometryGenerationRef = useRef<number | null>(null);
@@ -610,6 +613,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     setContinuationPhase(null);
     scanLoadSession.current = null;
     sessionEvidenceLoad.current = null;
+    setScanReadRetryable(false);
     scanIntent.current = 'fresh';
     continuationBase.current = null;
     continuationBaseRegistration.current = null;
@@ -664,7 +668,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         ),
       ]).then(([geometryResult, registrationResult]) => {
         if (cancelled || generation !== storageGeneration.current) return;
-        sessionEvidenceLoad.current = key;
+        /* A failed sub-request stays retryable (issue #22): only a fully loaded evidence set is remembered for this screen. */
+        if (geometryResult.ok && registrationResult.ok) sessionEvidenceLoad.current = key;
         if (geometryResult.ok) {
           applyGeometry(geometryResult.listing.geometry);
           setLocalizationRunListing(geometryResult.listing);
@@ -795,6 +800,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
               reason instanceof ScanDecodeCancelledError) return;
           scanLoadSession.current = key;
           const message = reason instanceof Error ? reason.message : String(reason);
+          setScanReadRetryable(message !== 'scan.error.no_stable_surface');
           setScanStorageError(TranslatedError.fromKey(message === 'scan.error.no_stable_surface'
             ? 'scan.error.no_stable_surface'
             : 'scan.error.restore_failed'));
@@ -807,6 +813,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         if (cancelled || generation !== storageGeneration.current || decodeOwnerGeneration !== scanDecodeOwnerGeneration.current) return;
         scanLoadSession.current = key;
         const message = reason instanceof Error ? reason.message : String(reason);
+        setScanReadRetryable(true);
         setScanStorageError(reason);
         setScanStoragePhase('error');
         void persistenceController.reconcile(objectId, sessionId, null);
@@ -819,7 +826,17 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       cancelled = true;
       cancelScanDecode('Saved scan load effect ended.');
     };
-  }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration, cancelScanDecode]);
+  }, [objectId, sessionId, scanLoadAttempt, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration, cancelScanDecode]);
+
+  /* Retry loading the saved scan (and any sensor evidence that failed) without leaving the scanner screen. */
+  const retryScanLoad = useCallback((): void => {
+    if (objectId === null || sessionId === null) return;
+    scanLoadSession.current = null;
+    setScanReadRetryable(false);
+    setScanStorageError(null);
+    setScanStoragePhase('loading');
+    setScanLoadAttempt((attempt) => attempt + 1);
+  }, [objectId, sessionId]);
 
   const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
     cancelScanDecode('A newer scanner intent was requested.');
@@ -1412,7 +1429,14 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       )}
 
       {!xrSessionActive && scanStorageError !== null && (
-        <div className="xr-runtime-error" role="alert">{formatErrorText(locale, scanStorageError)}</div>
+        <div className="xr-runtime-error" role="alert">
+          {formatErrorText(locale, scanStorageError)}
+          {scanReadRetryable && (
+            <button type="button" className="scan-clear-button" data-testid="retry-scan-load" disabled={storageActionsDisabled} onClick={retryScanLoad}>
+              {t('scan.retry.load')}
+            </button>
+          )}
+        </div>
       )}
       {!xrSessionActive && continuationPhaseLabel !== null && (
         <div className="xr-runtime-warning" role="status" aria-live="polite">{continuationPhaseLabel}</div>

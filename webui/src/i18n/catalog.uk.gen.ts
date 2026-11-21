@@ -1077,6 +1077,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.renderer.failed": "Не вдалося показати 3D-результат: {error}",
   "scan.renderer.retry": "Повторити",
   "scan.residual": "Нев’язка",
+  "scan.retry.load": "Повторити завантаження скану",
   "scan.retry.occupancy": "Повторити збереження карти простору",
   "scan.retry.preview": "Повторити збереження перегляду",
   "scan.retry.scan": "Повторити збереження скану",

@@ -1075,6 +1075,7 @@ export const i18nKeys = [
   "scan.renderer.failed",
   "scan.renderer.retry",
   "scan.residual",
+  "scan.retry.load",
   "scan.retry.occupancy",
   "scan.retry.preview",
   "scan.retry.scan",

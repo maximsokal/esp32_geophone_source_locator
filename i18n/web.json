@@ -615,6 +615,7 @@
     "scan.volume.occupancy_not_ready": { "en": "Localization data is not ready until occupancy is saved.", "uk": "Дані локалізації будуть готові після збереження карти простору." },
     "scan.volume.preview_not_ready": { "en": "The ESP32 voxel preview is not ready.", "uk": "Воксельний перегляд ESP32 ще не готовий." },
     "scan.retry.scan": { "en": "Retry scan save", "uk": "Повторити збереження скану" },
+    "scan.retry.load": { "en": "Retry loading the scan", "uk": "Повторити завантаження скану" },
     "scan.retry.occupancy": { "en": "Retry occupancy save", "uk": "Повторити збереження карти простору" },
     "scan.retry.preview": { "en": "Retry preview save", "uk": "Повторити збереження перегляду" },
     "scan.volume.bridge_note": { "en": "Weak measured surfels suggest a possible bridge from retained structure to {count} quarantined island(s). Rescan those boundaries. They cannot expand the UNKNOWN search envelope until their physical support is sufficient.", "uk": "Слабкі виміряні поверхневі елементи вказують на можливий міст до ізольованих ділянок: {count}. Проскануйте ці межі ще раз. Вони не розширять НЕВІДОМИЙ об’єм пошуку, доки не матимуть достатньої фізичної опори." },

@@ -180,6 +180,64 @@ describe('App off-thread saved scan decode lifecycle (MAX-392)', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('Could not restore the saved 3D scan.');
   });
 
+  describe('retry of a failed saved-scan read (issue #22)', () => {
+    const retryButton = (renderer: ReactTestRenderer) => renderer.root.findAllByProps({ 'data-testid': 'retry-scan-load' }).filter((node) => typeof node.type === 'string');
+
+    it('recovers in place after a decode worker crash, without leaving the scanner and without writing anything', async () => {
+      const knownGood = encodeScanArtifact(makeValidScanSnapshot());
+      device.scan = knownGood.slice();
+      const renderer = await mount();
+      await act(async () => { h.decodeWorkers[0].fail('worker crashed'); });
+      await flush();
+      expect(retryButton(renderer)).toHaveLength(1);
+      expect(h.loadScan).toHaveBeenCalledTimes(1);
+
+      await act(async () => { retryButton(renderer)[0].props.onClick(); });
+      await flush();
+      expect(h.loadScan).toHaveBeenCalledTimes(2);
+      expect(h.decodeWorkers).toHaveLength(2);
+      await act(async () => { h.decodeWorkers[1].send(workerResult(h.decodeWorkers[1])); });
+      await flush();
+
+      expect(h.viewportProps.snapshot.pointCount).toBe(1);
+      expect(retryButton(renderer)).toHaveLength(0);
+      expect(JSON.stringify(renderer.toJSON())).not.toContain('Could not restore the saved 3D scan.');
+      expect(device.scan).toEqual(knownGood);
+      expect(h.saveScan).not.toHaveBeenCalled();
+      expect(h.delScan).not.toHaveBeenCalled();
+    });
+
+    it('recovers after the HTTP read of the scan itself was rejected, and re-requests the sensor evidence that failed', async () => {
+      device.scan = encodeScanArtifact(makeValidScanSnapshot());
+      h.loadScan.mockReset().mockRejectedValueOnce(new Error('temporarily busy')).mockImplementation(async () => device.scan?.slice() ?? null);
+      h.fetchRuns.mockReset().mockRejectedValueOnce(new Error('busy')).mockResolvedValue({ object_id: 'OBJ', session_id: 'S', runs: [], geometry: { available: true, pods: [] } });
+      const renderer = await mount();
+      expect(retryButton(renderer)).toHaveLength(1);
+      const runsBefore = h.fetchRuns.mock.calls.length;
+
+      await act(async () => { retryButton(renderer)[0].props.onClick(); });
+      await flush();
+      expect(h.fetchRuns.mock.calls.length).toBeGreaterThan(runsBefore);
+      await act(async () => { h.decodeWorkers[h.decodeWorkers.length - 1].send(workerResult(h.decodeWorkers[h.decodeWorkers.length - 1])); });
+      await flush();
+      expect(h.viewportProps.snapshot.pointCount).toBe(1);
+      expect(retryButton(renderer)).toHaveLength(0);
+    });
+
+    it('offers no retry for a scan that decoded but has no usable surface (retrying cannot change it)', async () => {
+      device.scan = encodeScanArtifact(makeValidScanSnapshot());
+      const renderer = await mount();
+      const worker = h.decodeWorkers[0];
+      const response = workerResult(worker);
+      if (response.type !== 'result') throw new Error('Expected a decode result.');
+      await act(async () => { worker.send({ ...response, snapshot: { ...response.snapshot, pointCount: 0 } }); });
+      await flush();
+      expect(JSON.stringify(renderer.toJSON())).toContain('The saved scan has no stable measured surface.');
+      expect(retryButton(renderer)).toHaveLength(0);
+      expect(h.viewportProps?.snapshot ?? null).toBeNull();
+    });
+  });
+
   it('terminates on object switch and drops a late result from the previous owner', async () => {
     device.scan = encodeScanArtifact(makeValidScanSnapshot());
     const renderer = await mount();
