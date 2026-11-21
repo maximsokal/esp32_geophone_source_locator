@@ -47,6 +47,7 @@ GUARD_HELD_BY_CALLER = {
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_next_scan_id",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_write_scan_ref",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_promote_scan",
+    "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_move_back",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_restore_staged_artifacts",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_restore_staged_artifacts",
     "components/seismic_recorder/seismic_recorder_fs_list.c::seismic_recorder_list_metadata_state",

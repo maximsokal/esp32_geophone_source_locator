@@ -13,6 +13,7 @@
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 #endif
 #include "app_task_config.h"
+#include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -1861,32 +1862,12 @@ static esp_err_t web_scan_crc32_range(
 }
 
 
-static const char *web_scan_json_property_value(
-    const char *json,
-    size_t length,
-    const char *key
-)
-{
-    const size_t key_length = strlen(key);
-    const char *cursor = json;
-    const char *limit = json + length;
-    while (cursor < limit) {
-        const char *found = strstr(cursor, key);
-        if (found == NULL || found >= limit) return NULL;
-        size_t boundary = (size_t)(found - json);
-        while (boundary > 0U && web_scan_is_json_space(json[boundary - 1U])) --boundary;
-        if (boundary > 0U && (json[boundary - 1U] == '{' || json[boundary - 1U] == ',')) {
-            const char *value = found + key_length;
-            while (value < limit && web_scan_is_json_space(*value)) ++value;
-            if (value >= limit || *value++ != ':') return NULL;
-            while (value < limit && web_scan_is_json_space(*value)) ++value;
-            return value < limit ? value : NULL;
-        }
-        cursor = found + 1;
-    }
-    return NULL;
-}
-
+/*
+ * registration-v1.json admission: a real parse of the ROOT object, never a substring search (a nested decoy "scan_frame_id" or a repeated
+ * root key must not be able to pick the scan binding). Root keys are unique, "schema" is the whole number 1, and "scan_frame_id" is a
+ * scan-crc32 string or null. The full field-by-field contract stays with the WebUI decoder and the reader that applies the file.
+ */
+#define WEB_SCAN_REGISTRATION_MAX_ROOT_KEYS 32
 
 static bool web_scan_parse_registration_json(
     char *json,
@@ -1895,54 +1876,41 @@ static bool web_scan_parse_registration_json(
     bool *bound_out
 )
 {
-    static const char schema_key[] = "\"schema\"";
-    static const char frame_key[] = "\"scan_frame_id\"";
     if (json == NULL || length == 0U || memchr(json, '\0', length) != NULL) return false;
     json[length] = '\0';
+    if (bound_out != NULL) *bound_out = false;
 
-    size_t first = 0U;
-    while (first < length && web_scan_is_json_space(json[first])) ++first;
-    size_t last = length;
-    while (last > first && web_scan_is_json_space(json[last - 1U])) --last;
-    if (first >= last || json[first] != '{' || json[last - 1U] != '}') return false;
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) return false;
+    bool ok = cJSON_IsObject(root);
 
-    bool in_string = false;
-    bool escaped = false;
-    int brace_depth = 0;
-    for (size_t i = first; i < last; ++i) {
-        const char value = json[i];
-        if (in_string) {
-            if (escaped) escaped = false;
-            else if (value == '\\') escaped = true;
-            else if (value == '"') in_string = false;
+    size_t keys = 0U;
+    for (const cJSON *a = ok ? root->child : NULL; ok && a != NULL; a = a->next) {
+        if (a->string == NULL || ++keys > WEB_SCAN_REGISTRATION_MAX_ROOT_KEYS) {
+            ok = false;
+            break;
         }
-        else if (value == '"') in_string = true;
-        else if (value == '{') ++brace_depth;
-        else if (value == '}') {
-            if (--brace_depth < 0) return false;
+        for (const cJSON *b = a->next; b != NULL; b = b->next) {
+            if (b->string != NULL && strcmp(a->string, b->string) == 0) ok = false; /* duplicate root key */
         }
     }
-    if (in_string || brace_depth != 0) return false;
-    if (web_scan_json_property_value(json + first, last - first, schema_key) == NULL) return false;
 
-    if (bound_out != NULL) *bound_out = false;
-    const char *frame_value = web_scan_json_property_value(json + first, last - first, frame_key);
-    if (frame_value == NULL || *frame_value == 'n') return true;
-    if (*frame_value != '"') return true;
-
-    ++frame_value;
-    if (strlen(frame_value) < WEB_SCAN_CRC32_ID_SIZE) return false;
-    char id[WEB_SCAN_CRC32_ID_SIZE];
-    memcpy(id, frame_value, WEB_SCAN_CRC32_ID_SIZE - 1U);
-    id[WEB_SCAN_CRC32_ID_SIZE - 1U] = '\0';
-    if (frame_value[WEB_SCAN_CRC32_ID_SIZE - 1U] != '"') return false;
-    const char after = frame_value[WEB_SCAN_CRC32_ID_SIZE];
-    if (after != ',' && after != '}') return false;
+    const cJSON *schema = ok ? cJSON_GetObjectItemCaseSensitive(root, "schema") : NULL;
+    ok = ok && cJSON_IsNumber(schema) && schema->valuedouble == 1.0;
 
     uint32_t crc32 = 0U;
-    if (!web_scan_parse_crc32_id(id, &crc32)) return false;
-    if (source_crc_out != NULL) *source_crc_out = crc32;
-    if (bound_out != NULL) *bound_out = true;
+    bool bound = false;
+    const cJSON *frame = ok ? cJSON_GetObjectItemCaseSensitive(root, "scan_frame_id") : NULL;
+    if (ok && frame != NULL && !cJSON_IsNull(frame)) {
+        ok = cJSON_IsString(frame) && frame->valuestring != NULL &&
+            strlen(frame->valuestring) == (size_t)(WEB_SCAN_CRC32_ID_SIZE - 1U) &&
+            web_scan_parse_crc32_id(frame->valuestring, &crc32);
+        bound = ok;
+    }
+    cJSON_Delete(root);
+    if (!ok) return false;
+    if (bound && source_crc_out != NULL) *source_crc_out = crc32;
+    if (bound_out != NULL) *bound_out = bound;
     return true;
 }
 

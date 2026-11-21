@@ -1812,6 +1812,41 @@ static void test_registration_unbound_is_rejected(void)
 }
 
 
+/* Issue #28: the registration admission parses the ROOT object; nested decoys, repeated root keys and a missing root schema are refused. */
+static void test_registration_admission_parses_the_root_object(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {5U, 10U, 15U};
+    char good[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), good);
+    const char *bad = "scan-crc32:deadbeef";
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+
+    char body[256];
+    const char *templates[] = {
+        "{\"schema\":1,\"nested\":{\"scan_frame_id\":\"%s\"},\"scan_frame_id\":\"%s\"}",
+        "{\"schema\":1,\"scan_frame_id\":\"%s\",\"scan_frame_id\":\"%s\"}",
+        "{\"nested\":{\"schema\":1},\"scan_frame_id\":\"%s\",\"x\":\"%s\"}",
+        "{\"schema\":2,\"scan_frame_id\":\"%s\",\"x\":\"%s\"}",
+        "{\"schema\":1,\"scan_frame_id\":\"%s\",\"x\":\"%s\"",
+        "[{\"schema\":1,\"scan_frame_id\":\"%s\",\"x\":\"%s\"}]",
+    };
+    for (size_t index = 0U; index < sizeof(templates) / sizeof(templates[0]); ++index) {
+        const int written = snprintf(body, sizeof(body), templates[index], good, bad);
+        assert(written > 0 && (size_t)written < sizeof(body));
+        assert(!save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", (const unsigned char *)body, (size_t)written));
+        assert(!path_exists(registration_path));
+    }
+    /* A root-level binding to the real scan is still accepted. */
+    const int written = snprintf(body, sizeof(body), "{\"schema\":1,\"scan_frame_id\":\"%s\",\"source\":\"apriltag\"}", good);
+    assert(written > 0 && (size_t)written < sizeof(body));
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", (const unsigned char *)body, (size_t)written));
+    assert(path_exists(registration_path));
+    remove_layout();
+}
+
+
 static void test_registration_round_trip_bounds_and_session_validation(void)
 {
     make_layout();
@@ -2540,7 +2575,7 @@ static void test_recovery_matrix_validates_every_artifact_kind(void)
     static const unsigned char bad_bytes[] = {'b', 'a', 'd'};
     static const unsigned char temp_bytes[] = {'t', 'm', 'p'};
     static const unsigned char registration_final[] = "{\"schema\":1}";
-    static const unsigned char registration_backup[] = "{\"schema\":2}";
+    static const unsigned char registration_backup[] = "{\"schema\":1,\"generation\":2}";
     char scan_id_a[20];
     char scan_id_b[20];
     make_scan_id(UINT32_C(0x11111111), scan_id_a);
@@ -2663,6 +2698,7 @@ int main(void)
     test_identity_cache_publish_preserves_replacement();
     test_registration_unbound_is_rejected();
     test_registration_round_trip_bounds_and_session_validation();
+    test_registration_admission_parses_the_root_object();
     test_tags_round_trip_is_json_bound_and_removed_with_its_scan();
     test_tags_must_name_the_current_scan_and_keep_the_contract();
     test_a_replaced_scan_takes_its_tag_positions_with_it();
