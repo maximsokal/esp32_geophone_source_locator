@@ -1,11 +1,14 @@
 import type { ComponentProps } from 'react';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+/* The evidence card of an opened session talks to the device (scan info); this file models only the scanner entry. */
+vi.mock('../../src/features/objects/RecordingEvidenceCard', () => ({ default: () => null }));
 import ObjectsFeature from '../../src/features/objects/ObjectsFeature';
 import DeviceConsoleApp from '../../src/DeviceConsoleApp';
 import { translate } from '../../src/i18n';
-import { readyStatus, renderUi } from './setup';
+import { clearScanLaunchIntent, hasScanLaunchIntent } from '../../src/xr/scanLaunchIntent';
+import { readyStatus, renderUi, respondJson } from './setup';
 
 type Props = ComponentProps<typeof ObjectsFeature>;
 function objectProps(): Props {
@@ -136,4 +139,39 @@ it('production console admits only one create request while the response is pend
   await act(async () => { finish(Response.json({ ok: true })); });
   await waitFor(() => expect(create.disabled).toBe(false));
   expect(unexpected).toEqual([]);
+});
+
+describe('one-tap scan entry from the objects list (issue #21)', () => {
+  const navigatorWithActivation = navigator as Navigator & { userActivation?: { isActive: boolean } };
+  afterEach(() => {
+    clearScanLaunchIntent();
+    delete navigatorWithActivation.userActivation;
+  });
+
+  function propsWithSession(): Props {
+    return {
+      ...objectProps(),
+      sessions: {
+        object_id: 'OBJ_0001', available: true,
+        sessions: [{
+          session_id: 'S000001', status: 'complete', complete: true, readable: true, source: 'AD7606',
+          sample_rate_hz: 500, channel_count: 4, samples_written: 12000, dropped_frames: 0, recording_ms: 24000,
+        }],
+      },
+    };
+  }
+
+  it.each([[true], [false]])('the "3D scan" tap opens the scanner once and leaves a launch intent only with a live activation (%s)', async (active) => {
+    Object.defineProperty(navigator, 'userActivation', { configurable: true, value: { isActive: active } });
+    respondJson('/api/localization/runs?object_id=OBJ_0001&session_id=S000001', { object_id: 'OBJ_0001', session_id: 'S000001', runs: [], geometry: { available: false, pods: [] } });
+    respondJson('/api/seismic/session?object_id=OBJ_0001&session_id=S000001&start_frame=0&points=240', {});
+    const user = userEvent.setup();
+    const props = propsWithSession();
+    renderUi(<ObjectsFeature {...props} />, 'en');
+    await user.click(screen.getByRole('button', { name: /S000001/ }));
+    expect(hasScanLaunchIntent()).toBe(false);                       /* opening a session is not a scan request */
+    await user.click(screen.getByRole('button', { name: translate('en', 'objects.scan_add') }));
+    expect(props.onOpenScanner).toHaveBeenCalledExactlyOnceWith('OBJ_0001', 'S000001');
+    expect(hasScanLaunchIntent()).toBe(active);
+  });
 });

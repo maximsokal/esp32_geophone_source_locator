@@ -1517,6 +1517,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         sessionId={sessionId}
         savedScanAvailable={storageGood && durableViewport && hasMeasuredScan}
         savedScanBusy={storageBusy}
+        scanLaunchReady={scanStoragePhase === 'none' && !savedScanAvailable(scanDurability)}
         onScanIntent={handleScanIntent}
         onDeleteSavedScan={deleteSavedScan}
         onSessionActiveChange={handleSessionActiveChange}

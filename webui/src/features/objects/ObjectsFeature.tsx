@@ -19,6 +19,7 @@ import {
   recordingStartUnavailable,
 } from './recordingGate';
 import { recordingGateReason, recordingGateWarning } from './recordingGateUi';
+import { requestScanLaunch } from '../../xr/scanLaunchIntent';
 import '../seismic/SavedSeismicViewer.css';
 import '../workflow/workflow.css';
 
@@ -467,7 +468,7 @@ export default function ObjectsFeature(props: Props) {
                     <button
                       disabled={busy}
                       className="secondary"
-                      onClick={() => props.onOpenScanner(selected.id, openSession.session_id)}
+                      onClick={() => { requestScanLaunch(selected.id, openSession.session_id); props.onOpenScanner(selected.id, openSession.session_id); }}
                     >{t('objects.scan_add')}</button>
                     <button
                       disabled={busy}

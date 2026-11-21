@@ -66,6 +66,7 @@ import { deferred } from '../xr/support/xrFakes';
 import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import { liveComputeScheduler } from '../../src/xr/liveComputeScheduler';
 import { optionalMonocularPrior } from '../../src/xr/monocularPriorRuntime';
+import { clearScanLaunchIntent, hasScanLaunchIntent, requestScanLaunch } from '../../src/xr/scanLaunchIntent';
 
 const mounted:ReactTestRenderer[]=[];
 type BrowserListener=EventListenerOrEventListenerObject;
@@ -673,5 +674,80 @@ describe('XrRuntimePanel lifecycle',()=>{
       expect(bluetooth.listeners.size).toBe(1);unmount(renderer);const late=bluetooth.createScan();pending.resolve(late);await settleReact();bluetooth.advertise();
       expect(bluetooth.scanStops).toBe(1);expect(bluetooth.liveScans).toBe(0);expect(bluetooth.listeners.size).toBe(0);
     }
+  });
+});
+
+describe('one-tap scan launch (issue #21)',()=>{
+  const live=()=>vi.stubGlobal('navigator',{userActivation:{isActive:true}});
+  const starts=()=>panelHarness.runtimes.reduce((sum:number,runtime:any)=>sum+runtime.generation,0);
+  beforeEach(()=>{clearScanLaunchIntent();});
+  afterEach(()=>{clearScanLaunchIntent();});
+
+  it('starts exactly one Fresh scan from the tap that opened the scanner, with no second Start tap',async()=>{
+    live();expect(requestScanLaunch('OBJ_1','S_1')).toBe(true);
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(1);
+    expect(panelHarness.runtimes[0].state.phase).toBe('starting');
+    expect(hasScanLaunchIntent()).toBe(false);
+    unmount(renderer);
+  });
+
+  it('does not start when the tap carried no live activation: the Start button remains the way in',async()=>{
+    vi.stubGlobal('navigator',{userActivation:{isActive:false}});
+    expect(requestScanLaunch('OBJ_1','S_1')).toBe(false);
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);
+    expect(panelHarness.runtimes[0].state.phase).toBe('idle');
+    expect(renderer.root.findAll((node)=>node.props.className==='xr-start-button').length).toBeGreaterThan(0);
+    unmount(renderer);
+  });
+
+  it('waits for the saved-scan restore: nothing starts while it is pending, then one start when it found no scan',async()=>{
+    live();requestScanLaunch('OBJ_1','S_1');
+    const props={objectId:'OBJ_1',sessionId:'S_1'};
+    const renderer=await mountPanel({...props,scanLaunchReady:false});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{...props,scanLaunchReady:true})));await settleReact();});
+    expect(starts()).toBe(1);
+    unmount(renderer);
+  });
+
+  it('never starts over a saved scan: it opens as viewer and the intent is dropped',async()=>{
+    live();requestScanLaunch('OBJ_1','S_1');
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true,savedScanAvailable:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);
+    expect(hasScanLaunchIntent()).toBe(false);
+    unmount(renderer);
+  });
+
+  it('ignores an intent for another session and an expired one',async()=>{
+    live();requestScanLaunch('OBJ_1','S_OTHER');
+    let renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);unmount(renderer);
+
+    panelHarness.runtimes=[];
+    requestScanLaunch('OBJ_1','S_1',Date.now()-60_000);
+    renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);unmount(renderer);
+  });
+
+  it('cannot repeat: Strict Mode double effects and a later remount start a scan only once',async()=>{
+    live();requestScanLaunch('OBJ_1','S_1');
+    let renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true},true);
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(1);
+    unmount(renderer);
+
+    panelHarness.runtimes=[];
+    renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);
+    unmount(renderer);
   });
 });

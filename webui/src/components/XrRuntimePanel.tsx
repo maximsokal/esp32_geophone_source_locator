@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import { clearScanLaunchIntent, consumeScanLaunchIntent } from '../xr/scanLaunchIntent';
 import { formatErrorText, translate, useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../i18n/format';
 import {
@@ -74,6 +75,8 @@ interface XrRuntimePanelProps {
   sessionId?: string | null;
   savedScanAvailable?: boolean;
   savedScanBusy?: boolean;
+  /** The saved-scan restore finished and found no scan: a pending one-tap intent may start a Fresh scan now (issue #21). */
+  scanLaunchReady?: boolean;
   onScanIntent?: (intent: ScanStartIntent) => boolean;
   onDeleteSavedScan?: () => void;
   onSessionActiveChange?: (active:boolean)=>void;
@@ -127,6 +130,7 @@ export function XrRuntimePanel({
   sessionId=null,
   savedScanAvailable=false,
   savedScanBusy=false,
+  scanLaunchReady=false,
   onScanIntent,
   onDeleteSavedScan,
   onSessionActiveChange,
@@ -404,6 +408,16 @@ export function XrRuntimePanel({
       if(phase!=='starting'&&phase!=='running'&&phase!=='stopping')onScanLaunchAborted?.();
     }
   };
+
+  /* One-tap start: a tap on "3D scan" left a single-use intent (scanLaunchIntent.ts). It is honoured only for a session with no saved scan, while the
+     browser activation of that tap is still live; otherwise the Start button below stays the way in. A saved scan drops the intent: it opens as viewer. */
+  useEffect(()=>{
+    if(savedScanAvailable){clearScanLaunchIntent();return;}
+    if(!scanLaunchReady||!canStart||objectId===null||sessionId===null)return;
+    if(!consumeScanLaunchIntent(objectId,sessionId))return;
+    clientDiagnostics.info('XR_ONE_TAP_LAUNCH',{objectId,sessionId});
+    void startPreparedScan('fresh');
+  },[scanLaunchReady,canStart,savedScanAvailable,objectId,sessionId]);
 
   const continuationSampleReady=runtimeState.pointCount>=120;
 
