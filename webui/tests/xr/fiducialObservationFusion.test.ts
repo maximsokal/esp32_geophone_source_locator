@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  countIndependentViews, fuseTagObservations, tagObservationViewBucketKey, TAG_OBSERVATION_MIN_BASELINE_METERS, type TagObservation,
+  clusterTagPositions, countIndependentViews, fuseTagObservations, tagObservationViewBucketKey, TAG_OBSERVATION_MIN_BASELINE_METERS, type TagObservation,
 } from '../../src/xr/fiducial/tagObservationFusion';
 
 function observedFromView(
@@ -36,6 +36,8 @@ describe('fiducial observation fusion', () => {
       inlierCount: 5,
       independentViewCount: 5,
       confirmed: true,
+      frameJump: false,          /* the distant point is one stray sighting, not a second cluster */
+      jumpSeparationM: null,
     });
   });
 
@@ -196,5 +198,46 @@ describe('independent views need a real baseline, and the bucket key uses WebXR 
     expect(key(level)).toBe(key(down));
     expect(key([1, 0, 0])).not.toBe(key(level));         /* a 90 degree turn about the vertical is a different heading */
     expect(key([0, 0.5, -Math.sqrt(0.75)])).not.toBe(key(level));   /* a 30 degree look-up is a different elevation */
+  });
+});
+
+describe('a scan frame that shifts without a reset event is detected (the 2026-11-21 phone run)', () => {
+  const seen = (position: [number, number, number], camera: [number, number, number]): TagObservation =>
+    ({ tagId: 3, positionScan: position, cameraPosition: camera, cameraForward: [0, 0, -1] });
+  /* G3 as logged: x -0.157, -0.158, -0.164 first; after tracking relocalised, -4.400, -4.395, -4.391 (same tag, 4.2 m apart). */
+  const before = [seen([-0.157, 1.03, -0.101], [-0.396, 1.422, -0.142]), seen([-0.158, 1.032, -0.102], [-0.393, 1.408, -0.133]), seen([-0.164, 1.041, -0.102], [-0.392, 1.408, -0.134])];
+  const after = [seen([-4.4, 0.987, -0.189], [-4.266, 1.417, -0.025]), seen([-4.395, 0.991, -0.189], [-4.266, 1.421, 0.001]), seen([-4.391, 0.996, -0.182], [-4.305, 1.412, -0.103]),
+    seen([-4.389, 0.994, -0.18], [-4.0, 1.4, 0.3]), seen([-4.392, 0.99, -0.185], [-3.7, 1.4, 0.5])];
+
+  it('flags the jump, reports the gap and never confirms the tag, however many sightings and views there are', () => {
+    const tag = fuseTagObservations([...before, ...after], { minObservations: 5, minIndependentViews: 3 }).byTagId[3]!;
+    expect(tag.observationCount).toBe(8);
+    expect(tag.independentViewCount).toBeGreaterThanOrEqual(3);
+    expect(tag.frameJump).toBe(true);
+    expect(tag.jumpSeparationM).toBeGreaterThan(4.0);
+    expect(tag.jumpSeparationM).toBeLessThan(4.5);
+    expect(tag.confirmed).toBe(false);
+  });
+
+  it('gives the same verdict in any order of arrival', () => {
+    const all = [...before, ...after];
+    expect(fuseTagObservations([...all].reverse()).byTagId[3]!.frameJump).toBe(true);
+    expect(fuseTagObservations([after[0], before[0], after[1], before[1], after[2], before[2], after[3], after[4]]).byTagId[3]!.frameJump).toBe(true);
+  });
+
+  it('does not flag a stable tag, ordinary centimetre noise or a single stray sighting', () => {
+    const stable = fuseTagObservations(after, { minObservations: 5, minIndependentViews: 3 }).byTagId[3]!;
+    expect(stable.frameJump).toBe(false);
+    expect(stable.jumpSeparationM).toBeNull();
+    expect(stable.confirmed).toBe(true);
+    const oneStray = fuseTagObservations([...after, seen([-0.2, 1.0, -0.1], [-0.4, 1.4, -0.1])]).byTagId[3]!;
+    expect(oneStray.frameJump).toBe(false);                           /* a lone outlier is rejected by the median gate, not a frame jump */
+    expect(oneStray.confirmed).toBe(true);
+  });
+
+  it('clusters by single linkage so a slowly drifting tag stays one cluster', () => {
+    const drift = [0, 0.2, 0.4, 0.6, 0.8].map((x) => [x, 1, 0] as [number, number, number]);
+    expect(clusterTagPositions(drift)).toHaveLength(1);
+    expect(clusterTagPositions([[0, 0, 0], [0.01, 0, 0], [3, 0, 0], [3.01, 0, 0], [9, 0, 0]]).map((cluster) => cluster.length)).toEqual([2, 2, 1]);
   });
 });

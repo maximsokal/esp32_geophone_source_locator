@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { fuseTagObservations } from '../../src/xr/fiducial/tagObservationFusion';
-import { confirmedTagIds, newTagScanNotices, registrationOutcome, tagChipStatuses, tagScanNoticeText } from '../../src/xr/fiducial/tagModeState';
+import { confirmedTagIds, frameJumpTagIds, newFrameJumpNotices, newTagScanNotices, registrationOutcome, tagChipStatuses, tagScanNoticeText } from '../../src/xr/fiducial/tagModeState';
 import { formatNumber } from '../../src/i18n/format';
 import { loadUkrainianCatalog, translate, type I18nLocale } from '../../src/i18n';
 
@@ -75,5 +75,27 @@ describe('live scan notices', () => {
       { tagId: 0, node: 'MAIN', others: ['G1'] },
       { tagId: 1, node: 'G1', others: ['MAIN'] },
     ]);
+  });
+});
+
+describe('frame jump of a tag (issue: coordinate jump without a reset event)', () => {
+  const jumped = () => fuseTagObservations([
+    ...[-0.157, -0.158, -0.164].map((x) => ({ tagId: 3, positionScan: [x, 1.03, -0.1] as [number, number, number] })),
+    ...[-4.4, -4.395, -4.391].map((x) => ({ tagId: 3, positionScan: [x, 0.99, -0.19] as [number, number, number] })),
+  ]);
+
+  it.each(['en', 'uk'] as const)('shows the chip as a jump and announces it once, with the gap (%s)', (locale: I18nLocale) => {
+    const fusion = jumped();
+    expect(frameJumpTagIds(fusion)).toEqual([3]);
+    const chip = tagChipStatuses(fusion, locale).find((entry) => entry.tagId === 3)!;
+    expect(chip.status).toBe('frame-jump');
+    expect(chip.text).toBe(translate(locale, 'xr.tag.chip.frame_jump', { node: chip.node }));
+    const notices = newFrameJumpNotices([], fusion);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].kind).toBe('jump');
+    expect(notices[0].separationM).toBeGreaterThan(4);
+    expect(tagScanNoticeText(notices[0], locale)).toContain(formatNumber(locale, 4.2));
+    expect(newFrameJumpNotices([3], fusion)).toEqual([]);              /* already announced: no repeat */
+    expect(newTagScanNotices([], fusion)).toEqual([]);                  /* a jumped tag is never announced as scanned */
   });
 });

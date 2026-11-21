@@ -11,6 +11,13 @@ export const TAG_OBSERVATION_DIRECTION_BUCKET_DEGREES = 15;
  * geometry that fixes a position. Turning the phone on the spot (or tilting it) adds no baseline (issue #17).
  */
 export const TAG_OBSERVATION_MIN_BASELINE_METERS = 0.10;
+/**
+ * Sightings of one tag closer than this chain into one cluster. A tag does not move, so two clusters of at least
+ * TAG_OBSERVATION_MIN_CLUSTER_SIZE sightings each, further apart than this, mean the scan frame shifted under the tag (tracking relocalised
+ * without an XRReferenceSpace `reset` event, as in the 2026-11-21 phone run: the same tag moved 4.2 m between two groups of sightings).
+ */
+export const TAG_OBSERVATION_CLUSTER_LINK_METERS = 0.30;
+export const TAG_OBSERVATION_MIN_CLUSTER_SIZE = 2;
 
 export type TagObservationVector3 = readonly [number, number, number];
 
@@ -34,6 +41,9 @@ export interface FusedTagObservation {
   inlierCount: number;
   independentViewCount: number;
   confirmed: boolean;
+  /** The sightings split into two or more separate clusters: the frame jumped. Never confirmed; `jumpSeparationM` is the gap between the two largest clusters. */
+  frameJump: boolean;
+  jumpSeparationM: number | null;
 }
 
 export interface TagObservationFusion {
@@ -95,6 +105,28 @@ export function countIndependentViews(observations: readonly TagObservation[]): 
   return accepted.length + (legacy ? 1 : 0);
 }
 
+/** Single-linkage clusters of positions (link distance TAG_OBSERVATION_CLUSTER_LINK_METERS); each cluster is a list of indices, largest first. */
+export function clusterTagPositions(positions: readonly TagObservationVector3[]): number[][] {
+  const parent = positions.map((_, index) => index);
+  const find = (start: number): number => {
+    let root = start;
+    while (parent[root] !== root) root = parent[root];
+    let node = start;
+    while (parent[node] !== root) { const next = parent[node]; parent[node] = root; node = next; }
+    return root;
+  };
+  for (let i = 0; i < positions.length; i++) {
+    for (let j = i + 1; j < positions.length; j++) {
+      if (Math.hypot(positions[i][0] - positions[j][0], positions[i][1] - positions[j][1], positions[i][2] - positions[j][2]) <= TAG_OBSERVATION_CLUSTER_LINK_METERS) {
+        parent[find(i)] = find(j);
+      }
+    }
+  }
+  const byRoot = new Map<number, number[]>();
+  positions.forEach((_, index) => { const root = find(index); const list = byRoot.get(root); if (list === undefined) byRoot.set(root, [index]); else list.push(index); });
+  return [...byRoot.values()].sort((a, b) => b.length - a.length || a[0] - b[0]);
+}
+
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -151,6 +183,13 @@ export function fuseTagObservations(
       (item.positionScan[1] - positionScan[1]) ** 2 +
       (item.positionScan[2] - positionScan[2]) ** 2, 0) / inliers.length);
     const independentViewCount = countIndependentViews(inliers);
+    const substantial = clusterTagPositions(group.map((item) => item.positionScan)).filter((cluster) => cluster.length >= TAG_OBSERVATION_MIN_CLUSTER_SIZE);
+    const frameJump = substantial.length >= 2;
+    const centroidAxis = (cluster: readonly number[], axis: number): number =>
+      cluster.reduce((sum, index) => sum + group[index].positionScan[axis], 0) / cluster.length;
+    const jumpSeparationM = frameJump
+      ? Math.hypot(centroidAxis(substantial[0], 0) - centroidAxis(substantial[1], 0), centroidAxis(substantial[0], 1) - centroidAxis(substantial[1], 1), centroidAxis(substantial[0], 2) - centroidAxis(substantial[1], 2))
+      : null;
     byTagId[tagId as 0 | 1 | 2 | 3 | 4] = {
       tagId,
       positionScan,
@@ -158,7 +197,9 @@ export function fuseTagObservations(
       observationCount: group.length,
       inlierCount: inliers.length,
       independentViewCount,
-      confirmed: inliers.length >= minObservations && independentViewCount >= minIndependentViews,
+      confirmed: !frameJump && inliers.length >= minObservations && independentViewCount >= minIndependentViews,
+      frameJump,
+      jumpSeparationM,
     };
   });
   return { byTagId, rejectedCount };

@@ -12,7 +12,7 @@ import { TAG_BINDINGS, tagNodeForId, type TagBinding } from './tagBindings.gen';
  */
 export const TAG_FINALIZE_WINDOW_MS = 3000;
 
-export type TagChipStatus = { tagId: 0 | 1 | 2 | 3 | 4; node: string; text: string; status: 'not-seen' | 'seen' | 'confirmed' };
+export type TagChipStatus = { tagId: 0 | 1 | 2 | 3 | 4; node: string; text: string; status: 'not-seen' | 'seen' | 'confirmed' | 'frame-jump' };
 const REGISTRATION_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   no_geometry: 'xr.tag.reason.no_geometry',
   missing_main: 'xr.tag.reason.missing_main',
@@ -26,6 +26,7 @@ export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale
   return bindings.map(({ tag_id: tagId, node: label }) => {
     const tag = fusion.byTagId[tagId];
     if (tag === undefined) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, text: translate(locale, 'xr.tag.chip.not_seen', { node: label }), status: 'not-seen' };
+    if (tag.frameJump) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'frame-jump', text: translate(locale, 'xr.tag.chip.frame_jump', { node: label }) };
     if (tag.confirmed) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'confirmed', text: translate(locale, 'xr.tag.chip.confirmed', { node: label }) };
     return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.views_seen', { node: label, views: formatNumber(locale, tag.independentViewCount), minimum: formatNumber(locale, 3) }) };
   });
@@ -35,6 +36,9 @@ export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale
 export interface TagScanNotice {
   tagId: number;
   node: string;
+  /** 'jump': the tag's sightings split into two groups (the scan frame shifted); `separationM` is the gap. Absent = a confirmation notice. */
+  kind?: 'jump';
+  separationM?: number;
   /** Other confirmed devices, in tag order; the distances to them are recalculated from the scan. */
   others: string[];
 }
@@ -60,7 +64,22 @@ export function newTagScanNotices(
   }));
 }
 
+export function frameJumpTagIds(fusion: TagObservationFusion): number[] {
+  return Object.values(fusion.byTagId).filter((tag) => tag !== undefined && tag.frameJump).map((tag) => tag!.tagId).sort((a, b) => a - b);
+}
+
+export function newFrameJumpNotices(
+  previousJumped: readonly number[],
+  fusion: TagObservationFusion,
+  bindings: readonly TagBinding[] = TAG_BINDINGS,
+): TagScanNotice[] {
+  return frameJumpTagIds(fusion).filter((tagId) => !previousJumped.includes(tagId)).map((tagId) => ({
+    tagId, node: tagNodeForId(tagId, bindings), others: [], kind: 'jump' as const, separationM: fusion.byTagId[tagId as 0 | 1 | 2 | 3 | 4]!.jumpSeparationM ?? 0,
+  }));
+}
+
 export function tagScanNoticeText(notice: TagScanNotice, locale: I18nLocale = 'en'): string {
+  if (notice.kind === 'jump') return translate(locale, 'xr.tag.notice.frame_jump', { node: notice.node, meters: formatNumber(locale, Math.round((notice.separationM ?? 0) * 10) / 10) });
   if (notice.others.length === 0) return translate(locale, 'xr.tag.notice.first', { node: notice.node });
   return translate(locale, 'xr.tag.notice.recalculating', {
     node: notice.node,

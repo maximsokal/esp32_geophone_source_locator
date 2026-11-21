@@ -1147,6 +1147,8 @@
     "xr.tag.chip.seen": { "en": "{node} seen {inliers}/{minimum}", "uk": "{node}: спостережень {inliers}/{minimum}" },
     "xr.tag.chip.views_seen": { "en": "{node}: independent views {views}/{minimum}", "uk": "{node}: незалежних ракурсів {views}/{minimum}" },
     "xr.tag.chip.confirmed": { "en": "{node} confirmed", "uk": "{node} підтверджено" },
+    "xr.tag.chip.frame_jump": { "en": "{node}: position jumped, not confirmed", "uk": "{node}: позиція стрибнула, не підтверджено" },
+    "xr.tag.notice.frame_jump": { "en": "{node} appeared {meters} m away from where it was seen before, so the scan frame shifted. Its position is not confirmed; rescan it from here.", "uk": "{node} з’явився за {meters} м від місця, де його бачили раніше, тобто система координат скану зсунулась. Позицію не підтверджено; проскануйте його ще раз звідси." },
     "xr.tag.notice.first": { "en": "{node} scanned. Scan another device: the distance between the devices will be recalculated from the scan.", "uk": "{node} відскановано. Скануйте ще один пристрій: відстань між пристроями буде перераховано за сканом." },
     "xr.tag.notice.recalculating": { "en": "{node} scanned. The distance between the devices is being recalculated: {pairs}.", "uk": "{node} відскановано. Відстань між пристроями перераховується: {pairs}." },
     "xr.tag.registration.none": { "en": "No registration attempted.", "uk": "Просторову прив’язку не виконували." },
