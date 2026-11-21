@@ -10,6 +10,7 @@ import {
   saveSessionOccupancyArtifact,
   saveSessionPreviewArtifact,
   saveSessionRegistration,
+  saveSessionTagPositions,
   sendControl,
 } from '../../src/api/deviceApi';
 import { getScanIdentityMetrics, resetScanIdentityMetrics } from '../../src/xr/scanIdentity';
@@ -103,6 +104,34 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
       '/api/control?scan=save&object_id=OBJ_0008&session_id=staging&kind=preview&scan_id=scan-crc32%3A01234567',
       '/api/control?scan=save&object_id=OBJ_0008&session_id=staging&kind=registration',
     ]);
+  });
+
+  it('names the SHA-256 of the scan in derivative saves (occupancy, preview, registration, tags) and never in the scan save itself (issue #34)', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ ok: true, bytes: 1 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const sha = 'ab'.repeat(32);
+
+    await saveSessionOccupancyArtifact('OBJ_0008', 'staging', new Uint8Array([2]), 'scan-crc32:01234567', sha);
+    await saveSessionPreviewArtifact('OBJ_0008', 'staging', new Uint8Array([3]), 'scan-crc32:01234567', sha);
+    await saveSessionRegistration('OBJ_0008', 'S000001', '{}', sha);
+    await saveSessionTagPositions('OBJ_0008', 'S000001', '{}', sha);
+    await saveObjectScanArtifact('OBJ_0008', 'staging', new Uint8Array([1]));
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain(`scan_sha=${sha}`);
+    expect(urls[0]).toContain('scan_id=scan-crc32%3A01234567');
+    expect(urls[1]).toContain(`scan_sha=${sha}`);
+    expect(urls[2]).toBe(`/api/control?scan=save&object_id=OBJ_0008&session_id=S000001&kind=registration&scan_sha=${sha}`);
+    expect(urls[3]).toBe(`/api/control?scan=save&object_id=OBJ_0008&session_id=S000001&kind=tags&scan_sha=${sha}`);
+    expect(urls[4]).not.toContain('scan_sha');
+  });
+
+  it('keeps the URL unchanged for a client that has no digest (older identity, CRC32-only binding)', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ ok: true, bytes: 1 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await saveSessionTagPositions('OBJ_0008', 'S000001', '{}');
+    await saveSessionOccupancyArtifact('OBJ_0008', 'staging', new Uint8Array([2]), 'scan-crc32:01234567');
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).some((url) => url.includes('scan_sha'))).toBe(false);
   });
 
   it('parses scan and derivative generation identities while tolerating legacy info responses', async () => {

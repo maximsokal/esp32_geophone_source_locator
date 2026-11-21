@@ -162,6 +162,8 @@ interface ScanRegistrationStage {
   sessionId: string;
   intent: ScanStartIntent;
   scanId: string;
+  /** SHA-256 of the scan this registration is for: sent with the save so the device binds it to that scan, not only by CRC32 (issue #34). */
+  scanSha256?: string;
   base: RegistrationArtifact | null;
   extensionToBase: RigidTransform | null;
   tagFinal: boolean;
@@ -305,6 +307,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const savedTagLayoutRef = useRef<{ scanId: string; nodes: number; confirmed: number } | null>(null);
   /* The tag layout read back from the ESP32 (or last saved) for this object/session: the baseline a continuation inherits, and what survives a page reload. */
   const savedTagArtifactRef = useRef<{ objectId: string; sessionId: string; artifact: TagPositionsArtifact } | null>(null);
+  /* SHA-256 of the scans this page encoded or restored, by their CRC32 frame id: the tag layout upload names the digest of the scan it belongs to. */
+  const scanShaByFrameId = useRef(new Map<string, string>());
   /* Anchors belong to the scan just made for this target; another object/session starts without them. */
   useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
@@ -524,7 +528,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       }
       setRegistrationStageView('saving');
       try {
-        const result = await saveSessionRegistration(stage.objectId, stage.sessionId, encodeRegistrationArtifact(resolved.artifact));
+        const result = await saveSessionRegistration(stage.objectId, stage.sessionId, encodeRegistrationArtifact(resolved.artifact), stage.scanSha256);
         if (!owns()) return;
         if (result?.ok !== true) throw new Error(result?.error ?? 'registration_rejected');
         publishRegistration({ objectId: stage.objectId, sessionId: stage.sessionId }, resolved.artifact);
@@ -762,6 +766,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             throw new Error('scan.error.no_stable_surface');
           }
           const loadedScanId = loadedIdentity.frameId;
+          if (loadedIdentity.sha256 !== undefined) scanShaByFrameId.current.set(loadedScanId, loadedIdentity.sha256);
           const restoreSummary = Object.freeze({
             objectId,
             sessionId,
@@ -1140,10 +1145,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     const identity = encoded.identity;
 
     const candidateId = identity.frameId;
+    if (identity.sha256 !== undefined) scanShaByFrameId.current.set(candidateId, identity.sha256);
     activeScanCandidate.current = { snapshot, id: candidateId };
     /* MAX-403/405/416: registration for this candidate is resolved after the bounded tag window, never before the upload. */
     const stage: ScanRegistrationStage | null = sessionId === null ? null : {
-      objectId, sessionId, intent: intentAtFinish, scanId: candidateId,
+      objectId, sessionId, intent: intentAtFinish, scanId: candidateId, scanSha256: identity.sha256,
       base: continuationBaseRegistration.current, extensionToBase,
       tagFinal: provisionalTag.current.final, tagResult: provisionalTag.current.final ? provisionalTag.current.artifact : null,
       windowClosed: false, waiters: [], resolution: null, persistStarted: false,
@@ -1374,7 +1380,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       try {
         if (keepBaseline && baseline !== null && baselineQuality !== null) {
           const inherited: TagPositionsArtifact = { ...baseline, scan_frame_id: scanId, created_at_ms: Date.now() };
-          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(inherited));
+          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(inherited), scanShaByFrameId.current.get(scanId));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
           savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: inherited };
           savedTagLayoutRef.current = { scanId, ...baselineQuality };
@@ -1385,7 +1391,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: scanFrameAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
         } else {
           const toSave = tagPositionsFromLayout(built.layout, scanId, Date.now(), geometryGenerationRef.current);
-          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(toSave));
+          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(toSave), scanShaByFrameId.current.get(scanId));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
           savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: toSave };
           savedTagLayoutRef.current = { scanId, ...tagLayoutQuality(built.layout) };

@@ -483,7 +483,7 @@ function scanControlUrl(
   if (kind !== 'scan') query.set('kind', kind);
   if (scanId !== undefined && (kind === 'occupancy' || kind === 'preview')) query.set('scan_id', scanId);
   /* The strong binding (issue #34): the ESP32 compares it with the SHA-256 of the scan it holds; a client that sends none is bound by CRC32 only. */
-  if (scanSha256 !== undefined && (kind === 'occupancy' || kind === 'preview')) query.set('scan_sha', scanSha256);
+  if (scanSha256 !== undefined && (kind === 'occupancy' || kind === 'preview' || kind === 'registration' || kind === 'tags')) query.set('scan_sha', scanSha256);
   return `/api/control?${query.toString()}`;
 }
 
@@ -901,8 +901,8 @@ export function saveSessionPreviewArtifact(
   return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview', scanId, scanSha256), 'bulk');
 }
 
-export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'registration'), 'bulk');
+export function saveSessionRegistration(objectId: string, sessionId: string, json: string, scanSha256?: string): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'registration', undefined, scanSha256), 'bulk');
 }
 
 export function loadSessionRegistration(objectId: string, sessionId: string): Promise<string | null> {
@@ -913,8 +913,8 @@ export function loadSessionRegistration(objectId: string, sessionId: string): Pr
 }
 
 /** The tag-derived sensor layout (tag-positions-v1.json), computed on the phone and stored beside the session's other artifacts. */
-export function saveSessionTagPositions(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'tags'), 'bulk');
+export function saveSessionTagPositions(objectId: string, sessionId: string, json: string, scanSha256?: string): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'tags', undefined, scanSha256), 'bulk');
 }
 
 export function loadSessionTagPositions(objectId: string, sessionId: string): Promise<string | null> {

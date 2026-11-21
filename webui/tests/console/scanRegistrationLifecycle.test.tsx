@@ -31,6 +31,7 @@ vi.mock('../../src/xr/deviceComputeProfile', () => ({ deviceComputeProfilePromis
 import App from '../../src/App';
 import { LocaleProvider, translate } from '../../src/i18n';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
+import { sha256Hex } from '../../src/xr/sha256';
 import { rewriteScanArtifactMetadata } from '../xr/support/scanArtifactTestTools';
 import { decodeOccupancySolverArtifact, occupancyFrameIdForScan } from '../../src/xr/occupancySolverArtifact';
 import { decodeVoxelPreviewArtifact } from '../../src/xr/voxelPreview';
@@ -184,6 +185,23 @@ describe('App scan / registration lifecycle (MAX-405, MAX-403)', () => {
     expect(device.scan).not.toBeNull();
     const text = JSON.stringify(renderer.toJSON());
     expect(text).toContain('Not saved (the scan itself is saved)');
+  });
+});
+
+describe('registration and tag uploads name the SHA-256 of their scan (issue #34)', () => {
+  it('sends the digest of the scan that was just uploaded with the registration and with the tag layout', async () => {
+    const tag = (tagId: number, node: string, xr: [number, number, number]) =>
+      ({ tagId, node, positionScan: xr, spreadM: 0.003, observationCount: 8, independentViewCount: 4, confirmed: true });
+    await mountApp();
+    await finishScan('fresh', registration());
+    await act(async () => { h.props.onTagAnchors([tag(0, 'MAIN', [1, 1, -1]), tag(1, 'G1', [1.5, 1, -1]), tag(2, 'G2', [1, 1, -1.8])]); });
+    await flush();
+    const expected = sha256Hex(device.scan!);
+    expect(h.saveReg).toHaveBeenCalledTimes(1);
+    expect(h.saveReg.mock.calls[0][3]).toBe(expected);
+    expect(h.saveTags).toHaveBeenCalledTimes(1);
+    expect(h.saveTags.mock.calls[0][3]).toBe(expected);
+    expect(expected).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
