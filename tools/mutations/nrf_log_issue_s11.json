@@ -43,10 +43,10 @@
   },
   {
     "id": "s11_d_poll_same_node_forever",
-    "description": "MAX-308 s11 (d): poll same node forever — collector fairness: round-robin start node / per-node limits.",
+    "description": "MAX-308 s11 (d): poll the same node first forever (the next iteration never starts at the next routable node): collector fairness / round-robin start node.",
     "file": "components/nrf_topology_service/nrf_log_collector.c",
-    "find": "collector->next_node_index = next_node < NRF_LOG_COLLECTOR_NODE_COUNT ? next_node : first_node;",
-    "replace": "collector->next_node_index = first_node;",
+    "find": "            uint8_t next_start = next_routable_node(\n                targets, (uint8_t)((first_node + 1U) % NRF_LOG_COLLECTOR_NODE_COUNT));",
+    "replace": "            uint8_t next_start = first_node;",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-308-esp.json",
@@ -59,8 +59,8 @@
     "id": "s11_e_blanket_invalid_state_nack",
     "description": "MAX-308 s11 (e): treat every ESP_ERR_INVALID_STATE as NACK — on IDF 5.5 i2c_bus v2 a NACK is ESP_ERR_INVALID_STATE like a timeout; classification must use the existing probe-based MAX-248 logic, not blanket mapping.",
     "file": "components/sensor_bus/sensor_bus.c",
-    "find": "    const esp_err_t err = s_bus != NULL\n        ? sensor_bus_classify_locked(address, transfer_err)\n        : transfer_err;\n    sensor_bus_unlock();\n    return err;",
-    "replace": "    const esp_err_t err = s_bus != NULL\n        ? sensor_bus_classify_locked(address, transfer_err)\n        : transfer_err;\n    sensor_bus_unlock();\n    return err == ESP_ERR_INVALID_STATE ? ESP_ERR_NOT_FOUND : err;",
+    "find": "    const esp_err_t probe_err = sensor_bus_probe_address_raw(address, channel);\n    if (probe_err == ESP_ERR_NOT_FOUND) {\n        result.err = ESP_ERR_NOT_FOUND;",
+    "replace": "    const esp_err_t probe_err = ESP_ERR_NOT_FOUND;\n    if (probe_err == ESP_ERR_NOT_FOUND) {\n        result.err = ESP_ERR_NOT_FOUND;",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-tca.json",
@@ -71,10 +71,10 @@
   },
   {
     "id": "s11_f_bus_clear_on_normal_nack",
-    "description": "MAX-308 s11 (f): start bus-clear on normal NACK — an absent node's NACK must NOT trigger the MAX-243 destructive bus clear.",
+    "description": "MAX-308 s11 (f): keep the raw transfer error for an absent node instead of the classified NACK - an absent node's NACK must be classified as ESP_ERR_NOT_FOUND (so it does NOT trigger the MAX-243 destructive bus clear).",
     "file": "components/sensor_bus/sensor_bus.c",
-    "find": "if (probe_err == ESP_ERR_NOT_FOUND) {\n        return ESP_ERR_NOT_FOUND;\n    }",
-    "replace": "if (probe_err == ESP_ERR_NOT_FOUND) {\n        return transfer_err;\n    }",
+    "find": "        result.err = ESP_ERR_NOT_FOUND;\n        result.invalid_state_nack = true;\n        return result;",
+    "replace": "        result.err = transfer_err;\n        result.invalid_state_nack = true;\n        return result;",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-nrf.json",

@@ -143,7 +143,7 @@
     "id": "t1_clear_log_response_on_write",
     "description": "Leave the selected nRF log response active after a different TWIS write.",
     "file": "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
-    "find": "s_log_response_selected=false;",
+    "find": "s_log_response_selected = false;",
     "replace": ";",
     "tests": [
       {

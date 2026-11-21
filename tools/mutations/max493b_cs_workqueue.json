@@ -2,8 +2,8 @@
   {
     "id": "max493b_cs_submit_to_system_queue",
     "description": "Route CS work back to the system workqueue.",
-    "file": "nRF54L15/src/nrf_cs_pair_runtime_zephyr_workqueue.inc",
-    "find": "return k_work_submit_to_queue(&s_cs_workqueue, work);",
+    "file": "nRF54L15/src/nrf_hci_workqueue.c",
+    "find": "return k_work_submit_to_queue(&s_hci_workqueue, work);",
     "replace": "return k_work_submit(work);",
     "tests": [
       {
@@ -16,8 +16,8 @@
   {
     "id": "max493b_skip_cs_queue_start",
     "description": "Skip starting the dedicated CS HCI workqueue before Bluetooth initialization.",
-    "file": "nRF54L15/src/nrf_cs_pair_runtime_zephyr_workqueue.inc",
-    "find": "    k_work_queue_start(\n        &s_cs_workqueue,\n        s_cs_workqueue_stack,\n        K_THREAD_STACK_SIZEOF(s_cs_workqueue_stack),\n        NRF_CS_WORKQUEUE_PRIORITY,\n        &s_cs_workqueue_config);",
+    "file": "nRF54L15/src/nrf_hci_workqueue.c",
+    "find": "    k_work_queue_start(\n        &s_hci_workqueue,\n        s_hci_workqueue_stack,\n        K_THREAD_STACK_SIZEOF(s_hci_workqueue_stack),\n        NRF_HCI_WORKQUEUE_PRIORITY,\n        &s_hci_workqueue_config);",
     "replace": "    /* k_work_queue_start skipped */",
     "tests": [
       {

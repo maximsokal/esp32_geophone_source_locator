@@ -31,8 +31,8 @@
     "id": "t2_budget_requires_both",
     "description": "Expire polling budgets only after both per-node and total budgets pass.",
     "file": "components/nrf_topology_service/nrf_log_collector.c",
-    "find": "return elapsed_ms(io, node_started_ms) >= per_node_budget_ms ||\n           elapsed_ms(io, iteration_started_ms) >= total_budget_ms;",
-    "replace": "return elapsed_ms(io, node_started_ms) >= per_node_budget_ms &&\n           elapsed_ms(io, iteration_started_ms) >= total_budget_ms;",
+    "find": "        ? node_deadline_ms : iteration_deadline_ms;",
+    "replace": "        ? iteration_deadline_ms : node_deadline_ms;",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-308-esp.json",
@@ -45,8 +45,8 @@
     "id": "t2_disable_backoff",
     "description": "Poll a node even while its retry backoff remains active.",
     "file": "components/nrf_topology_service/nrf_log_collector.c",
-    "find": "if (backoff_remaining != 0U) continue;",
-    "replace": "if (0) continue;",
+    "find": "        if (backoff_remaining != 0U) {\n            visited_mask |= node_bit;",
+    "replace": "        if (0) {\n            visited_mask |= node_bit;",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-308-esp.json",
