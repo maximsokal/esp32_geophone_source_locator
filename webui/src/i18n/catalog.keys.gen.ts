@@ -1842,6 +1842,7 @@ export const i18nKeys = [
   "workflow.result.waveform",
   "workflow.result.waveform_unavailable",
   "workflow.scan.choice",
+  "workflow.scan.choice_have_scan",
   "workflow.scan.phone",
   "workflow.scan.saved",
   "workflow.scan3d.loading",

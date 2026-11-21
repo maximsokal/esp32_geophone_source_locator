@@ -1844,6 +1844,7 @@ export const en: Record<I18nKey, string> = {
   "workflow.result.waveform": "Waveform segment",
   "workflow.result.waveform_unavailable": "The waveform segment is unavailable.",
   "workflow.scan.choice": "Start a 3D scan on this phone?",
+  "workflow.scan.choice_have_scan": "A 3D scan of this object is already saved and shown below. Scan again only if you want to replace it.",
   "workflow.scan.phone": "Scan on phone. Return here when the scan is saved.",
   "workflow.scan.saved": "3D scan saved and verified.",
   "workflow.scan3d.loading": "Loading the 3D scan…",

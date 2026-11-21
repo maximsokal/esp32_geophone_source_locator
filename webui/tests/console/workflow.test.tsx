@@ -327,6 +327,44 @@ describe('workflow view model (MAX-296)', () => {
     expect(visible).toContain(translate('en', 'workflow.open_3d'));
   });
 
+  describe('a scan that was taken is never hidden behind the scan question (phone run 2026-11-21 23:05)', () => {
+    const open3d = translate('en', 'workflow.open_3d');
+    const sections = (html: string) => ({
+      question: html.includes(translate('en', 'workflow.scan.choice')),
+      have: html.includes(translate('en', 'workflow.scan.choice_have_scan')),
+      viewer: html.includes(translate('en', 'workflow.scan3d.loading')),
+      button: html.includes(open3d),
+    });
+
+    it('shows the saved scan and a note, not only "Start a 3D scan?", when the operator is back at the scan question', () => {
+      const withScan = sections(panelHtml(statusFor('SCAN_CHOICE', ACTIONS_BY_STEP.SCAN_CHOICE, 4, { has_scan: true })));
+      expect(withScan).toEqual({ question: false, have: true, viewer: true, button: true });
+      const without = sections(panelHtml(statusFor('SCAN_CHOICE', ACTIONS_BY_STEP.SCAN_CHOICE, 4, { has_scan: false })));
+      expect(without).toEqual({ question: true, have: false, viewer: false, button: false });
+    });
+
+    it('shows the staged scan while scanning is still the step', () => {
+      expect(sections(panelHtml(statusFor('SCANNING', [], 4, { has_scan: true }))).viewer).toBe(true);
+      expect(sections(panelHtml(statusFor('SCANNING', [], 4, { has_scan: false }))).viewer).toBe(false);
+    });
+
+    it.each(['SCAN_CHOICE', 'RECORD_READY'] as const)('%s: "Open 3D scan" is enabled with no session id (the scan is staged) and opens the staged scan', async (step) => {
+      const status = statusFor(step, ACTIONS_BY_STEP[step], 4, { has_scan: true });
+      const onOpenScanner = vi.fn();
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(createElement(WorkflowPanel, {
+          status, objectName: 'Quarry', sendCommand: vi.fn(), onRefreshStatus: async () => true, onWorkflowUpdate: () => undefined, onOpenScanner,
+        }));
+      });
+      const button = renderer.root.findAllByType('button').find((node) => node.children.join('') === open3d)!;
+      expect(button.props.disabled).toBe(false);
+      await act(async () => { button.props.onClick(); });
+      expect(onOpenScanner).toHaveBeenCalledWith(status.workflow!.object_id, null);
+      act(() => renderer.unmount());
+    });
+  });
+
   it('renders every production step from device state and only its allowed actions', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     expect(allWorkflowStepsHaveTitles).toBe(true);

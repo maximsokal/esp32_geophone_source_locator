@@ -414,9 +414,15 @@ export function XrRuntimePanel({
   useEffect(()=>{
     if(savedScanAvailable){clearScanLaunchIntent();return;}
     if(!scanLaunchReady||!canStart||objectId===null)return;
-    if(!consumeScanLaunchIntent(objectId,sessionId??SCAN_LAUNCH_STAGING_SESSION))return;
-    clientDiagnostics.info('XR_ONE_TAP_LAUNCH',{objectId,sessionId});
-    void startPreparedScan('fresh');
+    /* Deferred by one task: a development Strict Mode replay mounts, cleans up and mounts again within the same task. Starting inside the first run
+       asked for the session, then the cleanup detached the runtime and the session was ended as obsolete a second later (phone run 2026-11-21 23:05:
+       XR_SESSION_STARTED then XR_SESSION_ENDED, and the operator had to press Start again). The cleanup cancels the timer, so only the surviving mount starts. */
+    const timer=window.setTimeout(()=>{
+      if(!consumeScanLaunchIntent(objectId,sessionId??SCAN_LAUNCH_STAGING_SESSION))return;
+      clientDiagnostics.info('XR_ONE_TAP_LAUNCH',{objectId,sessionId});
+      void startPreparedScan('fresh');
+    },0);
+    return()=>window.clearTimeout(timer);
   },[scanLaunchReady,canStart,savedScanAvailable,objectId,sessionId]);
 
   const continuationSampleReady=runtimeState.pointCount>=120;

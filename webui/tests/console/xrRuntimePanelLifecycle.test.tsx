@@ -17,7 +17,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     state:any;generation=0;listeners=new Set<(state:any)=>void>();tagListeners=new Set<(frame:any)=>void>();tagUnsubscribes=0;tagCaptureDisables=0;attachCalls=0;attached=false;detachCalls=0;disposed=0;
     finalSnapshot={identity:Symbol('scan snapshot')};
     constructor(){this.state=panelHarness.makeState?.()??{phase:'idle'};panelHarness.runtimes.push(this);}
-    attach=()=>{this.attachCalls+=1;this.attached=true;};detach=async()=>{this.detachCalls+=1;this.attached=false;};getState=()=>this.state;getLifecycleGeneration=()=>this.generation;
+    detachedAfterStart=0;attach=()=>{this.attachCalls+=1;this.attached=true;};detach=async()=>{this.detachCalls+=1;if(this.generation>0)this.detachedAfterStart+=1;this.attached=false;};getState=()=>this.state;getLifecycleGeneration=()=>this.generation;
     subscribe=(listener:(state:any)=>void)=>{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);};
     subscribeTagFrames=(listener:(frame:any)=>void)=>{this.tagListeners.add(listener);return()=>{this.tagListeners.delete(listener);this.tagUnsubscribes+=1;};};
     emitTagFrame=(frame:any)=>{for(const listener of this.tagListeners)listener(frame);};
@@ -686,7 +686,7 @@ describe('one-tap scan launch (issue #21)',()=>{
   it('starts exactly one Fresh scan from the tap that opened the scanner, with no second Start tap',async()=>{
     live();expect(requestScanLaunch('OBJ_1','S_1')).toBe(true);
     const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(1);
     expect(panelHarness.runtimes[0].state.phase).toBe('starting');
     expect(hasScanLaunchIntent()).toBe(false);
@@ -697,7 +697,7 @@ describe('one-tap scan launch (issue #21)',()=>{
     vi.stubGlobal('navigator',{userActivation:{isActive:false}});
     expect(requestScanLaunch('OBJ_1','S_1')).toBe(false);
     const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     expect(panelHarness.runtimes[0].state.phase).toBe('idle');
     expect(renderer.root.findAll((node)=>node.props.className==='xr-start-button').length).toBeGreaterThan(0);
@@ -708,9 +708,10 @@ describe('one-tap scan launch (issue #21)',()=>{
     live();requestScanLaunch('OBJ_1','S_1');
     const props={objectId:'OBJ_1',sessionId:'S_1'};
     const renderer=await mountPanel({...props,scanLaunchReady:false});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{...props,scanLaunchReady:true})));await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(1);
     unmount(renderer);
   });
@@ -718,7 +719,7 @@ describe('one-tap scan launch (issue #21)',()=>{
   it('never starts over a saved scan: it opens as viewer and the intent is dropped',async()=>{
     live();requestScanLaunch('OBJ_1','S_1');
     const renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true,savedScanAvailable:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     expect(hasScanLaunchIntent()).toBe(false);
     unmount(renderer);
@@ -727,33 +728,45 @@ describe('one-tap scan launch (issue #21)',()=>{
   it('ignores an intent for another session and an expired one',async()=>{
     live();requestScanLaunch('OBJ_1','S_OTHER');
     let renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);unmount(renderer);
 
     panelHarness.runtimes=[];
     requestScanLaunch('OBJ_1','S_1',Date.now()-60_000);
     renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);unmount(renderer);
   });
 
   it('cannot repeat: Strict Mode double effects and a later remount start a scan only once',async()=>{
     live();requestScanLaunch('OBJ_1','S_1');
     let renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true},true);
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(1);
     unmount(renderer);
 
     panelHarness.runtimes=[];
     renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     unmount(renderer);
   });
+  it('does not start the scan in a Strict Mode run that is about to be cleaned up: the surviving runtime is started and never detached',async()=>{
+    live();requestScanLaunch('OBJ_1',SCAN_LAUNCH_STAGING_SESSION);
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:null,scanLaunchReady:true},true);
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
+    expect(starts()).toBe(1);
+    const started=panelHarness.runtimes.filter((runtime:any)=>runtime.generation>0);
+    expect(started).toHaveLength(1);
+    expect(started[0].attached).toBe(true);
+    expect(started[0].detachedAfterStart).toBe(0);
+    unmount(renderer);
+  });
+
   it('starts the staged workflow scan (no session id yet) from the intent left by the workflow tap',async()=>{
     live();expect(requestScanLaunch('OBJ_1',SCAN_LAUNCH_STAGING_SESSION)).toBe(true);
     const renderer=await mountPanel({objectId:'OBJ_1',sessionId:null,scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(1);
     expect(hasScanLaunchIntent()).toBe(false);
     unmount(renderer);
@@ -762,7 +775,7 @@ describe('one-tap scan launch (issue #21)',()=>{
   it('does not start the staged scan for an intent of another object',async()=>{
     live();requestScanLaunch('OBJ_OTHER',SCAN_LAUNCH_STAGING_SESSION);
     const renderer=await mountPanel({objectId:'OBJ_1',sessionId:null,scanLaunchReady:true});
-    await act(async()=>{await settleReact();});
+    await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     unmount(renderer);
   });

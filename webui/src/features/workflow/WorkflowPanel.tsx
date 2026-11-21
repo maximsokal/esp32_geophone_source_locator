@@ -29,8 +29,13 @@ import {
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 const WorkflowScanView = lazy(() => import('./WorkflowScanView'));
 
-/** The 3D scan of the placement is shown on the recording page from the moment recording is possible, and with the result afterwards. */
-const SCAN_VIEW_STEPS = new Set(['RECORD_READY', 'RECORDING', 'STOPPED', 'RESULT']);
+/**
+ * The 3D scan of the placement is shown from the moment it is saved (also while the operator is back at the scan question: a scan that was taken is
+ * never hidden behind "Yes, scan on phone"), through the recording, and with the result afterwards.
+ */
+const SCAN_VIEW_STEPS = new Set(['SCAN_CHOICE', 'SCANNING', 'RECORD_READY', 'RECORDING', 'STOPPED', 'RESULT']);
+/** Until a recording exists the scan lives in staging, which the viewer reads with no session id. */
+const STAGED_SCAN_STEPS = new Set(['SCAN_CHOICE', 'SCANNING', 'RECORD_READY']);
 
 /**
  * The live geophone signals are offered once the BLE Channel Sounding positions have been calculated, not
@@ -466,7 +471,7 @@ function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
     case 'scan': return (
       <p role="status">{t(section.scanning
         ? section.value.scan_upload_status === 'verified' ? 'workflow.scan.saved' : 'workflow.scan.phone'
-        : 'workflow.scan.choice')}</p>
+        : section.value.has_scan === true ? 'workflow.scan.choice_have_scan' : 'workflow.scan.choice')}</p>
     );
     case 'record_ready': return <p>{t('workflow.record_ready.instruction')}</p>;
     case 'recording': return <RecordingSection value={section.value} />;
@@ -685,7 +690,7 @@ export default function WorkflowPanel({
   };
 
   const showScanButton = workflow?.has_scan === true && (
-    workflow.step === 'RECORD_READY' || workflow.step === 'RECORDING' ||
+    workflow.step === 'SCAN_CHOICE' || workflow.step === 'RECORD_READY' || workflow.step === 'RECORDING' ||
     (workflow.step === 'RESULT' && model.sections.some((section) => section.kind === 'result' && section.success))
   );
   const scanObjectId = workflow?.object_id ?? null;
@@ -726,7 +731,7 @@ export default function WorkflowPanel({
           <Suspense fallback={<p role="status">{t('workflow.scan3d.loading')}</p>}>
             <WorkflowScanView
               objectId={workflow.object_id}
-              sessionId={workflow.step === 'RECORD_READY' ? null : workflow.session_id ?? null}
+              sessionId={STAGED_SCAN_STEPS.has(workflow.step) ? null : workflow.session_id ?? null}
               finished={workflow.step === 'STOPPED' || workflow.step === 'RESULT'}
             />
           </Suspense>
@@ -784,9 +789,10 @@ export default function WorkflowPanel({
             <button
               type="button"
               className="secondary"
-              disabled={scanObjectId === null || scanSessionId === null}
+              disabled={scanObjectId === null}
               onClick={() => {
-                if (scanObjectId !== null && scanSessionId !== null) onOpenScanner(scanObjectId, scanSessionId);
+                /* A staged scan (no recording yet) has no session id: the scanner opens it as `null`, exactly as the viewer above reads it. */
+                if (scanObjectId !== null) onOpenScanner(scanObjectId, workflow !== null && STAGED_SCAN_STEPS.has(workflow.step) ? null : scanSessionId);
               }}
             >{t('workflow.open_3d')}</button>
           )}

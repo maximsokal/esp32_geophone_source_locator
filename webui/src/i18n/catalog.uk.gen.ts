@@ -1844,6 +1844,7 @@ export const uk: Record<I18nKey, string> = {
   "workflow.result.waveform": "Фрагмент хвильової форми",
   "workflow.result.waveform_unavailable": "Фрагмент хвильової форми недоступний.",
   "workflow.scan.choice": "Почати 3D-сканування на цьому телефоні?",
+  "workflow.scan.choice_have_scan": "3D-скан цього об’єкта вже збережено й показано нижче. Скануйте знову, лише якщо хочете його замінити.",
   "workflow.scan.phone": "Скануйте на телефоні. Поверніться сюди після збереження скану.",
   "workflow.scan.saved": "3D-скан збережено та перевірено.",
   "workflow.scan3d.loading": "Завантаження 3D-скану…",
