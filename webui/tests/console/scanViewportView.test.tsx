@@ -181,4 +181,13 @@ describe('in-canvas camera controls (issue #41)', () => {
     expect(html).toMatch(/data-camera-action="focus"[^>]*disabled|disabled=""[^>]*data-camera-action="focus"/);
     expect(html).toContain('aria-pressed="false"');                                  /* Pan mode starts off: one finger rotates */
   });
+
+  it.each(['en', 'uk'] as const)('carries the 3D / Top / Front presets in the strip, so no separate toolbar group is needed (%s)', (locale) => {
+    const html = render(scanViewForMode('quality'), snapshot(), 'top', {}, locale);
+    for (const preset of ['perspective', 'top', 'front']) expect(html).toContain(`data-camera-action="view-${preset}"`);
+    expect(html).toContain(translate(locale, 'scan.view.top'));
+    expect(html).toContain(translate(locale, 'scan.view.front'));
+    expect(html).toMatch(/data-camera-action="view-top"[^>]*aria-pressed="true"|aria-pressed="true"[^>]*data-camera-action="view-top"/);
+    expect(html).toMatch(/data-camera-action="view-front"[^>]*aria-pressed="false"|aria-pressed="false"[^>]*data-camera-action="view-front"/);
+  });
 });

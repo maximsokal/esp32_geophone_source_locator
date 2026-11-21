@@ -34,7 +34,7 @@ import {
 import { bindRegistrationToScan, decideContinuationRegistration, type RegistrationAgreement } from './xr/registrationCompose';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type ScanPersistenceState } from './xr/scanPersistence';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
-import type { ViewCommand, ViewPreset } from './components/SceneViewport';
+import type { ViewCommand } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
 import {
   resultViewportIdentityKey,
@@ -318,7 +318,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const [registrationArtifact, setRegistrationArtifact] = useState<RegistrationArtifact | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
-  const [viewCommand, setViewCommand] = useState<ViewCommand>({
+  const [viewCommand] = useState<ViewCommand>({
     preset: 'perspective',
     sequence: 0,
   });
@@ -594,11 +594,6 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       void clientDiagnostics.flush();
     });
     return () => { cancelled = true; };
-  }, []);
-
-  const requestView = useCallback((preset: ViewPreset): void => {
-    clientDiagnostics.info('SCAN_VIEW_PRESET', { preset });
-    setViewCommand((current) => ({ preset, sequence: current.sequence + 1 }));
   }, []);
 
   const selectMode = useCallback((mode: ScanMode): void => {
@@ -1541,11 +1536,6 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             <span>{t('scan.operator_edges')} <strong>{formatNumber(locale, scanSnapshot?.operatorEdges.length ?? 0)}</strong></span>
           </div>
 
-          <div className="scan-toolbar-group">
-            <button type="button" onClick={() => requestView('perspective')}>3D</button>
-            <button type="button" onClick={() => requestView('top')}>{t('scan.view.top')}</button>
-            <button type="button" onClick={() => requestView('front')}>{t('scan.view.front')}</button>
-          </div>
           <div className="scan-toolbar-group scan-layer-controls" aria-label={t('scan.controls.layers')}>
             <button type="button" aria-pressed={display.goodPoints} onClick={() => toggleDisplay('goodPoints')}>{t('scan.layer.stable')}</button>
             <button type="button" aria-pressed={display.badPoints} onClick={() => toggleDisplay('badPoints')}>{t('scan.layer.tentative')}</button>

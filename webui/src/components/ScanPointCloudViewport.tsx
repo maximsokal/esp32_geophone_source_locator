@@ -351,7 +351,7 @@ function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarker
 
 export function ScanPointCloudViewport({
   snapshot,
-  viewCommand,
+  viewCommand: viewCommandProp,
   display,
   mode,
   sensorMarkers = NO_SENSOR_MARKERS,
@@ -374,6 +374,13 @@ export function ScanPointCloudViewport({
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [panMode, setPanMode] = useState(false);
   const [hud, setHud] = useState<CameraHudCommand>({ kind: 'fit', sequence: 0, target: null });
+  /* The HUD's own 3D/Top/Front presets (issue #41). A newer command from the parent wins again as soon as its object changes. */
+  const [viewOverride, setViewOverride] = useState<{ base: ViewCommand; command: ViewCommand } | null>(null);
+  const viewCommand = viewOverride !== null && viewOverride.base === viewCommandProp ? viewOverride.command : viewCommandProp;
+  const requestPreset = (preset: ViewCommand['preset']): void => setViewOverride((current) => ({
+    base: viewCommandProp,
+    command: { preset, sequence: 1_000_000 + (current !== null && current.base === viewCommandProp ? current.command.sequence - 1_000_000 + 1 : 1) },
+  }));
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -631,6 +638,7 @@ export function ScanPointCloudViewport({
   return <div ref={shellRef} className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} panMode={panMode} hud={hud} /></Canvas>
     <div className="scan-camera-hud" role="group" aria-label={t('scan.camera.hud_label')}>
+      {(['perspective', 'top', 'front'] as const).map((preset) => <button key={preset} type="button" data-camera-action={`view-${preset}`} aria-pressed={viewCommand.preset === preset} onClick={() => requestPreset(preset)}>{preset === 'perspective' ? '3D' : t(preset === 'top' ? 'scan.view.top' : 'scan.view.front')}</button>)}
       <button type="button" data-camera-action="fit" onClick={() => requestHud('fit')}>{t('scan.camera.fit')}</button>
       <button type="button" data-camera-action="reset" onClick={() => requestHud('reset')}>{t('scan.camera.reset')}</button>
       <button type="button" data-camera-action="pan" aria-pressed={panMode} onClick={() => setPanMode((value) => !value)}>{t('scan.camera.pan')}</button>

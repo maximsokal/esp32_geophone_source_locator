@@ -60,6 +60,62 @@ for (const locale of ['en', 'uk'] as const) test.describe(locale, () => {
   });
 });
 
+/* Issue #41: the camera strip lives inside the viewer, stays on screen and usable at phone sizes, and real touch gestures move the camera. */
+const HUD_VIEWPORTS = [
+  { width: 320, height: 568 }, { width: 360, height: 800 }, { width: 393, height: 852 }, { width: 844, height: 390 }, { width: 768, height: 1024 },
+];
+for (const locale of ['en', 'uk'] as const) test.describe(`camera strip ${locale}`, () => {
+  test.use({ appLocale: locale, hasTouch: true });
+  for (const viewport of HUD_VIEWPORTS) {
+    test(`${viewport.width}x${viewport.height}: strip is inside the viewer, presets and a touch drag change the picture`, async ({ page, browserName }) => {
+      await page.setViewportSize(viewport);
+      await open(page);
+      await page.locator('#renderer').selectOption('scan');
+      await rendered(page);
+      const shell = page.locator('.workspace .scan-viewport').first();
+      const canvas = page.locator('.workspace canvas').first();
+      await canvas.scrollIntoViewIfNeeded();
+      const hud = shell.locator('.scan-camera-hud');
+      await expect(hud).toBeVisible();
+      const shellBox = (await shell.boundingBox())!;
+      const hudBox = (await hud.boundingBox())!;
+      expect(hudBox.x).toBeGreaterThanOrEqual(shellBox.x - 1);
+      expect(hudBox.y).toBeGreaterThanOrEqual(shellBox.y - 1);
+      expect(hudBox.x + hudBox.width).toBeLessThanOrEqual(shellBox.x + shellBox.width + 1);
+      expect(hudBox.y + hudBox.height).toBeLessThanOrEqual(shellBox.y + shellBox.height + 1);
+      expect(hudBox.height, 'the strip is compact, not a toolbar').toBeLessThanOrEqual(shellBox.height * 0.4);
+      for (const action of ['view-perspective', 'view-top', 'view-front', 'fit', 'reset', 'pan']) {
+        const button = hud.locator(`[data-camera-action="${action}"]`);
+        await expect(button).toBeVisible();
+        const box = (await button.boundingBox())!;
+        expect(box.height, `${action} is tappable`).toBeGreaterThanOrEqual(28);
+      }
+
+      const before = await canvas.screenshot();
+      await hud.locator('[data-camera-action="view-top"]').tap();
+      await expect(hud.locator('[data-camera-action="view-top"]')).toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(async () => (await canvas.screenshot()).equals(before), { message: 'Top preset from the strip re-aims the camera' }).toBe(false);
+      await scenarioScreenshot(page, `${locale}-hud-top-${viewport.width}x${viewport.height}`);
+
+      if (browserName === 'chromium') {
+        const afterPreset = await canvas.screenshot();
+        const box = (await canvas.boundingBox())!;
+        const cdp = await page.context().newCDPSession(page);
+        const point = (fx: number, fy: number) => ({ x: Math.round(box.x + box.width * fx), y: Math.round(box.y + box.height * fy), id: 1 });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point(0.4, 0.5)] });
+        for (let step = 1; step <= 8; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [point(0.4 + step * 0.04, 0.5 + step * 0.02)] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await expect.poll(async () => (await canvas.screenshot()).equals(afterPreset), { message: 'One-finger drag rotates the camera' }).toBe(false);
+      }
+
+      await hud.locator('[data-camera-action="fit"]').tap();
+      await scenarioScreenshot(page, `${locale}-hud-fit-${viewport.width}x${viewport.height}`);
+      await page.locator('#mount').click();
+      await released(page);
+    });
+  }
+});
+
 for (const renderer of ['scan', 'localization', 'sensors']) {
   test(`${renderer}: controls remain attached after extent updates and all resources close`, async ({ page }) => {
     await open(page);
