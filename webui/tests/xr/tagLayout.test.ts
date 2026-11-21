@@ -1,7 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import { xrToProject, type TagSensorAnchor } from '../../src/xr/fiducial/liveTagTracker';
 import {
-  buildTagLayout, compareLayoutWithReference, nodeIdForName, tagLayoutReplaces, triangleHeightMm, TAG_LAYOUT_FRAME,
+  buildTagLayout, compareLayoutWithReference, tagAnchorsToBaseFrame, nodeIdForName, tagLayoutReplaces, triangleHeightMm, TAG_LAYOUT_FRAME,
 } from '../../src/xr/fiducial/tagLayout';
 
 /** An anchor in the WebXR local-floor frame (metres), as the live scan produces it. */
@@ -156,5 +156,31 @@ describe('tagLayoutReplaces', () => {
     expect(tagLayoutReplaces(layoutOf([true, true, true, true, true]), saved)).toBe(true);
     expect(tagLayoutReplaces(layoutOf([true, true, true]), saved)).toBe(false);          // fewer nodes
     expect(tagLayoutReplaces(layoutOf([true, true, false, false]), saved)).toBe(false);  // fewer confirmed
+  });
+});
+
+describe('tag anchors of a continuation extension move into the base frame (issue #37)', () => {
+  const T_BA = { yaw: Math.PI / 2, tx: 3, ty: -2, tz: 0.5 };
+
+  it('gives the layout the same B->A transform as the merged cloud', () => {
+    const moved = tagAnchorsToBaseFrame([MAIN, G1, G2, G3], T_BA);
+    const { layout } = buildTagLayout(moved);
+    expect(layout!.mainScanPositionMm.map(Math.round)).toEqual([2000, -1000, 1500]);
+    const byNode = new Map(layout!.nodes.map((n) => [n.nodeId, [Math.round(n.xMm) + 0, Math.round(n.yMm) + 0, Math.round(n.zMm) + 0]]));
+    expect(byNode.get(1)).toEqual([0, 500, 0]);
+    expect(byNode.get(2)).toEqual([-800, 0, 0]);
+    expect(byNode.get(3)).toEqual([-500, -100, 200]);
+  });
+
+  it('keeps anchors untouched for a fresh scan and never mutates its input', () => {
+    const before = JSON.stringify([MAIN, G1]);
+    expect(tagAnchorsToBaseFrame([MAIN, G1], null)).toEqual([MAIN, G1]);
+    tagAnchorsToBaseFrame([MAIN, G1], T_BA);
+    expect(JSON.stringify([MAIN, G1])).toBe(before);
+  });
+
+  it('changes nothing about observation quality, only the position', () => {
+    const [moved] = tagAnchorsToBaseFrame([G3], T_BA);
+    expect({ ...moved, positionScan: null }).toEqual({ ...G3, positionScan: null });
   });
 });

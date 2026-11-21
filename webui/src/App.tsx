@@ -51,7 +51,7 @@ import {
 } from './xr/scanArtifact';
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
-import { buildTagLayout, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
+import { buildTagLayout, tagAnchorsToBaseFrame, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
 import { encodeTagPositions, tagPositionsFromLayout } from './xr/fiducial/tagPositionsArtifact';
 import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
 import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
@@ -287,6 +287,12 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* True once the scanner has handed over its tags for this scan (an empty list counts: it means none were seen). */
   const [tagAnchorsDelivered, setTagAnchorsDelivered] = useState(false);
   const tagUploadKeyRef = useRef<string | null>(null);
+  /*
+   * Who owns the delivered anchors. `baseId` is the durable scan that was on screen when the scanner started: anchors may only be saved once a
+   * DIFFERENT durable scan exists (a rejected continuation leaves the base durable, so nothing is written against it). `frame` is 'pending'
+   * while a continuation is being merged, the accepted T_BA once it was (anchors are in frame B and must be moved into A), or 'fresh'.
+   */
+  const [tagOwner, setTagOwner] = useState<{ baseId: string | null; frame: 'fresh' | 'pending' | RigidTransform }>({ baseId: null, frame: 'fresh' });
   /* The best layout saved for the scan on screen: a weaker look at the same scan (rejected continuation) must not replace it. */
   const savedTagLayoutRef = useRef<{ scanId: string; nodes: number; confirmed: number } | null>(null);
   /* Anchors belong to the scan just made for this target; another object/session starts without them. */
@@ -892,6 +898,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       setLiveTagAnchors([]); // a new scanner generation: anchors of the previous scan do not carry over
       setTagAnchorsDelivered(false);
       tagUploadKeyRef.current = null;
+      setTagOwner({ baseId: scanDurabilityRef.current.durableId, frame: scanIntent.current === 'continue' ? 'pending' : 'fresh' });
       /*
        * The null callback marks XR startup. Keep the current durable scan and
        * its storage presentation intact until a replacement candidate exists.
@@ -967,6 +974,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           annotationsTruncated: merged.diagnostics.annotationsTruncated ?? false,
         });
         void clientDiagnostics.flush();
+        setTagOwner((owner) => ({ ...owner, frame: merged.extensionToBase }));
         void finalizeScanReady(merged.snapshot, intentAtFinish, merged.extensionToBase);
       }).catch((reason: unknown) => {
         if (generation !== continuationOwnerGeneration.current) return;
@@ -1275,10 +1283,17 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
    * artifacts). It is saved once the scan itself is durable, so it can name the scan it belongs to. No layout (no MAIN, fewer than three tags, tags in
    * a line) removes an older file, because a new scan makes the previous positions stale. A failure here never touches the scan.
    */
+  const tagAnchorsOwned = tagAnchorsDelivered && durableViewport && scanDurability.durableId !== null
+    && tagOwner.frame !== 'pending' && (tagOwner.frame === 'fresh' || scanDurability.durableId !== tagOwner.baseId);
+  /* Anchors in the frame of the scan on screen: an accepted continuation moved frame B into A, so they move with the merged cloud. */
+  const scanFrameAnchors = useMemo(
+    () => tagAnchorsOwned ? tagAnchorsToBaseFrame(liveTagAnchors, tagOwner.frame === 'fresh' || tagOwner.frame === 'pending' ? null : tagOwner.frame) : [],
+    [tagAnchorsOwned, liveTagAnchors, tagOwner.frame],
+  );
   useEffect(() => {
-    if (!tagAnchorsDelivered || !durableViewport || objectId === null || scanDurability.durableId === null) return;
+    if (!tagAnchorsOwned || objectId === null || scanDurability.durableId === null) return;
     const scanId = scanDurability.durableId;
-    const built = buildTagLayout(liveTagAnchors);
+    const built = buildTagLayout(scanFrameAnchors);
     const artifact = built.layout === null ? null : tagPositionsFromLayout(built.layout, scanId, 0);
     const key = `${objectId}/${scanSessionId}/${scanId}/${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
     if (tagUploadKeyRef.current === key) return;
@@ -1296,7 +1311,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       try {
         if (built.layout === null) {
           await deleteSessionTagPositions(objectId, scanSessionId).catch(() => undefined);
-          clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: liveTagAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
+          clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: scanFrameAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
         } else {
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(tagPositionsFromLayout(built.layout, scanId, Date.now())));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
@@ -1311,11 +1326,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       }
       void clientDiagnostics.flush();
     })();
-  }, [tagAnchorsDelivered, durableViewport, objectId, scanSessionId, scanDurability.durableId, liveTagAnchors]);
+  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors]);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(
-    () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, liveTagAnchors) : [],
-    [durableViewport, sensorPlacementScene, liveTagAnchors],
+    () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, scanFrameAnchors) : [],
+    [durableViewport, sensorPlacementScene, scanFrameAnchors],
   );
   /* Distances between the devices recalculated from the scan: only from a registration that applies to the scan on screen. */
   const distanceRefinement = useMemo(

@@ -222,3 +222,25 @@ export function tagLayoutReplaces(candidate: TagLayout | null, saved: TagLayoutQ
   const quality = tagLayoutQuality(candidate);
   return quality.confirmed >= saved.confirmed && quality.nodes >= saved.nodes;
 }
+
+/**
+ * Moves anchors seen in an extension scan (frame B, WebXR local-floor metres, Y up) into the base frame A with the accepted continuation
+ * transform T_BA. The transform is defined in the project frame (Z up: yaw about +Z, then a translation in metres), so each position is
+ * taken into the project frame, moved, and brought back. A null transform returns the anchors unchanged (a fresh scan has no second frame).
+ * Spread and view counts describe the observation, not the frame, and are kept.
+ */
+export function tagAnchorsToBaseFrame(
+  anchors: readonly TagSensorAnchor[],
+  extensionToBase: { yaw: number; tx: number; ty: number; tz: number } | null,
+): TagSensorAnchor[] {
+  if (extensionToBase === null) return anchors.map((anchor) => ({ ...anchor }));
+  const c = Math.cos(extensionToBase.yaw);
+  const s = Math.sin(extensionToBase.yaw);
+  return anchors.map((anchor) => {
+    const [x, y, z] = xrToProject([anchor.positionScan[0], anchor.positionScan[1], anchor.positionScan[2]]);
+    const px = c * x - s * y + extensionToBase.tx;
+    const py = s * x + c * y + extensionToBase.ty;
+    const pz = z + extensionToBase.tz;
+    return { ...anchor, positionScan: [px, pz, -py] as const };
+  });
+}
