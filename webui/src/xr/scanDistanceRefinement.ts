@@ -54,7 +54,7 @@ export interface RefinementSummary {
   offsetReliable: boolean;
 }
 
-export type RefinementUnavailableReason = 'no_registration' | 'no_geometry' | 'too_few_devices' | 'no_common_pairs';
+export type RefinementUnavailableReason = 'no_registration' | 'no_geometry' | 'too_few_devices' | 'no_common_pairs' | 'geometry_from_tags';
 
 export type ScanDistanceRefinement =
   | { status: 'ok'; scannedNodes: RefinementNode[]; pairs: RefinedPair[]; skippedNodes: RefinementNode[]; summary: RefinementSummary }
@@ -67,10 +67,20 @@ function nodeForId(nodeId: number | null | undefined): RefinementNode | null {
 }
 
 /** Channel Sounding position of each node in millimetres in the sensor frame (MAIN is the origin). */
+/**
+ * `/api/localization/runs` returns the geometry SELECTED for localization. When the AprilTag layout was adopted, those pods ARE the tag
+ * positions; comparing the tags with them is a comparison with themselves (issue #29). Only pods that are not derived from tags count
+ * as Channel Sounding evidence. A pod without a `position_source` (older firmware) is taken as Channel Sounding, as before.
+ */
+export function isTagDerivedPod(pod: { position_source?: string }): boolean {
+  return pod.position_source === 'apriltag_layout' || pod.position_source === 'apriltag_center_approx';
+}
+
 function csPositions(geometry: LocalizationSessionGeometry): Map<RefinementNode, Vec3> {
   const result = new Map<RefinementNode, Vec3>();
   let hasMain = false;
-  for (const pod of geometry.pods) {
+  const independentPods = geometry.pods.filter((pod) => !isTagDerivedPod(pod));
+  for (const pod of independentPods) {
     const node = nodeForId(pod.node_id);
     if (node === null || pod.computed !== true || pod.assigned === false) continue;
     if (node === 'MAIN') {
@@ -83,7 +93,7 @@ function csPositions(geometry: LocalizationSessionGeometry): Map<RefinementNode,
     if (result.has(node)) continue;
     result.set(node, [x, y, z]);
   }
-  if (!hasMain && !result.has('MAIN') && geometry.pods.some((pod) => pod.computed === true)) result.set('MAIN', [0, 0, 0]);
+  if (!hasMain && !result.has('MAIN') && independentPods.some((pod) => pod.computed === true)) result.set('MAIN', [0, 0, 0]);
   return result;
 }
 
@@ -111,6 +121,9 @@ export function computeScanDistanceRefinement(
   if (scanned.length < 2) return { status: 'unavailable', reason: 'too_few_devices', scannedNodes: scanned };
   if (geometry === null || !geometry.available) return { status: 'unavailable', reason: 'no_geometry', scannedNodes: scanned };
 
+  if (geometry.pods.some((pod) => pod.computed === true) && geometry.pods.filter((pod) => pod.computed === true).every(isTagDerivedPod)) {
+    return { status: 'unavailable', reason: 'geometry_from_tags', scannedNodes: scanned };
+  }
   const cs = csPositions(geometry);
   const bindingByNode = new Map(registration.bindings.map((binding) => [binding.node, binding]));
   const pairs: RefinedPair[] = [];

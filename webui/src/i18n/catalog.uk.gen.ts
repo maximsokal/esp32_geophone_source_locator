@@ -1063,6 +1063,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.refine.reduction": "Похибку знижено на {percent} (СКВ {before} → {after})",
   "scan.refine.skipped": "Не порівняно, немає позиції Channel Sounding: {nodes}",
   "scan.refine.title": "Відстані, перераховані за сканом",
+  "scan.refine.unavailable.geometry_from_tags": "Геометрія, яку використано для локалізації, взята з самих відсканованих міток, тому незалежної відстані Channel Sounding для порівняння немає.",
   "scan.refine.unavailable.no_common_pairs": "Відскановані пристрої не мають позиції Channel Sounding, порівнювати нічого.",
   "scan.refine.unavailable.no_geometry": "Геометрія датчиків недоступна, тому відстані неможливо порівняти зі сканом.",
   "scan.refine.unavailable.no_registration": "Жодного пристрою не відскановано. Увімкніть «Мітки» під час сканування і скануйте мітки на пристроях, щоб перерахувати відстані.",

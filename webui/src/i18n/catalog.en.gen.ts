@@ -1063,6 +1063,7 @@ export const en: Record<I18nKey, string> = {
   "scan.refine.reduction": "Error reduced by {percent} (RMS {before} → {after})",
   "scan.refine.skipped": "Not compared, no Channel Sounding position: {nodes}",
   "scan.refine.title": "Distances recalculated from the scan",
+  "scan.refine.unavailable.geometry_from_tags": "The geometry used for localization comes from the scanned tags themselves, so there is no independent Channel Sounding distance to compare them with.",
   "scan.refine.unavailable.no_common_pairs": "The scanned devices have no Channel Sounding position, there is nothing to compare.",
   "scan.refine.unavailable.no_geometry": "The sensor geometry is unavailable, so the distances cannot be compared with the scan.",
   "scan.refine.unavailable.no_registration": "No device was scanned. Switch Tags on during the scan and scan the tags on the devices to recalculate the distances.",

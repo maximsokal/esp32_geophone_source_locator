@@ -7,6 +7,7 @@ const UNAVAILABLE_KEYS = {
   too_few_devices: 'scan.refine.unavailable.too_few_devices',
   no_geometry: 'scan.refine.unavailable.no_geometry',
   no_common_pairs: 'scan.refine.unavailable.no_common_pairs',
+  geometry_from_tags: 'scan.refine.unavailable.geometry_from_tags',
 } as const satisfies Record<RefinementUnavailableReason, Parameters<typeof translate>[1]>;
 
 /** Millimetres below one metre, metres above: an error of 12 mm must not read as 0.01 m. */

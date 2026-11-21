@@ -592,6 +592,7 @@
     "scan.refine.unavailable.too_few_devices": { "en": "Only one device was scanned ({nodes}). Scan at least two to recalculate the distances.", "uk": "Відскановано лише один пристрій ({nodes}). Скануйте щонайменше два, щоб перерахувати відстані." },
     "scan.refine.unavailable.no_geometry": { "en": "The sensor geometry is unavailable, so the distances cannot be compared with the scan.", "uk": "Геометрія датчиків недоступна, тому відстані неможливо порівняти зі сканом." },
     "scan.refine.unavailable.no_common_pairs": { "en": "The scanned devices have no Channel Sounding position, there is nothing to compare.", "uk": "Відскановані пристрої не мають позиції Channel Sounding, порівнювати нічого." },
+    "scan.refine.unavailable.geometry_from_tags": { "en": "The geometry used for localization comes from the scanned tags themselves, so there is no independent Channel Sounding distance to compare them with.", "uk": "Геометрія, яку використано для локалізації, взята з самих відсканованих міток, тому незалежної відстані Channel Sounding для порівняння немає." },
     "scan.registration.state.pending": { "en": "Waiting for the tag result", "uk": "Очікується результат міток" },
     "scan.registration.state.saving": { "en": "Saving…", "uk": "Збереження…" },
     "scan.registration.state.saved": { "en": "Saved for this scan", "uk": "Збережено для цього скану" },

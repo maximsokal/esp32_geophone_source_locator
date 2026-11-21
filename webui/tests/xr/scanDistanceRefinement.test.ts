@@ -142,3 +142,37 @@ describe('distances recalculated from the scan', () => {
     expect(scanned.every((marker) => marker.status === 'visual_only' && marker.positionScanM !== null)).toBe(true);
   });
 });
+
+describe('tag-derived geometry is not Channel Sounding evidence (issue #29)', () => {
+  const fromTags = (pods: Pod[]): LocalizationSessionGeometry => ({
+    available: true,
+    pods: pods.map((entry) => ({ ...entry, position_source: 'apriltag_layout' as const })),
+  });
+
+  it('refuses to compare the tags with a geometry that was built from those same tags', () => {
+    const result = computeScanDistanceRefinement(fromTags(GEOMETRY.pods), SCAN);
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'geometry_from_tags' });
+  });
+
+  it('uses only the Channel Sounding pods of a mixed geometry and never invents a MAIN pair from tag pods', () => {
+    const mixed: LocalizationSessionGeometry = {
+      available: true,
+      pods: [
+        pod(0, 0, 0, 0, { position_source: 'channel_sounding' }),
+        pod(1, 3000, 0, 0, { position_source: 'channel_sounding' }),
+        pod(2, 0, 4000, 0, { position_source: 'apriltag_layout' }),
+      ],
+    };
+    const result = computeScanDistanceRefinement(mixed, SCAN);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.pairs.map((pair) => `${pair.a}-${pair.b}`)).toEqual(['MAIN-G1']);
+    expect(result.skippedNodes).toEqual(['G2']);
+  });
+
+  it('keeps comparing pods that carry no position_source (older firmware) and Channel Sounding sources', () => {
+    expect(computeScanDistanceRefinement(GEOMETRY, SCAN).status).toBe('ok');
+    const cs: LocalizationSessionGeometry = { available: true, pods: GEOMETRY.pods.map((entry) => ({ ...entry, position_source: 'channel_sounding_baro' as const })) };
+    expect(computeScanDistanceRefinement(cs, SCAN).status).toBe('ok');
+  });
+});

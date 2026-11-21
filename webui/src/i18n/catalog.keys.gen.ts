@@ -1061,6 +1061,7 @@ export const i18nKeys = [
   "scan.refine.reduction",
   "scan.refine.skipped",
   "scan.refine.title",
+  "scan.refine.unavailable.geometry_from_tags",
   "scan.refine.unavailable.no_common_pairs",
   "scan.refine.unavailable.no_geometry",
   "scan.refine.unavailable.no_registration",
