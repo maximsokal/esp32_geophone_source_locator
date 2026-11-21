@@ -39,7 +39,7 @@ import { fuseTagObservations, type TagObservationFusion } from '../xr/fiducial/t
 import { TagObservationStore } from '../xr/fiducial/tagObservationStore';
 import { registerSensorToScan } from '../xr/fiducial/rigidRegistration';
 import { geophonePositionsFromTags, geophonePositionsRegistrationBlock } from '../xr/fiducial/geophonePositions';
-import { confirmedTagIds, frameJumpTagIds, newFrameJumpNotices, newTagScanNotices, registrationArtifactFromResult, registrationOutcome, tagModeErrorLabel, tagScanNoticeText, TAG_FINALIZE_WINDOW_MS, type TagScanNotice } from '../xr/fiducial/tagModeState';
+import { confirmedTagIds, frameJumpTagIds, mergeTagNotices, newFrameJumpNotices, newTagScanNotices, registrationArtifactFromResult, registrationOutcome, tagModeErrorLabel, tagScanNoticeText, TAG_FINALIZE_WINDOW_MS, type TagScanNotice } from '../xr/fiducial/tagModeState';
 import { registrationApplicability, REGISTRATION_INAPPLICABLE_KEYS, type RegistrationInapplicableReason } from '../xr/registrationApplicability';
 import {
   canAttemptImmersiveAr,
@@ -305,7 +305,7 @@ export function XrRuntimePanel({
   /* Announcements fade by themselves: nothing about the tags stays on the camera view. */
   useEffect(()=>{if(tagNotices.length===0)return;const timer=window.setTimeout(()=>setTagNotices([]),7000);return()=>window.clearTimeout(timer);},[tagNotices]);
   /* A device whose tag has just been confirmed by the live scan is announced, with the pairs whose distance is recalculated from the scan. */
-  useEffect(()=>{const added=newTagScanNotices(tagConfirmedRef.current,tagFusion);tagConfirmedRef.current=confirmedTagIds(tagFusion);const jumps=newFrameJumpNotices(tagJumpedRef.current,tagFusion);tagJumpedRef.current=frameJumpTagIds(tagFusion);for(const jump of jumps)clientDiagnostics.warn('XR_TAG_FRAME_JUMP',{tagId:jump.tagId,node:jump.node,separationM:Math.round((jump.separationM??0)*1000)/1000});const shown=[...added,...jumps];if(shown.length>0)setTagNotices((previous)=>[...previous,...shown].slice(-3));},[tagFusion]);
+  useEffect(()=>{const added=newTagScanNotices(tagConfirmedRef.current,tagFusion);tagConfirmedRef.current=confirmedTagIds(tagFusion);const jumps=newFrameJumpNotices(tagJumpedRef.current,tagFusion);tagJumpedRef.current=frameJumpTagIds(tagFusion);for(const jump of jumps)clientDiagnostics.warn('XR_TAG_FRAME_JUMP',{tagId:jump.tagId,node:jump.node,separationM:Math.round((jump.separationM??0)*1000)/1000});const shown=[...added,...jumps];if(shown.length>0)setTagNotices((previous)=>mergeTagNotices(previous,shown));},[tagFusion]);
   /* Live recognition needs only the phone camera path. A recording and its localization geometry are required later, for registration, not for seeing the tags. */
   const tagUnavailableReason=capabilities?.rawXrRgbApi===false?t('xr.tag.camera_unavailable'):capabilities!==null&&capabilities.tagReadbackMode!=='nonblocking'?t('xr.tag.readback_unavailable'):null;
   /* Tag recognition starts by itself with the scan; the Tags button is only a diagnostic switch. */

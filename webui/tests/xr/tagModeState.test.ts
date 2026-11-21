@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { fuseTagObservations } from '../../src/xr/fiducial/tagObservationFusion';
-import { confirmedTagIds, frameJumpTagIds, newFrameJumpNotices, newTagScanNotices, registrationOutcome, tagChipStatuses, tagScanNoticeText } from '../../src/xr/fiducial/tagModeState';
+import { confirmedTagIds, frameJumpTagIds, mergeTagNotices, newFrameJumpNotices, newTagScanNotices, registrationOutcome, tagChipStatuses, tagScanNoticeText } from '../../src/xr/fiducial/tagModeState';
 import { formatNumber } from '../../src/i18n/format';
 import { loadUkrainianCatalog, translate, type I18nLocale } from '../../src/i18n';
 
@@ -97,5 +97,27 @@ describe('frame jump of a tag (issue: coordinate jump without a reset event)', (
     expect(tagScanNoticeText(notices[0], locale)).toContain(formatNumber(locale, 4.2));
     expect(newFrameJumpNotices([3], fusion)).toEqual([]);              /* already announced: no repeat */
     expect(newTagScanNotices([], fusion)).toEqual([]);                  /* a jumped tag is never announced as scanned */
+  });
+});
+
+describe('announcements of a tag whose confirmation flickers', () => {
+  const notice = (tagId: number, others: string[] = []) => ({ tagId, node: tagId === 0 ? 'MAIN' : `G${tagId}`, others });
+
+  it('replaces the older notice of the same tag instead of listing it twice (duplicate React keys)', () => {
+    const merged = mergeTagNotices([notice(0), notice(1)], [notice(0, ['G1'])]);
+    expect(merged.map((entry) => entry.tagId)).toEqual([1, 0]);
+    expect(merged.find((entry) => entry.tagId === 0)!.others).toEqual(['G1']);
+    const keys = merged.map((entry) => `${entry.kind ?? 'ok'}-${entry.tagId}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('never lists one tag twice even when several arrive at once, and keeps at most three', () => {
+    expect(mergeTagNotices([], [notice(0), notice(0), notice(0)]).map((entry) => entry.tagId)).toEqual([0]);
+    expect(mergeTagNotices([notice(0), notice(1), notice(2)], [notice(3), notice(4)]).map((entry) => entry.tagId)).toEqual([2, 3, 4]);
+  });
+
+  it('keeps a confirmation notice and a frame-jump warning of the same tag as different entries', () => {
+    const jump = { ...notice(0), kind: 'jump' as const, separationM: 4.2 };
+    expect(mergeTagNotices([notice(0)], [jump])).toHaveLength(2);
   });
 });

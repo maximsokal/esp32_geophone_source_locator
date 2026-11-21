@@ -64,6 +64,23 @@ export function newTagScanNotices(
   }));
 }
 
+export function tagNoticeKey(notice: TagScanNotice): string {
+  return `${notice.kind ?? 'ok'}-${notice.tagId}`;
+}
+
+/**
+ * Adds announcements to the visible ones. A tag whose confirmation flickers (confirmed, dropped by the outlier gate, confirmed again) is announced
+ * again while its first notice is still showing: the newer notice replaces the older one instead of sitting beside it with the same React key
+ * (phone run 2026-11-21 23:39: 17 "two children with the same key ok-0" errors in 20 ms).
+ */
+export function mergeTagNotices(previous: readonly TagScanNotice[], added: readonly TagScanNotice[], limit = 3): TagScanNotice[] {
+  const replaced = new Set(added.map(tagNoticeKey));
+  const merged = [...previous.filter((notice) => !replaced.has(tagNoticeKey(notice))), ...added];
+  const unique = new Map<string, TagScanNotice>();
+  for (const notice of merged) unique.set(tagNoticeKey(notice), notice);
+  return [...unique.values()].slice(-limit);
+}
+
 export function frameJumpTagIds(fusion: TagObservationFusion): number[] {
   return Object.values(fusion.byTagId).filter((tag) => tag !== undefined && tag.frameJump).map((tag) => tag!.tagId).sort((a, b) => a - b);
 }
