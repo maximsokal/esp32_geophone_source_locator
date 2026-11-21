@@ -4,6 +4,17 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define test_mkdir(path) _mkdir(path)
+#define test_rmdir(path) _rmdir(path)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define test_mkdir(path) mkdir(path, 0775)
+#define test_rmdir(path) rmdir(path)
+#endif
+
 #include "seismic_recorder_localization_geometry.h"
 #include "storage_manager.h"
 
@@ -170,7 +181,7 @@ static void localization_geometry_uses_registered_positions_for_remote_only(void
     set_file(GEOMETRY_AT_MS, k_good_block);
     assert(read_geometry(&geometry, &source, &status) == ESP_OK);
     assert(source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED && status == ESP_OK);
-    assert(strcmp(s_read_path, "/objects/OBJ_0001/sessions/S000001/registration-v1.json") == 0);
+    assert(strcmp(s_read_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json") == 0);
     assert(geometry.anchored);
     for (unsigned i = 0U; i < 4U; ++i) assert(geometry.pods[i].computed && geometry.pods[i].z_mm == 20);
     assert(geometry.pods[0].x_mm == 100 && geometry.pods[2].y_mm == 1200);
@@ -481,6 +492,59 @@ static void localization_geometry_stays_exactly_as_before_when_the_tag_layout_ca
 }
 
 /* No argument runs everything; one argument runs the named case (to show a single RED/GREEN case). */
+/* Issue #27: a REMOTE_ONLY registration moved into the shared scan is read through the session's scan-ref, as the HTTP reader does. */
+static void write_small_file(const char *path, const char *text)
+{
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(text, 1U, strlen(text), file) == strlen(text));
+    assert(fclose(file) == 0);
+}
+
+static void the_registration_is_read_from_the_shared_scan_through_the_scan_ref(void)
+{
+    const char *session = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001";
+    const char *ref = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref";
+    const char *local = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    const char *shared_dir = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001";
+    const char *shared = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/registration-v1.json";
+    (void)test_mkdir(STORAGE_MANAGER_MOUNT_POINT);
+    (void)test_mkdir(STORAGE_MANAGER_ROOT_PATH);
+    (void)test_mkdir(STORAGE_MANAGER_OBJECTS_PATH);
+    (void)test_mkdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
+    (void)test_mkdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    (void)test_mkdir(session);
+    (void)test_mkdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans");
+    (void)test_mkdir(shared_dir);
+    write_small_file(ref, "SC000001");
+    write_small_file(shared, "{}");
+
+    object_store_geometry_t geometry;
+    seismic_recorder_localization_geometry_source_t source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    esp_err_t status = ESP_FAIL;
+    reset_world(4U, true);
+    set_file(GEOMETRY_AT_MS, k_good_block);
+    assert(read_geometry(&geometry, &source, &status) == ESP_OK);
+    assert(strcmp(s_read_path, shared) == 0);                       /* the shared file, not a missing session-local one */
+    assert(status == ESP_OK && source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED);
+
+    /* A session-local registration still wins over the shared one. */
+    write_small_file(local, "{}");
+    reset_world(4U, true);
+    set_file(GEOMETRY_AT_MS, k_good_block);
+    assert(read_geometry(&geometry, &source, &status) == ESP_OK);
+    assert(strcmp(s_read_path, local) == 0);
+
+    (void)remove(local);
+    (void)remove(shared);
+    (void)remove(ref);
+    (void)test_rmdir(shared_dir);
+    (void)test_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans");
+    (void)test_rmdir(session);
+    (void)test_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    (void)test_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
+}
+
 int main(int argc, char **argv)
 {
     static const struct { const char *name; void (*run)(void); } cases[] = {
@@ -496,6 +560,8 @@ int main(int argc, char **argv)
         {"localization_geometry_uses_the_tag_layout_beside_the_stored_one", localization_geometry_uses_the_tag_layout_beside_the_stored_one},
         {"localization_geometry_stays_exactly_as_before_when_the_tag_layout_cannot_be_used",
          localization_geometry_stays_exactly_as_before_when_the_tag_layout_cannot_be_used},
+        {"the_registration_is_read_from_the_shared_scan_through_the_scan_ref",
+         the_registration_is_read_from_the_shared_scan_through_the_scan_ref},
     };
     bool ran = false;
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {

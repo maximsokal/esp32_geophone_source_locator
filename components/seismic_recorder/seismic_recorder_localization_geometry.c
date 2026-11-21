@@ -157,8 +157,9 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
     char session_path[256];
     char path[288];
     err = seismic_recorder_fs_build_session_path(object_id, session_id, session_path, sizeof(session_path));
+    /* The session's own file first, else the shared scan's (a recorded session holds only a scan-ref; issue #27). */
     if (err == ESP_OK &&
-        snprintf(path, sizeof(path), "%s/%s", session_path, SEISMIC_RECORDER_REGISTRATION_FILE) >= (int)sizeof(path)) {
+        scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, SEISMIC_RECORDER_REGISTRATION_FILE, path, sizeof(path)) != 0) {
         err = ESP_ERR_INVALID_SIZE;
     }
     char *text = err == ESP_OK ? malloc(SEISMIC_RECORDER_REGISTRATION_MAX_BYTES + 1U) : NULL;
