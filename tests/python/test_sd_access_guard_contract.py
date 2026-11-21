@@ -62,6 +62,7 @@ GUARD_HELD_BY_CALLER = {
     "components/web_server/web_scan_store.c::web_scan_recover_file_locked",
     "components/web_server/web_scan_store.c::web_scan_commit_temp_locked",
     "components/web_server/web_scan_store.c::web_scan_remove_paths_locked",
+    "components/web_server/web_scan_store.c::web_scan_retire_stale_registration_locked",
     "components/web_server/web_scan_store.c::web_scan_validate_path_locked",
 }
 

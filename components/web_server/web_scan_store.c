@@ -945,6 +945,48 @@ static esp_err_t web_scan_remove_kind_locked(
  * storage lock only after the admission mutex; commit paths never acquire
  * admission while holding storage.
  */
+static bool web_scan_parse_registration_json(char *json, size_t length, uint32_t *source_crc_out, bool *bound_out);
+
+/*
+ * Issue #31: a registration describes the camera frame of ONE scan. When the scan is replaced by a different one (other CRC), the registration
+ * bound to the old scan must not stay active: its project-frame geophone positions would pass every geometry-generation check and be taken
+ * for the new scan's frame. It is retired BEFORE the scan rename (a power cut leaves no stale registration): the file is kept as
+ * registration-v1.json.stale for the record, nothing reads it, and its .tmp/.bak are removed so recovery cannot bring it back. A registration
+ * already bound to exactly the scan being committed (a byte-identical re-upload) stays untouched.
+ */
+static esp_err_t web_scan_retire_stale_registration_locked(const char *object_id, const char *session_id, uint32_t new_scan_crc32)
+{
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+    esp_err_t err = web_scan_paths(object_id, session_id, &WEB_SCAN_KIND_REGISTRATION, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return err;
+
+    const bool has_final = web_scan_file_exists(final_path);
+    if (has_final) {
+        char *json = malloc(WEB_REGISTRATION_MAX_BYTES + 1U);
+        if (json == NULL) return ESP_ERR_NO_MEM;
+        bool matches = false;
+        FILE *file = fopen(final_path, "rb");
+        if (file != NULL) {
+            const size_t length = fread(json, 1U, WEB_REGISTRATION_MAX_BYTES, file);
+            (void)fclose(file);
+            uint32_t bound_crc32 = 0U;
+            bool bound = false;
+            if (length > 0U && web_scan_parse_registration_json(json, length, &bound_crc32, &bound)) {
+                matches = bound && bound_crc32 == new_scan_crc32;
+            }
+        }
+        free(json);
+        if (matches) return ESP_OK;
+
+        char stale_path[WEB_SCAN_PATH_SIZE];
+        if (snprintf(stale_path, sizeof(stale_path), "%s.stale", final_path) >= (int)sizeof(stale_path)) return ESP_ERR_INVALID_SIZE;
+        if (remove(stale_path) != 0 && errno != ENOENT) return ESP_FAIL;
+        if (rename(final_path, stale_path) != 0) return ESP_FAIL;
+    }
+    return web_scan_remove_paths_locked(final_path, temp_path, backup_path);
+}
+
+
 static esp_err_t web_scan_commit_scan_temp(
     const char *object_id,
     const char *session_id,
@@ -965,6 +1007,9 @@ static esp_err_t web_scan_commit_scan_temp(
     }
     if (err == ESP_OK) {
         err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_TAGS);
+    }
+    if (err == ESP_OK) {
+        err = web_scan_retire_stale_registration_locked(object_id, session_id, scan_crc32);
     }
     if (err == ESP_OK) {
         err = web_scan_commit_temp_locked(

@@ -1496,9 +1496,68 @@ static void test_scan_replacement_invalidates_derivatives_and_returns_crc(void)
     assert(file_matches_bytes(scan_path, scan_b, sizeof(scan_b)));
     assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp) && !path_exists(occupancy_backup));
     assert(!path_exists(preview_path) && !path_exists(preview_temp) && !path_exists(preview_backup));
-    assert(file_matches_bytes(registration_path, registration, registration_size));
-    assert(file_matches_bytes(registration_temp, registration, registration_size));
-    assert(file_matches_bytes(registration_backup, registration, registration_size));
+    /* Issue #31: the registration of the replaced scan is retired (kept as .stale for the record), not left active. */
+    char registration_stale[WEB_SCAN_PATH_SIZE];
+    assert(snprintf(registration_stale, sizeof(registration_stale), "%s.stale", registration_path) < (int)sizeof(registration_stale));
+    assert(!path_exists(registration_path) && !path_exists(registration_temp) && !path_exists(registration_backup));
+    assert(file_matches_bytes(registration_stale, registration, registration_size));
+    (void)remove(registration_stale);
+    remove_layout();
+}
+
+
+/* Issue #31: a registration stays active only for the scan it is bound to. */
+static void test_registration_is_bound_to_the_scan_it_was_saved_for(void)
+{
+    make_layout();
+    const unsigned char scan_a[] = {1U, 2U, 3U, 4U};
+    const unsigned char scan_b[] = {9U, 8U, 7U, 6U, 5U};
+    char scan_a_id[20];
+    char scan_b_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    make_scan_id(reference_crc32(scan_b, sizeof(scan_b)), scan_b_id);
+    unsigned char registration_a[128];
+    unsigned char registration_b[128];
+    const size_t size_a = make_registration_json(registration_a, sizeof(registration_a), scan_a_id);
+    const size_t size_b = make_registration_json(registration_b, sizeof(registration_b), scan_b_id);
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    const char *registration_stale = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.stale";
+
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", registration_a, size_a));
+    assert(file_matches_bytes(registration_path, registration_a, size_a));
+
+    /* A byte-identical re-upload of the same scan keeps its registration active. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    assert(file_matches_bytes(registration_path, registration_a, size_a));
+    assert(!path_exists(registration_stale));
+
+    /* A different scan retires it: no active registration (so the solver falls back to the frozen layout) and the old one is kept aside. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_b, sizeof(scan_b)));
+    assert(file_matches_bytes(scan_path, scan_b, sizeof(scan_b)));
+    assert(!path_exists(registration_path));
+    assert(file_matches_bytes(registration_stale, registration_a, size_a));
+
+    /* The registration of the new scan is saved and active; a later replacement retires that one in turn. */
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", registration_b, size_b));
+    assert(file_matches_bytes(registration_path, registration_b, size_b));
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    assert(!path_exists(registration_path));
+    assert(file_matches_bytes(registration_stale, registration_b, size_b));
+
+    /* A leftover .bak of the old registration cannot be recovered into an active file for the new scan. */
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", registration_a, size_a));
+    write_bytes(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.bak", registration_b, size_b);
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_b, sizeof(scan_b)));
+    assert(!path_exists(registration_path));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.bak"));
+    char response[512] = {0};
+    httpd_req_t info;
+    request_info_kind("registration", response, sizeof(response), &info);
+    assert(strstr(response, "\"ok\":true") == NULL);                /* nothing is reported as the current registration */
+
+    (void)remove(registration_stale);
     remove_layout();
 }
 
@@ -2764,6 +2823,7 @@ int main(void)
     test_scan_replacement_invalidates_derivatives_and_returns_crc();
     test_scan_replacement_delete_failure_keeps_old_scan();
     test_deleting_a_shared_scan_unlinks_only_this_sessions_reference();
+    test_registration_is_bound_to_the_scan_it_was_saved_for();
     test_scan_replacement_power_loss_ordering();
     test_derivative_compare_and_commit_rejects_stale_uploads();
     test_derivative_compare_and_commit_toctou_recheck();
