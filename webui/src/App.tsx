@@ -6,6 +6,7 @@ import {
   deleteObjectScanArtifact,
   fetchLocalizationRuns,
   fetchScanInfo,
+  loadSessionTagPositions,
   isRequestCancellation,
   deleteSessionRegistration,
   deleteSessionTagPositions,
@@ -52,7 +53,7 @@ import {
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
 import { buildTagLayout, tagAnchorsToBaseFrame, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
-import { encodeTagPositions, tagPositionsFromLayout } from './xr/fiducial/tagPositionsArtifact';
+import { encodeTagPositions, tagPositionsFromLayout, decodeTagPositions, type TagPositionsArtifact } from './xr/fiducial/tagPositionsArtifact';
 import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
 import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
 import {
@@ -302,6 +303,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const [tagOwner, setTagOwner] = useState<{ baseId: string | null; frame: 'fresh' | 'pending' | RigidTransform }>({ baseId: null, frame: 'fresh' });
   /* The best layout saved for the scan on screen: a weaker look at the same scan (rejected continuation) must not replace it. */
   const savedTagLayoutRef = useRef<{ scanId: string; nodes: number; confirmed: number } | null>(null);
+  /* The tag layout read back from the ESP32 (or last saved) for this object/session: the baseline a continuation inherits, and what survives a page reload. */
+  const savedTagArtifactRef = useRef<{ objectId: string; sessionId: string; artifact: TagPositionsArtifact } | null>(null);
   /* Anchors belong to the scan just made for this target; another object/session starts without them. */
   useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
@@ -620,6 +623,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     setContinuationPhase(null);
     scanLoadSession.current = null;
     sessionEvidenceLoad.current = null;
+    savedTagArtifactRef.current = null;
+    savedTagLayoutRef.current = null;
     setScanReadRetryable(false);
     scanIntent.current = 'fresh';
     continuationBase.current = null;
@@ -673,8 +678,22 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           (json) => ({ ok: true as const, json }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
-      ]).then(([geometryResult, registrationResult]) => {
+        loadSessionTagPositions(objectId, sessionId).then(
+          (json) => ({ ok: true as const, json }),
+          (reason: unknown) => ({ ok: false as const, reason }),
+        ),
+      ]).then(([geometryResult, registrationResult, tagsResult]) => {
         if (cancelled || generation !== storageGeneration.current) return;
+        /* The saved tag layout is the baseline: after a reload a weaker look must still not replace it, and a continuation inherits it (issue #38). */
+        if (tagsResult.ok && typeof tagsResult.json === 'string') {
+          try {
+            const artifact = decodeTagPositions(tagsResult.json);
+            savedTagArtifactRef.current = { objectId, sessionId, artifact };
+            savedTagLayoutRef.current = { scanId: artifact.scan_frame_id ?? '', nodes: artifact.nodes.length, confirmed: artifact.nodes.filter((node) => node.confirmed).length };
+          } catch (reason) {
+            clientDiagnostics.warn('TAG_POSITIONS_RESTORE_FAILED', { objectId, sessionId, error: reason instanceof Error ? reason.message : String(reason) });
+          }
+        }
         /* A failed sub-request stays retryable (issue #22): only a fully loaded evidence set is remembered for this screen. */
         if (geometryResult.ok && registrationResult.ok) sessionEvidenceLoad.current = key;
         if (geometryResult.ok) {
@@ -1329,11 +1348,21 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     const scanId = scanDurability.durableId;
     const built = buildTagLayout(scanFrameAnchors);
     const artifact = built.layout === null ? null : tagPositionsFromLayout(built.layout, scanId, 0);
-    const key = `${objectId}/${scanSessionId}/${scanId}/${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
+    /*
+     * An accepted continuation is a new scan id with A's tags still true in frame A: when the extension found nothing better, A's saved layout
+     * is carried over (re-stamped with the merged id) instead of being dropped or replaced by a weaker one (issues #37, #38).
+     */
+    const inheriting = tagOwner.frame !== 'fresh' && tagOwner.frame !== 'pending';
+    const stored = savedTagArtifactRef.current;
+    const baseline = inheriting && stored !== null && stored.objectId === objectId && stored.sessionId === scanSessionId && stored.artifact.scan_frame_id === tagOwner.baseId
+      ? stored.artifact : null;
+    const baselineQuality = baseline === null ? null : { nodes: baseline.nodes.length, confirmed: baseline.nodes.filter((node) => node.confirmed).length };
+    const keepBaseline = baseline !== null && !tagLayoutReplaces(built.layout, baselineQuality);
+    const key = `${objectId}/${scanSessionId}/${scanId}/${keepBaseline ? 'inherit' : ''}${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
     if (tagUploadKeyRef.current === key) return;
     tagUploadKeyRef.current = key;
     const savedForScan = savedTagLayoutRef.current?.scanId === scanId ? savedTagLayoutRef.current : null;
-    if (!tagLayoutReplaces(built.layout, savedForScan)) {
+    if (!keepBaseline && !tagLayoutReplaces(built.layout, savedForScan)) {
       clientDiagnostics.info('TAG_POSITIONS_KEPT', {
         objectId, sessionId: scanSessionId, saved: `${savedForScan?.confirmed}/${savedForScan?.nodes}`,
         candidate: built.layout === null ? `none:${built.reason}` : `${tagLayoutQuality(built.layout).confirmed}/${built.layout.nodes.length}`,
@@ -1343,13 +1372,22 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     }
     void (async () => {
       try {
-        if (built.layout === null) {
+        if (keepBaseline && baseline !== null && baselineQuality !== null) {
+          const inherited: TagPositionsArtifact = { ...baseline, scan_frame_id: scanId, created_at_ms: Date.now() };
+          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(inherited));
+          if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
+          savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: inherited };
+          savedTagLayoutRef.current = { scanId, ...baselineQuality };
+          clientDiagnostics.info('TAG_POSITIONS_INHERITED', { objectId, sessionId: scanSessionId, from: baseline.scan_frame_id, nodes: baseline.nodes.length, candidate: built.layout === null ? `none:${built.reason}` : 'weaker' });
+        } else if (built.layout === null) {
           /* A failed delete leaves the previous sidecar behind: that is a failure to retry, never a quiet "no tags". */
           await deleteSessionTagPositions(objectId, scanSessionId);
           clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: scanFrameAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
         } else {
-          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(tagPositionsFromLayout(built.layout, scanId, Date.now())));
+          const toSave = tagPositionsFromLayout(built.layout, scanId, Date.now());
+          const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(toSave));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
+          savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: toSave };
           savedTagLayoutRef.current = { scanId, ...tagLayoutQuality(built.layout) };
           clientDiagnostics.info('TAG_POSITIONS_SAVED', {
             objectId, sessionId: scanSessionId, nodes: built.layout.nodes.map((node) => `${node.nodeId}${node.confirmed ? '' : '?'}`).join(','),
@@ -1372,7 +1410,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       }
       void clientDiagnostics.flush();
     })();
-  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors, tagRetryTick]);
+  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors, tagRetryTick, tagOwner]);
   useEffect(() => () => { if (tagRetryTimer.current !== null) clearTimeout(tagRetryTimer.current); }, []);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(

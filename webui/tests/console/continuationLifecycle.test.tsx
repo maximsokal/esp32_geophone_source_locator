@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({
   viewportEvents: [] as Array<{ snapshot: any; currentScanId: string | null }>,
   workers: [] as any[],
   fetchRuns: vi.fn(), loadScan: vi.fn(), loadReg: vi.fn(), saveReg: vi.fn(), delReg: vi.fn(),
-  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(),
+  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(), saveTags: vi.fn(), delTags: vi.fn(), loadTags: vi.fn(),
 }));
 
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
@@ -25,6 +25,9 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
     saveSessionPreviewArtifact: h.savePrev,
     fetchScanInfo: h.info,
     deleteObjectScanArtifact: h.delScan,
+    saveSessionTagPositions: h.saveTags,
+    deleteSessionTagPositions: h.delTags,
+    loadSessionTagPositions: h.loadTags,
   };
 });
 
@@ -56,6 +59,8 @@ import App from '../../src/App';
 import { LocaleProvider } from '../../src/i18n';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import { occupancyFrameIdForScan } from '../../src/xr/occupancySolverArtifact';
+import { decodeTagPositions, encodeTagPositions, tagPositionsFromLayout } from '../../src/xr/fiducial/tagPositionsArtifact';
+import { buildTagLayout } from '../../src/xr/fiducial/tagLayout';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import { makeValidScanSnapshot } from '../xr/support/validScanSnapshot';
 
@@ -121,7 +126,7 @@ function oversizedSnapshot(): ScanPointCloudSnapshot {
   };
 }
 
-function workerSuccess(snapshot: ScanPointCloudSnapshot): any {
+function workerSuccess(snapshot: ScanPointCloudSnapshot, extensionToBase = { yaw: 0, tx: 0, ty: 0, tz: 0 }): any {
   return {
     ok: true,
     snapshot,
@@ -129,7 +134,7 @@ function workerSuccess(snapshot: ScanPointCloudSnapshot): any {
       yawRadians: 0, translation: [0, 0, 0], inliers: 120, overlapRatio: 0.4,
       rmsMeters: 0.01, baseSampleCount: 120, extensionSampleCount: 120,
     },
-    extensionToBase: { yaw: 0, tx: 0, ty: 0, tz: 0 },
+    extensionToBase,
   };
 }
 
@@ -175,6 +180,9 @@ beforeEach(() => {
   h.saveReg.mockReset().mockResolvedValue({ ok: true, action: 'registration' });
   h.delReg.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
   h.delScan.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
+  h.loadTags.mockReset().mockResolvedValue(null);
+  h.saveTags.mockReset().mockResolvedValue({ ok: true });
+  h.delTags.mockReset().mockResolvedValue({ ok: true });
   h.saveScan.mockReset().mockImplementation(async (_object: string, _session: string, bytes: Uint8Array) => {
     device.scan = bytes.slice(); device.occupancy = null; device.preview = null;
     return { ok: true, action: 'scan', id: scanId(bytes) };
@@ -393,5 +401,145 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     expect(durableTransitions.filter((id) => id === candidateId)).toHaveLength(1);
     expect(h.saveOcc).toHaveBeenCalledTimes(1);
     expect(h.savePrev).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tag sidecar ownership while a continuation is merged (issues #37, #38)', () => {
+  const tag = (tagId: number, node: string, xr: [number, number, number]) =>
+    ({ tagId, node, positionScan: xr, spreadM: 0.003, observationCount: 8, independentViewCount: 4, confirmed: true });
+  const MAIN = tag(0, 'MAIN', [1, 1, -1]);
+  const G1 = tag(1, 'G1', [1.5, 1, -1]);
+  const G2 = tag(2, 'G2', [1, 1, -1.8]);
+  const G3 = tag(3, 'G3', [0.9, 1.2, -1.5]);
+  const T_BA = { yaw: Math.PI / 2, tx: 3, ty: -2, tz: 0.5 };
+
+  it('writes and deletes nothing against durable A while the merge is pending, and nothing after it is rejected', async () => {
+    const base = await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, G3]); });
+    await flush();
+    expect(h.saveTags).not.toHaveBeenCalled();
+    expect(h.delTags).not.toHaveBeenCalled();
+
+    const request = worker.request;
+    await act(async () => { worker.send({ type: 'result', requestId: request.requestId, generation: request.generation, result: { ok: false, reason: 'overlap', diagnostics: null } }); });
+    await flush();
+    expect(h.saveTags).not.toHaveBeenCalled();
+    expect(h.delTags).not.toHaveBeenCalled();
+    expect(device.scan).toEqual(base.baseBytes);
+    expect(h.viewportProps.currentScanId).toBe(base.baseId);
+  });
+
+  it('does not delete A\'s saved layout when the extension saw no tags (cold page: no layout remembered in memory)', async () => {
+    const base = await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { h.props.onTagAnchors([]); });
+    await flush();
+    expect(h.delTags).not.toHaveBeenCalled();
+    const request = worker.request;
+    await act(async () => { worker.send({ type: 'error', requestId: request.requestId, generation: request.generation, message: 'worker crashed' }); });
+    await flush();
+    expect(h.saveTags).not.toHaveBeenCalled();
+    expect(h.delTags).not.toHaveBeenCalled();
+    expect(device.scan).toEqual(base.baseBytes);
+  });
+
+  it('saves the layout of an accepted merge in the frame of the merged scan A, under the merged scan id (not in frame B under A)', async () => {
+    await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { h.props.onTagAnchors([MAIN, G1, G2, G3]); });
+    await flush();
+    expect(h.saveTags).not.toHaveBeenCalled();                       /* still pending: nothing is written under the old id */
+
+    const merged = changedSnapshot();
+    const mergedId = scanId(encodeScanArtifact(merged));
+    const request = worker.request;
+    await act(async () => { worker.send({ type: 'result', requestId: request.requestId, generation: request.generation, result: workerSuccess(merged, T_BA) }); });
+    await flush();
+
+    expect(h.saveTags).toHaveBeenCalledTimes(1);
+    const [objectId, , json] = h.saveTags.mock.calls[0] as [string, string, string];
+    expect(objectId).toBe('OBJ');
+    const saved = decodeTagPositions(json);
+    expect(saved.scan_frame_id).toBe(mergedId);
+    expect(saved.main_scan_position_mm.map(Math.round)).toEqual([2000, -1000, 1500]);
+    const byNode = new Map(saved.nodes.map((node) => [node.node_id, [Math.round(node.x_mm) + 0, Math.round(node.y_mm) + 0, Math.round(node.z_mm) + 0]]));
+    expect(byNode.get(1)).toEqual([0, 500, 0]);
+    expect(byNode.get(2)).toEqual([-800, 0, 0]);
+    expect(byNode.get(3)).toEqual([-500, -100, 200]);
+    expect(h.delTags).not.toHaveBeenCalled();
+  });
+});
+
+describe('a continuation inherits the saved tag layout of A (issues #37, #38)', () => {
+  const tag = (tagId: number, node: string, xr: [number, number, number]) =>
+    ({ tagId, node, positionScan: xr, spreadM: 0.003, observationCount: 8, independentViewCount: 4, confirmed: true });
+  const MAIN = tag(0, 'MAIN', [1, 1, -1]);
+  const G1 = tag(1, 'G1', [1.5, 1, -1]);
+  const G2 = tag(2, 'G2', [1, 1, -1.8]);
+  const G3 = tag(3, 'G3', [0.9, 1.2, -1.5]);
+
+  /** The layout the ESP32 holds for durable A, as read back after a page reload. */
+  function savedLayoutFor(baseId: string, anchors: ReturnType<typeof tag>[]): string {
+    const built = buildTagLayout(anchors);
+    if (built.layout === null) throw new Error('fixture layout expected');
+    return encodeTagPositions(tagPositionsFromLayout(built.layout, baseId, 1));
+  }
+
+  async function mergeWithExtensionTags(extensionTags: ReturnType<typeof tag>[]): Promise<string> {
+    const baseId = scanId(encodeScanArtifact(makeValidScanSnapshot()));
+    h.loadTags.mockResolvedValue(savedLayoutFor(baseId, [MAIN, G1, G2]));
+    await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { h.props.onTagAnchors(extensionTags); });
+    await flush();
+    const merged = changedSnapshot();
+    const request = worker.request;
+    await act(async () => { worker.send({ type: 'result', requestId: request.requestId, generation: request.generation, result: workerSuccess(merged) }); });
+    await flush();
+    return scanId(encodeScanArtifact(merged));
+  }
+
+  it('carries A\'s layout over to the merged scan when the extension saw no tags (nothing is deleted)', async () => {
+    const mergedId = await mergeWithExtensionTags([]);
+    expect(h.delTags).not.toHaveBeenCalled();
+    expect(h.saveTags).toHaveBeenCalledTimes(1);
+    const saved = decodeTagPositions((h.saveTags.mock.calls[0] as [string, string, string])[2]);
+    const original = decodeTagPositions(savedLayoutFor('scan-crc32:aaaaaaaa', [MAIN, G1, G2]));
+    expect(saved.scan_frame_id).toBe(mergedId);
+    expect(saved.nodes).toEqual(original.nodes);
+    expect(saved.main_scan_position_mm).toEqual(original.main_scan_position_mm);
+  });
+
+  it('keeps A\'s layout when the extension only saw a weaker one (too few tags for a layout)', async () => {
+    const mergedId = await mergeWithExtensionTags([MAIN, G1]);
+    expect(h.delTags).not.toHaveBeenCalled();
+    expect(h.saveTags).toHaveBeenCalledTimes(1);
+    const saved = decodeTagPositions((h.saveTags.mock.calls[0] as [string, string, string])[2]);
+    expect(saved.scan_frame_id).toBe(mergedId);
+    expect(saved.nodes.map((node) => node.node_id)).toEqual([0, 1, 2]);
+  });
+
+  it('replaces A\'s layout by a stronger one found in the extension (more tags), in the merged frame', async () => {
+    const mergedId = await mergeWithExtensionTags([MAIN, G1, G2, G3]);
+    expect(h.delTags).not.toHaveBeenCalled();
+    expect(h.saveTags).toHaveBeenCalledTimes(1);
+    const saved = decodeTagPositions((h.saveTags.mock.calls[0] as [string, string, string])[2]);
+    expect(saved.scan_frame_id).toBe(mergedId);
+    expect(saved.nodes.map((node) => node.node_id)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('after a page reload a weaker look at the same scan never replaces or removes the saved layout (the layout is read from the device)', async () => {
+    const baseId = scanId(encodeScanArtifact(makeValidScanSnapshot()));
+    h.loadTags.mockResolvedValue(savedLayoutFor(baseId, [MAIN, G1, G2, G3]));
+    await openSavedBase();
+    expect(h.loadTags).toHaveBeenCalledTimes(1);
+    const worker = await startContinue();
+    await act(async () => { h.props.onTagAnchors([MAIN, G1]); });
+    const request = worker.request;
+    await act(async () => { worker.send({ type: 'result', requestId: request.requestId, generation: request.generation, result: { ok: false, reason: 'overlap', diagnostics: null } }); });
+    await flush();
+    expect(h.saveTags).not.toHaveBeenCalled();
+    expect(h.delTags).not.toHaveBeenCalled();
   });
 });

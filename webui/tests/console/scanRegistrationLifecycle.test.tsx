@@ -7,7 +7,7 @@ const h = vi.hoisted(() => ({
   viewportProps: null as any,
   useRealScanLoad: false,
   fetchRuns: vi.fn(), loadScan: vi.fn(), loadReg: vi.fn(), saveReg: vi.fn(), delReg: vi.fn(),
-  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(), saveTags: vi.fn(), delTags: vi.fn(),
+  saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(), saveTags: vi.fn(), delTags: vi.fn(), loadTags: vi.fn(),
 }));
 
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
@@ -21,7 +21,7 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
     saveSessionRegistration: h.saveReg, deleteSessionRegistration: h.delReg, saveObjectScanArtifact: h.saveScan,
     saveSessionOccupancyArtifact: h.saveOcc, saveSessionPreviewArtifact: h.savePrev, fetchScanInfo: h.info,
     deleteObjectScanArtifact: h.delScan,
-    saveSessionTagPositions: h.saveTags, deleteSessionTagPositions: h.delTags,
+    saveSessionTagPositions: h.saveTags, deleteSessionTagPositions: h.delTags, loadSessionTagPositions: h.loadTags,
   };
 });
 vi.mock('../../src/components/XrRuntimePanel', () => ({ XrRuntimePanel: (props: unknown) => { h.props = props; return null; } }));
@@ -87,6 +87,7 @@ beforeEach(() => {
   h.loadReg.mockReset().mockResolvedValue(null);
   h.saveReg.mockReset().mockResolvedValue({ ok: true, action: 'registration' });
   h.delReg.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
+  h.loadTags.mockReset().mockResolvedValue(null);
   h.saveTags.mockReset().mockResolvedValue({ ok: true, action: 'tags' });
   h.delTags.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
   h.delScan.mockReset().mockResolvedValue({ ok: true, action: 'delete' });
