@@ -464,6 +464,38 @@ export function shouldRefitCamera(input: { commandChanged: boolean; operatorMove
   return input.commandChanged || !input.operatorMovedCamera;
 }
 
+/** A camera command from the viewport's own control strip (fit the scan, reset the view, focus the selected sensor). */
+export interface CameraHudCommand {
+  kind: 'fit' | 'reset' | 'focus';
+  sequence: number;
+  /** Viewport-frame point to focus (kind 'focus' only). */
+  target: Vec3Tuple | null;
+}
+
+/**
+ * Where the camera goes when the operator focuses a point: it keeps looking from the same direction, only the orbit centre and the distance
+ * change (about half the scan extent, never closer than 0.6 m nor farther than 12 m). Camera only: no scan or sensor value is touched.
+ */
+export function focusPoseForTarget(input: {
+  cameraPosition: Vec3Tuple; previousTarget: Vec3Tuple; target: Vec3Tuple; extent: number;
+}): { position: Vec3Tuple; target: Vec3Tuple } {
+  const [cx, cy, cz] = input.cameraPosition;
+  const [px, py, pz] = input.previousTarget;
+  let dx = cx - px, dy = cy - py, dz = cz - pz;
+  let length = Math.hypot(dx, dy, dz);
+  if (!Number.isFinite(length) || length < 1e-6) { dx = 0.66; dy = 0.52; dz = 0.72; length = Math.hypot(dx, dy, dz); }
+  const extent = Number.isFinite(input.extent) ? input.extent : 0;
+  const distance = Math.min(12, Math.max(0.6, extent * 0.5));
+  const k = distance / length;
+  const [tx, ty, tz] = input.target;
+  return { position: [tx + dx * k, ty + dy * k, tz + dz * k], target: [tx, ty, tz] };
+}
+
+/** What one finger / the left mouse button does: rotate by default (recommended), or move the view in Pan mode. Two fingers always move and zoom. */
+export function dragModeForPan(panMode: boolean): 'rotate' | 'pan' {
+  return panMode ? 'pan' : 'rotate';
+}
+
 export function orbitDistanceLimits(extent: number): { minDistance: number; maxDistance: number } {
   return { minDistance: Math.max(0.18, extent * 0.10), maxDistance: Math.max(18, extent * 10) };
 }

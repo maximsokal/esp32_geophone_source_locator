@@ -10,6 +10,8 @@ import {
 import {
   cameraPoseForPreset,
   shouldRefitCamera,
+  focusPoseForTarget,
+  dragModeForPan,
   orbitDistanceLimits,
   prepareScanScene,
   scanViewFitExtent,
@@ -360,5 +362,30 @@ describe('camera re-fit policy (issue #41)', () => {
   it('re-fits on an extent change only while the operator has not moved the camera', () => {
     expect(shouldRefitCamera({ commandChanged: false, operatorMovedCamera: false })).toBe(true);
     expect(shouldRefitCamera({ commandChanged: false, operatorMovedCamera: true })).toBe(false);
+  });
+});
+
+describe('camera focus and drag mode (issue #41, camera only)', () => {
+  it('focus keeps the viewing direction, moves the orbit centre to the target and sets a distance from the extent', () => {
+    const pose = focusPoseForTarget({ cameraPosition: [4, 3, 0], previousTarget: [0, 0, 0], target: [10, 1, -2], extent: 4 });
+    expect(pose.target).toEqual([10, 1, -2]);
+    const offset = [pose.position[0] - 10, pose.position[1] - 1, pose.position[2] + 2];
+    expect(Math.hypot(...offset)).toBeCloseTo(2, 9);                    /* extent * 0.5 */
+    expect(offset[0] / Math.hypot(...offset)).toBeCloseTo(4 / 5, 9);    /* same direction as the old camera offset (4, 3, 0) */
+    expect(offset[1] / Math.hypot(...offset)).toBeCloseTo(3 / 5, 9);
+    expect(offset[2]).toBeCloseTo(0, 9);
+  });
+
+  it('clamps the focus distance and survives a degenerate camera or extent', () => {
+    expect(Math.hypot(...focusPoseForTarget({ cameraPosition: [1, 1, 1], previousTarget: [0, 0, 0], target: [0, 0, 0], extent: 0.1 }).position)).toBeCloseTo(0.6, 9);
+    expect(Math.hypot(...focusPoseForTarget({ cameraPosition: [1, 1, 1], previousTarget: [0, 0, 0], target: [0, 0, 0], extent: 500 }).position)).toBeCloseTo(12, 9);
+    const same = focusPoseForTarget({ cameraPosition: [2, 2, 2], previousTarget: [2, 2, 2], target: [1, 0, 0], extent: Number.NaN });
+    expect(same.position.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(same.position[0] - 1, same.position[1], same.position[2])).toBeCloseTo(0.6, 9);
+  });
+
+  it('one finger rotates unless Pan mode is on', () => {
+    expect(dragModeForPan(false)).toBe('rotate');
+    expect(dragModeForPan(true)).toBe('pan');
   });
 });

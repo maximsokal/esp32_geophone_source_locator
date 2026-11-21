@@ -42,6 +42,7 @@ vi.mock('three/addons/controls/OrbitControls.js', () => ({
     minDistance = 0;
     maxDistance = 0;
     touches: Record<string, unknown> = {};
+    mouseButtons: Record<string, unknown> = {};
     target = { set: vi.fn() };
     addEventListener(): void {}
     removeEventListener(): void {}
@@ -126,6 +127,8 @@ describe('result viewport failure boundary', () => {
   it('keeps the production viewport shell and reports a thrown localization overlay locally', () => {
     vi.stubGlobal('document', {
       createElement: () => { throw new Error('localization overlay construction failed'); },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     });
     const marker = {
       node: 'G1', status: 'anchored', source: 'channel_sounding', positionScanM: [0.5, 0.2, 0.1],

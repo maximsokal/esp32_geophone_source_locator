@@ -169,3 +169,16 @@ describe('ScanPointCloudViewport', () => {
     expect(inset).toContain(translate('en', 'scan.unregistered_geometry'));
   });
 });
+
+describe('in-canvas camera controls (issue #41)', () => {
+  it.each(['en', 'uk'] as const)('shows a compact camera strip with Fit, Reset, Pan and Focus (%s), Focus disabled without a selected sensor', (locale) => {
+    const html = render(scanViewForMode('quality'), snapshot(), 'perspective', {}, locale);
+    expect(html).toContain(`aria-label="${translate(locale, 'scan.camera.hud_label')}"`);
+    for (const action of ['fit', 'reset', 'pan', 'focus']) expect(html).toContain(`data-camera-action="${action}"`);
+    for (const key of ['scan.camera.fit', 'scan.camera.reset', 'scan.camera.pan', 'scan.camera.focus', 'scan.camera.help'] as const) {
+      expect(html).toContain(translate(locale, key));
+    }
+    expect(html).toMatch(/data-camera-action="focus"[^>]*disabled|disabled=""[^>]*data-camera-action="focus"/);
+    expect(html).toContain('aria-pressed="false"');                                  /* Pan mode starts off: one finger rotates */
+  });
+});

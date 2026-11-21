@@ -37,7 +37,11 @@ import {
   scanLayerPlan,
   scanSourceBadgeText,
   ScanSceneMaterializer,
+  toViewport,
   toViewportPositions,
+  focusPoseForTarget,
+  dragModeForPan,
+  type CameraHudCommand,
   type PreparedScanScene,
   type SensorMarkerLayerSpec,
   type SourceHighlightLayerSpec,
@@ -250,19 +254,19 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
   </group>;
 }
 
-function CameraController({ command, extent, onInteractionEnd, controlsRef }: { command: ViewCommand; extent: number; onInteractionEnd: (distance: number) => void; controlsRef: OrbitControlsRef }) {
+function CameraController({ command, extent, onInteractionEnd, controlsRef, panMode, hud }: { command: ViewCommand; extent: number; onInteractionEnd: (distance: number) => void; controlsRef: OrbitControlsRef; panMode: boolean; hud: CameraHudCommand }) {
   const { camera } = useThree();
   const controls = useOwnedOrbitControls(controlsRef);
   const operatorMoved = useRef(false);
   const lastCommandKey = useRef<string | null>(null);
   useEffect(() => {
     const limits = orbitDistanceLimits(extent);
-    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.update();
+    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = dragModeForPan(panMode) === 'pan' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.mouseButtons.LEFT = dragModeForPan(panMode) === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE; controls.update();
     const handleStart = (): void => { operatorMoved.current = true; clientDiagnostics.info('SCAN_VIEW_GESTURE_START'); };
     const handleEnd = (): void => { const distance = controls.getDistance(); onInteractionEnd(distance); clientDiagnostics.info('SCAN_VIEW_GESTURE_END', { distance: Number(distance.toFixed(3)), x: Number(camera.position.x.toFixed(3)), y: Number(camera.position.y.toFixed(3)), z: Number(camera.position.z.toFixed(3)) }); };
     controls.addEventListener('start', handleStart); controls.addEventListener('end', handleEnd);
     return () => { controls.removeEventListener('start', handleStart); controls.removeEventListener('end', handleEnd); };
-  }, [camera, controls, extent, onInteractionEnd]);
+  }, [camera, controls, extent, onInteractionEnd, panMode]);
   useEffect(() => {
     const commandKey = `${command.preset}:${command.sequence}`;
     const commandChanged = lastCommandKey.current !== commandKey;
@@ -275,6 +279,23 @@ function CameraController({ command, extent, onInteractionEnd, controlsRef }: { 
     camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
     camera.lookAt(controls.target); if (camera instanceof THREE.PerspectiveCamera) camera.updateProjectionMatrix(); controls.update(); onInteractionEnd(controls.getDistance());
   }, [camera, command.preset, command.sequence, controls, extent, onInteractionEnd]);
+  const lastHudSequence = useRef(0);
+  useEffect(() => {
+    if (hud.sequence === 0 || hud.sequence === lastHudSequence.current) return;
+    lastHudSequence.current = hud.sequence;
+    if (hud.kind === 'focus' && hud.target !== null) {
+      const pose = focusPoseForTarget({ cameraPosition: [camera.position.x, camera.position.y, camera.position.z], previousTarget: [controls.target.x, controls.target.y, controls.target.z], target: hud.target, extent });
+      controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+      camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+    } else {
+      const pose = cameraPoseForPreset(hud.kind === 'reset' ? 'perspective' : command.preset, extent);
+      controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+      camera.up.set(pose.up[0], pose.up[1], pose.up[2]);
+      camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+      operatorMoved.current = false;
+    }
+    camera.lookAt(controls.target); if (camera instanceof THREE.PerspectiveCamera) camera.updateProjectionMatrix(); controls.update(); onInteractionEnd(controls.getDistance());
+  }, [camera, command.preset, controls, extent, hud, onInteractionEnd]);
   useFrame(() => controls.update()); return null;
 }
 
@@ -350,6 +371,16 @@ export function ScanPointCloudViewport({
   const { locale } = useLocale();
   const t = useT();
   const controlsOwner = useOrbitControlsOwner();
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [panMode, setPanMode] = useState(false);
+  const [hud, setHud] = useState<CameraHudCommand>({ kind: 'fit', sequence: 0, target: null });
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const sync = (): void => setFullscreen(document.fullscreenElement !== null && document.fullscreenElement === shellRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
   const requestedMaterialization: ScanSceneMaterializationNeeds = {
     good: display.goodPoints,
     bad: display.badPoints,
@@ -585,8 +616,28 @@ export function ScanPointCloudViewport({
         : t('scan.surfel_count', { label: meshQuality.label, count: formatNumber(locale, snapshot.tsdfPointCount) });
   const sourceReasonLabel = sourceReasonText(sourceHighlights.reason, t);
 
-  return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} /></Canvas>
+  const focusTarget = selectedMarker !== null && selectedMarker.positionScanM !== null
+    ? toViewport(selectedMarker.positionScanM[0], selectedMarker.positionScanM[1], selectedMarker.positionScanM[2], prepared.centerX, prepared.centerY, prepared.centerZ)
+    : null;
+  const requestHud = (kind: CameraHudCommand['kind']): void => setHud((current) => ({ kind, sequence: current.sequence + 1, target: kind === 'focus' ? focusTarget : null }));
+  const fullscreenSupported = typeof document !== 'undefined' && document.fullscreenEnabled === true;
+  const toggleFullscreen = (): void => {
+    const shell = shellRef.current;
+    if (shell === null) return;
+    if (document.fullscreenElement !== null) void document.exitFullscreen();
+    else void shell.requestFullscreen?.();
+  };
+
+  return <div ref={shellRef} className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} panMode={panMode} hud={hud} /></Canvas>
+    <div className="scan-camera-hud" role="group" aria-label={t('scan.camera.hud_label')}>
+      <button type="button" data-camera-action="fit" onClick={() => requestHud('fit')}>{t('scan.camera.fit')}</button>
+      <button type="button" data-camera-action="reset" onClick={() => requestHud('reset')}>{t('scan.camera.reset')}</button>
+      <button type="button" data-camera-action="pan" aria-pressed={panMode} onClick={() => setPanMode((value) => !value)}>{t('scan.camera.pan')}</button>
+      <button type="button" data-camera-action="focus" disabled={focusTarget === null} onClick={() => requestHud('focus')}>{t('scan.camera.focus')}</button>
+      {fullscreenSupported && <button type="button" data-camera-action="fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen ? t('scan.camera.exit_fullscreen') : t('scan.camera.fullscreen')}</button>}
+      <span className="scan-camera-help">{t('scan.camera.help')}</span>
+    </div>
     {overlayFailure !== null && <div className="xr-runtime-warning scan-overlay-failure" role="alert">
       <div>{t('scan.overlay.failed')}</div>
       <div>{overlayFailure.message}</div>
