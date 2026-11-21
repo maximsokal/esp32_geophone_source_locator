@@ -1,9 +1,15 @@
 import { crc32 } from './crc32';
+import { sha256Hex } from './sha256';
 
 export interface ScanIdentity {
   readonly byteLength: number;
   readonly crc32: number;
   readonly frameId: string;
+  /**
+   * Collision-resistant digest of the whole scan file (lowercase hex SHA-256). The CRC32 above only guards against accidental corruption: two
+   * different valid scans can share it (issue #34). Absent for identities that were built without the bytes (older callers, tests).
+   */
+  readonly sha256?: string;
 }
 
 let wholeScanCrcInvocations = 0;
@@ -14,18 +20,19 @@ let controllerOwnedBytesCopied = 0;
 let apiBoundaryCopies = 0;
 let apiBoundaryBytesCopied = 0;
 
-export function scanIdentityFromCrc(byteLength: number, checksum: number): ScanIdentity {
+export function scanIdentityFromCrc(byteLength: number, checksum: number, sha256?: string): ScanIdentity {
   wholeScanCrcInvocations += 1;
   wholeScanCrcBytesVisited += byteLength;
   return Object.freeze({
     byteLength,
     crc32: checksum >>> 0,
     frameId: `scan-crc32:${(checksum >>> 0).toString(16).padStart(8, '0')}`,
+    ...(sha256 === undefined ? {} : { sha256 }),
   });
 }
 
 export function createScanIdentity(bytes: Uint8Array): ScanIdentity {
-  return scanIdentityFromCrc(bytes.byteLength, crc32(bytes));
+  return scanIdentityFromCrc(bytes.byteLength, crc32(bytes), sha256Hex(bytes));
 }
 
 export function recordControllerOwnedScanCopy(byteLength: number): void {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { decodeScanArtifact, encodeScanArtifactWithIdentity } from '../../src/xr/scanArtifact';
+import { decodeScanArtifact, decodeScanArtifactWithIdentity, encodeScanArtifactWithIdentity } from '../../src/xr/scanArtifact';
 import { makeValidScanSnapshot } from './support/validScanSnapshot';
 
 /*
@@ -51,11 +51,17 @@ describe('legacy scan identity is a 32-bit CRC: a pinned collision (issue #34)',
     expect(a.identity.byteLength).toBe(b.identity.byteLength);
   });
 
+  it('the scan identity itself now carries a SHA-256 that tells them apart', () => {
+    expect(a.identity.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.identity.sha256).toBe(sha256(a.bytes));
+    expect(a.identity.sha256).not.toBe(b.identity.sha256);
+    expect(decodeScanArtifactWithIdentity(a.bytes).identity.sha256).toBe(a.identity.sha256);   /* the restore path reproduces it */
+  });
+
   it('an independent content digest does tell them apart (what a strong identity must carry)', () => {
     expect(sha256(a.bytes)).not.toBe(sha256(b.bytes));
     expect(sha256(a.bytes)).toBe(sha256(Uint8Array.from(a.bytes)));                              /* identical bytes hash identically */
   });
 
-  /* Open requirement of #34: replace the CRC-only identity by a collision-resistant one (with a legacy read path), then enable this. */
-  it.todo('the strong scan identity of A differs from that of B, and a sidecar saved for A is refused for B');
+  /* The device side of the same requirement is covered by tests/host/web_scan_store_http_test.c (a derivative bound to A's SHA-256 is refused for B). */
 });

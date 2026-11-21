@@ -165,8 +165,8 @@ export function transitionScanPersistence(
 
 export interface ScanPersistencePorts {
   saveScan(objectId: string, sessionId: string, bytes: Uint8Array): Promise<ControlResult>;
-  saveOccupancy(objectId: string, sessionId: string, bytes: Uint8Array, scanId?: string): Promise<ControlResult>;
-  savePreview(objectId: string, sessionId: string, bytes: Uint8Array, scanId?: string): Promise<ControlResult>;
+  saveOccupancy(objectId: string, sessionId: string, bytes: Uint8Array, scanId?: string, scanSha256?: string): Promise<ControlResult>;
+  savePreview(objectId: string, sessionId: string, bytes: Uint8Array, scanId?: string, scanSha256?: string): Promise<ControlResult>;
   fetchInfo(objectId: string, sessionId: string, kind: 'scan' | 'occupancy' | 'preview'): Promise<ScanArtifactInfo>;
 }
 
@@ -184,6 +184,8 @@ interface PendingOccupancy {
   objectId: string;
   sessionId: string;
   scanId: string;
+  /** SHA-256 of the scan this derivative was built for; the device refuses it for any other scan, even one with the same CRC32. */
+  scanSha256?: string;
   bytes: Uint8Array;
 }
 
@@ -191,6 +193,7 @@ interface PendingPreview {
   objectId: string;
   sessionId: string;
   scanId: string;
+  scanSha256?: string;
   bytes: Uint8Array;
 }
 
@@ -633,7 +636,7 @@ export class ScanPersistenceController {
   /** Returns a promise only for an asynchronous builder; a synchronous builder completes before returning. */
   private prepareOccupancy(epoch: number, pending: PendingScan): Promise<void> | undefined {
     const accept = (built: Uint8Array): void => {
-      this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: built };
+      this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, scanSha256: pending.identity.sha256, bytes: built };
     };
     const fail = (reason: unknown): void => {
       this.pendingOccupancy = null;
@@ -666,7 +669,7 @@ export class ScanPersistenceController {
 
   private preparePreview(epoch: number, pending: PendingScan, occupancyBytes: Uint8Array | null): Promise<void> | undefined {
     const accept = (built: Uint8Array): void => {
-      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: built };
+      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, scanSha256: pending.identity.sha256, bytes: built };
     };
     const fail = (reason: unknown): void => {
       this.pendingPreview = null;
@@ -702,7 +705,7 @@ export class ScanPersistenceController {
     if (pending === null) return this.uploadPreview(epoch);
     this.dispatch(epoch, { type: 'occupancy-saving' });
     try {
-      const result = await this.ports.saveOccupancy(pending.objectId, pending.sessionId, pending.bytes, pending.scanId);
+      const result = await this.ports.saveOccupancy(pending.objectId, pending.sessionId, pending.bytes, pending.scanId, pending.scanSha256);
       if (epoch !== this.epoch) return this.state;
       if (generationMismatchResult(result)) throw new ScanWriteOutcomeError('confirmed_not_committed', 'scan_generation_mismatch', 409, result.current_id ?? null);
       requireAccepted(result);
@@ -733,7 +736,7 @@ export class ScanPersistenceController {
     if (pending === null) return this.state;
     this.dispatch(epoch, { type: 'preview-saving' });
     try {
-      const result = await this.ports.savePreview(pending.objectId, pending.sessionId, pending.bytes, pending.scanId);
+      const result = await this.ports.savePreview(pending.objectId, pending.sessionId, pending.bytes, pending.scanId, pending.scanSha256);
       if (epoch !== this.epoch) return this.state;
       if (generationMismatchResult(result)) throw new ScanWriteOutcomeError('confirmed_not_committed', 'scan_generation_mismatch', 409, result.current_id ?? null);
       requireAccepted(result);

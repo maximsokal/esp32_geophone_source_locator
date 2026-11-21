@@ -1,6 +1,7 @@
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import { crc32Pair, crc32Update, crc32Finalize } from './crc32';
 import { createScanIdentity, getScanIdentityMetrics, scanIdentityFromCrc, type ScanIdentity } from './scanIdentity';
+import { sha256Hex } from './sha256';
 import { MAX_MANUAL_CONTROL_POINTS } from './manualControlPoints';
 import { MAX_OPERATOR_EDGES } from './operatorEdges';
 
@@ -767,7 +768,7 @@ export function decodeScanArtifactWithIdentity(source: ArrayBuffer | Uint8Array)
 
   return {
     snapshot: buildSnapshot(header.metadata, decoded, legacyNormalConfidence),
-    identity: scanIdentityFromCrc(bytes.byteLength, wholeCrc),
+    identity: scanIdentityFromCrc(bytes.byteLength, wholeCrc, sha256Hex(bytes)),
   };
 }
 

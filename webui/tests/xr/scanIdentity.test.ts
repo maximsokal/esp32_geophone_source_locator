@@ -24,7 +24,7 @@ describe('shared CRC32 and scan identity', () => {
     resetScanIdentityMetrics();
     const identity = createScanIdentity(new TextEncoder().encode('123456789'));
 
-    expect(identity).toEqual({ byteLength: 9, crc32: 0xcbf43926, frameId: 'scan-crc32:cbf43926' });
+    expect(identity).toEqual({ byteLength: 9, crc32: 0xcbf43926, frameId: 'scan-crc32:cbf43926', sha256: '15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225' });
     expect(Object.isFrozen(identity)).toBe(true);
     expect(getScanIdentityMetrics().wholeScanCrcInvocations).toBe(1);
   });

@@ -477,10 +477,13 @@ function scanControlUrl(
   sessionId: string,
   kind: ScanStoreKind = 'scan',
   scanId?: string,
+  scanSha256?: string,
 ): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
   if (kind !== 'scan') query.set('kind', kind);
   if (scanId !== undefined && (kind === 'occupancy' || kind === 'preview')) query.set('scan_id', scanId);
+  /* The strong binding (issue #34): the ESP32 compares it with the SHA-256 of the scan it holds; a client that sends none is bound by CRC32 only. */
+  if (scanSha256 !== undefined && (kind === 'occupancy' || kind === 'preview')) query.set('scan_sha', scanSha256);
   return `/api/control?${query.toString()}`;
 }
 
@@ -491,8 +494,9 @@ async function performScanSave(
   context: ApiRequestContext,
   kind: ScanStoreKind = 'scan',
   scanId?: string,
+  scanSha256?: string,
 ): Promise<ControlResult> {
-  const url = scanControlUrl('save', objectId, sessionId, kind, scanId);
+  const url = scanControlUrl('save', objectId, sessionId, kind, scanId, scanSha256);
   const timeout = globalThis.setTimeout(() => {
     context.timedOut = true;
     context.controller.abort();
@@ -881,8 +885,9 @@ export function saveSessionOccupancyArtifact(
   sessionId: string,
   artifact: Uint8Array,
   scanId?: string,
+  scanSha256?: string,
 ): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy', scanId), 'bulk');
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy', scanId, scanSha256), 'bulk');
 }
 
 /** MAX-24/MAX-187: bounded surface-voxel preview for the ESP32 TFT. */
@@ -891,8 +896,9 @@ export function saveSessionPreviewArtifact(
   sessionId: string,
   artifact: Uint8Array,
   scanId?: string,
+  scanSha256?: string,
 ): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview', scanId), 'bulk');
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview', scanId, scanSha256), 'bulk');
 }
 
 export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
