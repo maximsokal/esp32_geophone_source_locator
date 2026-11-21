@@ -1454,7 +1454,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     ((scanPersistence?.scan === 'saved' && scanPersistence.occupancy === 'ready') || previousKeptProvable(scanDurability));
 
   return (
-    <main className="app-shell">
+    <main className={!xrSessionActive && hasMeasuredScan ? 'app-shell app-shell--result' : 'app-shell'}>
       {!xrSessionActive && (
         <header className="app-header app-header-compact">
           <div>
@@ -1525,6 +1525,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             <button type="button" aria-pressed={scanMode === 'mesh'} onClick={() => selectMode('mesh')}>{t('scan.mode.mesh')}</button>
           </div>
 
+          <details className="scan-more-controls">
+            <summary>{t('scan.controls.more')}</summary>
           <div className="scan-quality-summary" aria-label={t('scan.controls.quality_bands')}>
             <span><i className="coverage-dot coverage-low" />{t('scan.quality.weak')} <strong>{formatNumber(locale, qualityBands.weak)}</strong></span>
             <span><i className="coverage-dot coverage-mid" />{t('scan.quality.improving')} <strong>{formatNumber(locale, qualityBands.improving)}</strong></span>
@@ -1547,6 +1549,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             <button type="button" aria-pressed={display.manualPoints} onClick={() => toggleDisplay('manualPoints')}>{t('scan.layer.pins')}</button>
             <button type="button" aria-pressed={display.dimensions} onClick={() => toggleDisplay('dimensions')}>{t('scan.layer.dimensions')}</button>
           </div>
+          </details>
         </section>
       )}
 
@@ -1555,7 +1558,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         sessionId={sessionId}
         savedScanAvailable={storageGood && durableViewport && hasMeasuredScan}
         savedScanBusy={storageBusy}
-        scanLaunchReady={scanStoragePhase === 'none' && !savedScanAvailable(scanDurability)}
+        scanLaunchReady={(scanStoragePhase === 'none' || (sessionId === null && objectId !== null)) && !savedScanAvailable(scanDurability)}
         onScanIntent={handleScanIntent}
         onDeleteSavedScan={deleteSavedScan}
         onSessionActiveChange={handleSessionActiveChange}

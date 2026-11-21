@@ -18,9 +18,7 @@ test('the real app loads on the fake device API and the phone telemetry reaches 
   const info = lines(resolve(dir, 'events.jsonl')).map((l) => JSON.parse(l)).find((e) => e.type === 'DEVICE_INFO');
   expect(info.data.secure).toBe(true);
   expect(info.data.userAgent).toContain('Android');
-  await expect(page.locator('[data-phone-lab="mark"]')).toBeVisible();
-  await page.locator('[data-phone-lab="mark"]').click();
-  await expect.poll(() => lines(resolve(dir, 'events.jsonl')).some((l) => JSON.parse(l).type === 'LAB_MARK'), { timeout: 10_000 }).toBe(true);
+  await expect(page.locator('[data-phone-lab="mark"]')).toHaveCount(0);   /* the lab adds no button over the app: telemetry runs without it */
   // The production client-log channel (XR_* diagnostics) lands in the same folder.
   await page.evaluate(() => fetch('/api/client-log', { method: 'POST', body: 'INFO|1|PHONE_LAB_SMOKE\n' }));
   await expect.poll(() => lines(resolve(dir, 'client-log.txt')).some((l) => l.includes('PHONE_LAB_SMOKE'))).toBe(true);

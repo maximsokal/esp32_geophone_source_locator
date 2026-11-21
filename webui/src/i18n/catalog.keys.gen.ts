@@ -956,6 +956,7 @@ export const i18nKeys = [
   "scan.controls.label",
   "scan.controls.layers",
   "scan.controls.modes",
+  "scan.controls.more",
   "scan.controls.quality_bands",
   "scan.delete_saved",
   "scan.deleting",

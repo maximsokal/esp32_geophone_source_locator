@@ -958,6 +958,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.controls.label": "Керування 3D-об’ємом пошуку",
   "scan.controls.layers": "Шари реконструкції",
   "scan.controls.modes": "Режими результату сканування",
+  "scan.controls.more": "Шари та якість",
   "scan.controls.quality_bands": "Кількість точок за якістю",
   "scan.delete_saved": "Видалити збережений скан",
   "scan.deleting": "Видалення…",

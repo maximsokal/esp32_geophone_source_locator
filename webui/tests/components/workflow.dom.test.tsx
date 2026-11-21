@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
 import type { WorkflowCommandResult } from '../../src/api/deviceApi';
 import { translate } from '../../src/i18n';
+import { clearScanLaunchIntent, consumeScanLaunchIntent, SCAN_LAUNCH_STAGING_SESSION } from '../../src/xr/scanLaunchIntent';
 import { formatPercent } from '../../src/i18n/format';
 import { readyStatus, renderUi, respondJson } from './setup';
 
@@ -326,5 +327,27 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: t('workflow.action.back') }));
     await user.keyboard(' ');
     expect(props.sendCommand).toHaveBeenCalledExactlyOnceWith('BACK', 7);
+  });
+});
+
+describe('the workflow tap that chooses "scan on phone" also starts the scan (issue #21)', () => {
+  const scanning = (props: Props) => {
+    const workflow = { ...props.status!.workflow!, step: 'SCANNING', object_id: 'OBJ_0001', session_id: null, allowed_actions: ['BACK'] } as unknown as WorkflowCommandResult extends { workflow: infer W } ? W : never;
+    return { ok: true, workflow } as WorkflowCommandResult;
+  };
+  const withActivation = (active: boolean) => Object.defineProperty(navigator, 'userActivation', { configurable: true, value: { isActive: active } });
+  const cleanup = () => { clearScanLaunchIntent(); delete (navigator as Navigator & { userActivation?: unknown }).userActivation; };
+
+  it.each([[true], [false]])('opens the scanner and leaves a launch intent for the staged scan only with a live activation (%s)', async (active) => {
+    withActivation(active);
+    try {
+      const user = userEvent.setup();
+      const props = panelProps('SCAN_CHOICE', ['SCAN_START', 'SCAN_SKIP', 'BACK']);
+      vi.mocked(props.sendCommand).mockResolvedValue(scanning(props));
+      renderUi(<WorkflowPanel {...props} />, 'en');
+      await user.click(screen.getByRole('button', { name: translate('en', 'workflow.action.scan_start') }));
+      expect(props.onOpenScanner).toHaveBeenCalledExactlyOnceWith('OBJ_0001', null);
+      expect(consumeScanLaunchIntent('OBJ_0001', SCAN_LAUNCH_STAGING_SESSION)).toBe(active);
+    } finally { cleanup(); }
   });
 });

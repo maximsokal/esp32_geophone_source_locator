@@ -958,6 +958,7 @@ export const en: Record<I18nKey, string> = {
   "scan.controls.label": "3D search-volume controls",
   "scan.controls.layers": "Reconstruction layers",
   "scan.controls.modes": "Scan result modes",
+  "scan.controls.more": "Layers and quality",
   "scan.controls.quality_bands": "Quality band counts",
   "scan.delete_saved": "Delete saved scan",
   "scan.deleting": "Deleting…",

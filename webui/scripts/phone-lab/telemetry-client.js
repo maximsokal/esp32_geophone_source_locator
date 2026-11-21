@@ -99,16 +99,6 @@
   }
   deviceInfo();
 
-  // A visible "mark" button: tap it when something notable happens on the phone, so the screen recording and the logs line up.
-  window.addEventListener('DOMContentLoaded', function () {
-    var count = 0;
-    var button = document.createElement('button');
-    button.textContent = '● mark';
-    button.setAttribute('data-phone-lab', 'mark');
-    button.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;padding:4px 8px;font:12px sans-serif;background:#222;color:#fff;border:1px solid #888;border-radius:12px;opacity:.55';
-    button.addEventListener('click', function (ev) { ev.stopPropagation(); count += 1; emit('LAB_MARK', { n: count }); button.textContent = '● mark ' + count; flush(false); });
-    document.body.appendChild(button);
-  });
 
   window.__phoneLab = { sessionId: sessionId, emit: emit, flush: function () { flush(false); } };
 })();

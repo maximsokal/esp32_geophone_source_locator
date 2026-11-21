@@ -66,7 +66,7 @@ import { deferred } from '../xr/support/xrFakes';
 import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import { liveComputeScheduler } from '../../src/xr/liveComputeScheduler';
 import { optionalMonocularPrior } from '../../src/xr/monocularPriorRuntime';
-import { clearScanLaunchIntent, hasScanLaunchIntent, requestScanLaunch } from '../../src/xr/scanLaunchIntent';
+import { clearScanLaunchIntent, hasScanLaunchIntent, requestScanLaunch, SCAN_LAUNCH_STAGING_SESSION } from '../../src/xr/scanLaunchIntent';
 
 const mounted:ReactTestRenderer[]=[];
 type BrowserListener=EventListenerOrEventListenerObject;
@@ -746,6 +746,22 @@ describe('one-tap scan launch (issue #21)',()=>{
 
     panelHarness.runtimes=[];
     renderer=await mountPanel({objectId:'OBJ_1',sessionId:'S_1',scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(0);
+    unmount(renderer);
+  });
+  it('starts the staged workflow scan (no session id yet) from the intent left by the workflow tap',async()=>{
+    live();expect(requestScanLaunch('OBJ_1',SCAN_LAUNCH_STAGING_SESSION)).toBe(true);
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:null,scanLaunchReady:true});
+    await act(async()=>{await settleReact();});
+    expect(starts()).toBe(1);
+    expect(hasScanLaunchIntent()).toBe(false);
+    unmount(renderer);
+  });
+
+  it('does not start the staged scan for an intent of another object',async()=>{
+    live();requestScanLaunch('OBJ_OTHER',SCAN_LAUNCH_STAGING_SESSION);
+    const renderer=await mountPanel({objectId:'OBJ_1',sessionId:null,scanLaunchReady:true});
     await act(async()=>{await settleReact();});
     expect(starts()).toBe(0);
     unmount(renderer);

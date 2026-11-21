@@ -113,8 +113,8 @@ static void a_layout_for_another_geometry_epoch_is_not_placement_evidence(void)
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
     layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 4U;
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
-    layout.geometry_computed_at_ms = 0U;                       /* an older file: no epoch recorded, no evidence */
-    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
+    layout.geometry_computed_at_ms = 0U;                       /* staged scan / older file: no epoch recorded, used as before (the phone could not name one) */
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
     layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 3U;
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
 

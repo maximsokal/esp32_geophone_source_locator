@@ -20,7 +20,7 @@ export interface TagPositionsArtifact {
   /** The scan these tags were seen in (scan-crc32:...), or null when the scan identity is not known yet. */
   scan_frame_id: string | null;
   created_at_ms: number;
-  /** The frozen Channel Sounding geometry generation (newest pod computed_at_ms) this layout was built against; null/absent = unknown (the ESP32 then does not use it). */
+  /** The frozen Channel Sounding geometry generation (newest pod computed_at_ms) this layout was built against; null/absent = unknown (a staged scan: no frozen geometry exists yet); the ESP32 then uses it as before, and refuses it only when an epoch is present and differs. */
   geometry_computed_at_ms?: number | null;
   /** MAIN in the scan's project frame (mm): layout + this = position in the 3D scan. */
   main_scan_position_mm: [number, number, number];

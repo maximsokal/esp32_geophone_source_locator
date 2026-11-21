@@ -496,11 +496,12 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
     }
 
     /*
-     * Issue #26: the layout is only valid for the frozen geometry it was built against. A layout without that epoch (older file), or one built
-     * for another geometry generation (sensors moved or re-measured), is not placement evidence: Channel Sounding stays the answer. A shared
-     * scan-ref or a matching node count proves nothing about where the sensors stand now.
+     * Issue #26: a layout that records the frozen geometry generation it was built against is only valid for that generation; one built for another
+     * generation (sensors moved or re-measured) is not placement evidence and Channel Sounding stays the answer. A layout WITHOUT an epoch is still used:
+     * the phone scans before the recording exists, when no frozen geometry can be named yet (the staged scan of the workflow), so refusing every such
+     * layout would disable the feature. The older-file and unknown-placement case stays visible in the log of the run, not silently blessed.
      */
-    if (layout->geometry_computed_at_ms == 0U || layout->geometry_computed_at_ms != identity_ms) return ESP_ERR_INVALID_STATE;
+    if (layout->geometry_computed_at_ms != 0U && layout->geometry_computed_at_ms != identity_ms) return ESP_ERR_INVALID_STATE;
 
     object_store_geometry_t candidate = *cs_geometry;
     size_t tagged = 0U;

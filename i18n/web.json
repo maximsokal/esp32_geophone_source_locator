@@ -573,6 +573,7 @@
     "scan.operator_edges": { "en": "edges", "uk": "ребра" },
     "scan.view.top": { "en": "Top", "uk": "Зверху" },
     "scan.view.front": { "en": "Front", "uk": "Спереду" },
+    "scan.controls.more": { "en": "Layers and quality", "uk": "Шари та якість" },
     "scan.camera.hud_label": { "en": "Camera controls", "uk": "Керування камерою" },
     "scan.camera.fit": { "en": "Fit", "uk": "Вписати" },
     "scan.camera.reset": { "en": "Reset view", "uk": "Скинути вигляд" },

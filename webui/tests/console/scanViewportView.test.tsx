@@ -175,7 +175,7 @@ describe('in-canvas camera controls (issue #41)', () => {
     const html = render(scanViewForMode('quality'), snapshot(), 'perspective', {}, locale);
     expect(html).toContain(`aria-label="${translate(locale, 'scan.camera.hud_label')}"`);
     for (const action of ['fit', 'reset', 'pan', 'focus']) expect(html).toContain(`data-camera-action="${action}"`);
-    for (const key of ['scan.camera.fit', 'scan.camera.reset', 'scan.camera.pan', 'scan.camera.focus', 'scan.camera.help'] as const) {
+    for (const key of ['scan.camera.fit', 'scan.camera.reset', 'scan.camera.pan', 'scan.camera.focus'] as const) {
       expect(html).toContain(translate(locale, key));
     }
     expect(html).toMatch(/data-camera-action="focus"[^>]*disabled|disabled=""[^>]*data-camera-action="focus"/);

@@ -248,7 +248,7 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
       <torusGeometry args={[size * 1.8, size * 0.14, 8, 28]} />
       <meshBasicMaterial color={color} depthTest={false} />
     </mesh>}
-    <sprite position={[0, size * 2.8, 0]} scale={[Math.max(0.7, extent * 0.28), Math.max(0.18, extent * 0.07), 1]} renderOrder={63}>
+    <sprite position={[0, size * 2.8, 0]} scale={[Math.max(0.4, extent * 0.11), Math.max(0.1, extent * 0.028), 1]} renderOrder={63}>
       <spriteMaterial map={texture ?? undefined} color={color} transparent depthTest={false} />
     </sprite>
   </group>;
@@ -636,7 +636,6 @@ export function ScanPointCloudViewport({
       <button type="button" data-camera-action="pan" aria-pressed={panMode} onClick={() => setPanMode((value) => !value)}>{t('scan.camera.pan')}</button>
       <button type="button" data-camera-action="focus" disabled={focusTarget === null} onClick={() => requestHud('focus')}>{t('scan.camera.focus')}</button>
       {fullscreenSupported && <button type="button" data-camera-action="fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen ? t('scan.camera.exit_fullscreen') : t('scan.camera.fullscreen')}</button>}
-      <span className="scan-camera-help">{t('scan.camera.help')}</span>
     </div>
     {overlayFailure !== null && <div className="xr-runtime-warning scan-overlay-failure" role="alert">
       <div>{t('scan.overlay.failed')}</div>

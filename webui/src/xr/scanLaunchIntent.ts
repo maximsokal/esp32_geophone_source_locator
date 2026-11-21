@@ -12,6 +12,9 @@
 /** Chrome's transient activation lasts about 5 s; stay clearly inside it. */
 export const SCAN_LAUNCH_INTENT_MAX_AGE_MS = 4000;
 
+/** The workflow scans before a recording exists: its scanner has no session id and stores the scan in staging. */
+export const SCAN_LAUNCH_STAGING_SESSION = 'staging';
+
 interface ActivationNavigator { userActivation?: { isActive?: boolean } }
 
 interface ScanLaunchIntent { objectId: string; sessionId: string; requestedAtMs: number }

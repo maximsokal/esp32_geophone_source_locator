@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import { clearScanLaunchIntent, consumeScanLaunchIntent } from '../xr/scanLaunchIntent';
+import { clearScanLaunchIntent, consumeScanLaunchIntent, SCAN_LAUNCH_STAGING_SESSION } from '../xr/scanLaunchIntent';
 import { formatErrorText, translate, useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../i18n/format';
 import {
@@ -413,8 +413,8 @@ export function XrRuntimePanel({
      browser activation of that tap is still live; otherwise the Start button below stays the way in. A saved scan drops the intent: it opens as viewer. */
   useEffect(()=>{
     if(savedScanAvailable){clearScanLaunchIntent();return;}
-    if(!scanLaunchReady||!canStart||objectId===null||sessionId===null)return;
-    if(!consumeScanLaunchIntent(objectId,sessionId))return;
+    if(!scanLaunchReady||!canStart||objectId===null)return;
+    if(!consumeScanLaunchIntent(objectId,sessionId??SCAN_LAUNCH_STAGING_SESSION))return;
     clientDiagnostics.info('XR_ONE_TAP_LAUNCH',{objectId,sessionId});
     void startPreparedScan('fresh');
   },[scanLaunchReady,canStart,savedScanAvailable,objectId,sessionId]);

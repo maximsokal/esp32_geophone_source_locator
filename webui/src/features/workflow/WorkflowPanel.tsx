@@ -6,6 +6,7 @@ import type { PhoneLocationInput } from '../../domain/device';
 import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
+import { requestScanLaunch, SCAN_LAUNCH_STAGING_SESSION } from '../../xr/scanLaunchIntent';
 import WorkflowResultViewer from './WorkflowResultViewer';
 import PhoneCalculation from './PhoneCalculation';
 import ManualDistanceForm from './ManualDistanceForm';
@@ -598,6 +599,8 @@ export default function WorkflowPanel({
       setNotice(null);
       setError(null);
       if (result.workflow.step === 'SCANNING' && result.workflow.object_id) {
+        /* The tap that chose "scan on phone" also starts the scan (issue #21): the scanner consumes this intent while the tap's activation is live. */
+        requestScanLaunch(result.workflow.object_id, SCAN_LAUNCH_STAGING_SESSION);
         onOpenScanner(result.workflow.object_id, null);
       }
       return true;
