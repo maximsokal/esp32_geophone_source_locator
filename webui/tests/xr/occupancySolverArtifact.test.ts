@@ -105,6 +105,35 @@ function makeVoxelArtifact(
   return result;
 }
 
+describe('occupancy envelope ordering (issue #33)', () => {
+  const inverted = { ...projectRegistrationSnapshot(), occupancyEnvelopeBounds: { min: [2, -1, -1] as const, max: [-2, 1, 1] as const } };
+  const options = { frameId: 'scan-crc32:deadbeef', createdAtMs: 1, registration: null };
+
+  it('refuses to encode an inverted or non-finite envelope', () => {
+    expect(() => encodeOccupancySolverArtifact(inverted, options)).toThrow(/envelope/);
+    expect(() => encodeOccupancySolverArtifact({ ...inverted, occupancyEnvelopeBounds: { min: [0, 0, 0], max: [Number.NaN, 1, 1] } }, options)).toThrow(/envelope/);
+  });
+
+  it('refuses to decode a CRC-valid artifact whose envelope is inverted', () => {
+    const header = new TextEncoder().encode(
+      '{"schema":1,"frame_id":"inv","voxel_size_m":0.25,"below_surface_m":0,"envelope":{"min":[2,-1,-1],"max":[-2,1,1]},' +
+      '"free_count":0,"occupied_count":0,"saturated":false,"created_at_ms":1,"registration":null}',
+    );
+    const bytes = new Uint8Array(20 + header.length);
+    bytes.set(new TextEncoder().encode('GOCCUPY1'), 0);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(8, header.length, true);
+    bytes.set(header, 20);
+    view.setUint32(16, occupancyCrc32(bytes, 20), true);
+    expect(() => decodeOccupancySolverArtifact(bytes)).toThrow(/envelope/);
+  });
+
+  it('keeps an ordered flat envelope valid', () => {
+    const flat = { ...projectRegistrationSnapshot(), occupancyEnvelopeBounds: { min: [0, 0, 1] as const, max: [2, 3, 1] as const } };
+    expect(() => decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(flat, options))).not.toThrow();
+  });
+});
+
 describe('occupancy voxel size lower bound (issue #32, same policy as the ESP32 parser)', () => {
   it.each(['5e-324', '1e-50', '0.0009'])('rejects a positive but non-physical voxel size %s', (size) => {
     expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact(size, [], []))).toThrow();

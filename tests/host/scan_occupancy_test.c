@@ -413,6 +413,40 @@ static void test_schema2_registration_without_threshold_is_rejected(void)
     free(data);
 }
 
+/* Issue #33: a CRC-valid artifact with an inverted envelope must be rejected, not turned into a veto of every candidate. */
+static void test_inverted_or_nonfinite_envelope_is_rejected(void)
+{
+    static const char *const headers[] = {
+        "{\"schema\":1,\"frame_id\":\"inv\",\"voxel_size_m\":0.5,\"below_surface_m\":0,"
+        "\"envelope\":{\"min\":[2,-1,-1],\"max\":[-2,1,1]},\"free_count\":0,\"occupied_count\":0,"
+        "\"saturated\":false,\"created_at_ms\":1,\"registration\":null}",
+        "{\"schema\":1,\"frame_id\":\"inv\",\"voxel_size_m\":0.5,\"below_surface_m\":0,"
+        "\"envelope\":{\"min\":[-1,-1,3],\"max\":[1,1,2]},\"free_count\":0,\"occupied_count\":0,"
+        "\"saturated\":false,\"created_at_ms\":1,\"registration\":null}",
+        "{\"schema\":1,\"frame_id\":\"inv\",\"voxel_size_m\":0.5,\"below_surface_m\":0,"
+        "\"envelope\":{\"min\":[-1,-1,-1],\"max\":[1e999,1,1]},\"free_count\":0,\"occupied_count\":0,"
+        "\"saturated\":false,\"created_at_ms\":1,\"registration\":null}",
+    };
+    for (size_t index = 0U; index < sizeof(headers) / sizeof(headers[0]); ++index) {
+        size_t length = 0U;
+        uint8_t *data = make_header_only_artifact(headers[index], &length);
+        scan_occupancy_t occupancy;
+        assert(scan_occupancy_parse(data, length, &occupancy) == ESP_ERR_INVALID_ARG);
+        free(data);
+    }
+    /* A flat box (min == max on an axis) is still ordered and stays accepted. */
+    static const char flat[] =
+        "{\"schema\":1,\"frame_id\":\"flat\",\"voxel_size_m\":0.5,\"below_surface_m\":1,"
+        "\"envelope\":{\"min\":[-1,-1,0],\"max\":[1,1,0]},\"free_count\":0,\"occupied_count\":0,"
+        "\"saturated\":false,\"created_at_ms\":1,\"registration\":null}";
+    size_t length = 0U;
+    uint8_t *data = make_header_only_artifact(flat, &length);
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    scan_occupancy_free(&occupancy);
+    free(data);
+}
+
 static void test_schema1_without_registration_still_classifies(void)
 {
     static const char header[] =
@@ -593,6 +627,7 @@ int main(void)
 {
     test_golden_vector_parses_and_classifies();
     test_project_frame_v2_registration_and_candidate_classification();
+    test_inverted_or_nonfinite_envelope_is_rejected();
     test_schema1_without_registration_still_classifies();
     test_duplicate_voxel_keys_and_voxel_size_fail_closed();
     test_registration_quality_requires_positive_threshold();

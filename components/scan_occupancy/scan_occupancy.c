@@ -222,6 +222,13 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
                 !read_vec3(cJSON_GetObjectItemCaseSensitive(envelope, "max"), out->envelope_max)
             ) {
                 err = ESP_ERR_INVALID_ARG;
+            } else if (
+                /* An inverted box would classify every point OUTSIDE and veto every source candidate without any measured FREE air. */
+                out->envelope_min[0] > out->envelope_max[0] ||
+                out->envelope_min[1] > out->envelope_max[1] ||
+                out->envelope_min[2] > out->envelope_max[2]
+            ) {
+                err = ESP_ERR_INVALID_ARG;
             } else {
                 out->has_envelope = true;
             }

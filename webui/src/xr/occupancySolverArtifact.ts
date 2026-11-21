@@ -38,6 +38,15 @@ export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_OCCUPANCY_VOXEL_SIZE_METERS = 10;
 /** Same lower bound as the ESP32 parser: a finer cell is not physical and would make the ray sampler unbounded. */
 const MIN_OCCUPANCY_VOXEL_SIZE_METERS = 0.001;
+
+/** An envelope must be finite and ordered (min <= max per axis); an inverted box would veto every source candidate. */
+function assertOrderedEnvelope(min: readonly number[], max: readonly number[]): void {
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (!Number.isFinite(min[axis]) || !Number.isFinite(max[axis]) || min[axis] > max[axis]) {
+      throw new Error('Invalid occupancy envelope: bounds must be finite with min <= max on every axis.');
+    }
+  }
+}
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 /*
@@ -200,6 +209,7 @@ export function encodeOccupancySolverArtifact(
   const free = voxelIndices(snapshot.freeAirPositions, fineVoxelSizeMeters, 'FREE');
   const occupied = voxelIndices(snapshot.occupiedSurfacePositions, fineVoxelSizeMeters, 'OCCUPIED');
   const bounds = snapshot.occupancyEnvelopeBounds;
+  if (bounds !== null && bounds !== undefined) assertOrderedEnvelope(bounds.min, bounds.max);
   const header: OccupancyArtifactHeader = {
     schema: OCCUPANCY_ARTIFACT_SCHEMA,
     frame_id: options.frameId,
@@ -264,6 +274,13 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (!Number.isFinite(header.voxel_size_m) || !(header.voxel_size_m >= MIN_OCCUPANCY_VOXEL_SIZE_METERS) ||
       header.voxel_size_m > MAX_OCCUPANCY_VOXEL_SIZE_METERS) {
     throw new Error('Invalid occupancy voxel size.');
+  }
+  if (header.envelope !== null && header.envelope !== undefined) {
+    const { min, max } = header.envelope as { min?: unknown; max?: unknown };
+    if (!Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3) {
+      throw new Error('Invalid occupancy envelope: expected 3-element min and max.');
+    }
+    assertOrderedEnvelope(min as number[], max as number[]);
   }
   const registrationPresent = header.registration !== null && header.registration !== undefined;
   const legacyRegistrationIgnored = header.schema === LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && registrationPresent;
