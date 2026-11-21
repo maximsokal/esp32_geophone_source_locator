@@ -6,6 +6,11 @@
  */
 export const TAG_OBSERVATION_POSITION_BUCKET_METERS = 0.15;
 export const TAG_OBSERVATION_DIRECTION_BUCKET_DEGREES = 15;
+/**
+ * Two sightings are independent views only if the camera really moved between them: the translation, not the heading, gives the
+ * geometry that fixes a position. Turning the phone on the spot (or tilting it) adds no baseline (issue #17).
+ */
+export const TAG_OBSERVATION_MIN_BASELINE_METERS = 0.10;
 
 export type TagObservationVector3 = readonly [number, number, number];
 
@@ -61,12 +66,33 @@ export function tagObservationViewBucketKey(observation: TagObservation): string
 
   const position = observation.cameraPosition.map((value) =>
     Math.floor(value / TAG_OBSERVATION_POSITION_BUCKET_METERS));
-  const yawDegrees = (Math.atan2(forward[1], forward[0]) * 180 / Math.PI + 360) % 360;
+  /* WebXR local-floor: +Y is up and the camera looks along -Z. Azimuth turns about Y (from X and -Z), elevation is the Y component. */
+  const yawDegrees = (Math.atan2(forward[0], -forward[2]) * 180 / Math.PI + 360) % 360;
   const yawBucketCount = 360 / TAG_OBSERVATION_DIRECTION_BUCKET_DEGREES;
   const yawBucket = Math.round(yawDegrees / TAG_OBSERVATION_DIRECTION_BUCKET_DEGREES) % yawBucketCount;
-  const pitchDegrees = Math.asin(Math.max(-1, Math.min(1, forward[2]))) * 180 / Math.PI;
+  const pitchDegrees = Math.asin(Math.max(-1, Math.min(1, forward[1]))) * 180 / Math.PI;
   const pitchBucket = Math.round(pitchDegrees / TAG_OBSERVATION_DIRECTION_BUCKET_DEGREES);
   return `${position[0]}:${position[1]}:${position[2]}|${yawBucket}:${pitchBucket}`;
+}
+
+/**
+ * Independent views of one tag: sightings whose camera positions are pairwise at least the minimum baseline apart (greedy, in a fixed
+ * order so the count does not depend on the order of arrival). Sightings without a camera pose all share one legacy view.
+ */
+export function countIndependentViews(observations: readonly TagObservation[]): number {
+  const positions: TagObservationVector3[] = [];
+  let legacy = false;
+  for (const observation of observations) {
+    if (finiteVector3(observation.cameraPosition)) positions.push(observation.cameraPosition);
+    else legacy = true;
+  }
+  positions.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  const accepted: TagObservationVector3[] = [];
+  for (const position of positions) {
+    const apart = accepted.every((other) => Math.hypot(position[0] - other[0], position[1] - other[1], position[2] - other[2]) >= TAG_OBSERVATION_MIN_BASELINE_METERS);
+    if (apart) accepted.push(position);
+  }
+  return accepted.length + (legacy ? 1 : 0);
 }
 
 function median(values: readonly number[]): number {
@@ -124,7 +150,7 @@ export function fuseTagObservations(
       (item.positionScan[0] - positionScan[0]) ** 2 +
       (item.positionScan[1] - positionScan[1]) ** 2 +
       (item.positionScan[2] - positionScan[2]) ** 2, 0) / inliers.length);
-    const independentViewCount = new Set(inliers.map(tagObservationViewBucketKey)).size;
+    const independentViewCount = countIndependentViews(inliers);
     byTagId[tagId as 0 | 1 | 2 | 3 | 4] = {
       tagId,
       positionScan,

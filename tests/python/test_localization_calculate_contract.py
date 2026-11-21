@@ -199,7 +199,9 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     source = orchestrator_source()
     assert '"%s/%s/sessions/%s/occupancy-v1.bin"' in source
     assert "scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)" in source
-    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;" in source
+    # The CRC32 frame id must still match exactly; since issue #34 an occupancy that names its scan's SHA-256 must also match the current scan's digest.
+    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0 &&" in source
+    assert "(!occupancy.has_scan_sha256 || memcmp(occupancy.scan_sha256, current_scan_sha256, SCAN_SHA256_BYTES) == 0);" in source
     assert "const bool usable = scan_identity_matches && registration_reason == NULL;" in source
     assert "constraint not applied" in source
     assert '"traveltime_scan_constrained"' in source
@@ -221,8 +223,10 @@ def test_scan_constraints_require_the_current_whole_file_generation():
     assert "scan_generation_mismatch" in source
     assert "scan_identity_unavailable" in source
     assert "scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)" in source
-    assert "load_session_scan_frame_id(object_id, session_id, current_scan_frame_id)" in source
-    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;" in source
+    assert "load_session_scan_frame_id(object_id, session_id, current_scan_frame_id, current_scan_sha256)" in source
+    # The CRC32 frame id must still match exactly; since issue #34 an occupancy that names its scan's SHA-256 must also match the current scan's digest.
+    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0 &&" in source
+    assert "(!occupancy.has_scan_sha256 || memcmp(occupancy.scan_sha256, current_scan_sha256, SCAN_SHA256_BYTES) == 0);" in source
     assert "const bool usable = scan_identity_matches && registration_reason == NULL;" in source
     assert "scan_constraint_applied[i]" in source
 

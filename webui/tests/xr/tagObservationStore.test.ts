@@ -74,13 +74,13 @@ describe('tag observation store', () => {
     expect(store.rejectedCount).toBe(2);
   });
 
-  it('uses view direction as part of a viewpoint bucket', () => {
+  it('keeps sightings of different directions as separate buckets, but they are one independent view without a camera baseline (issue #17)', () => {
     const store = new TagObservationStore();
     store.insert({ tagId: 0, positionScan: [0, 0, 0], cameraPosition: [0, 0, 0], cameraForward: [1, 0, 0] });
     store.insert({ tagId: 0, positionScan: [0, 0, 0], cameraPosition: [0, 0, 0], cameraForward: [-1, 0, 0] });
 
     expect(store.getObservations(0)).toHaveLength(2);
-    expect(fuseTagObservations(store.getObservations(0)).byTagId[0]?.independentViewCount).toBe(2);
+    expect(fuseTagObservations(store.getObservations(0)).byTagId[0]?.independentViewCount).toBe(1);   /* turning on the spot adds no baseline */
   });
 
   it('evicts the most redundant neighboring view before a distinct distant view', () => {

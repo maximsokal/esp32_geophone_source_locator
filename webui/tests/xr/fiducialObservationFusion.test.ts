@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { fuseTagObservations, type TagObservation } from '../../src/xr/fiducial/tagObservationFusion';
+import {
+  countIndependentViews, fuseTagObservations, tagObservationViewBucketKey, TAG_OBSERVATION_MIN_BASELINE_METERS, type TagObservation,
+} from '../../src/xr/fiducial/tagObservationFusion';
 
 function observedFromView(
   tagId: number,
@@ -142,5 +144,57 @@ describe('fusion of evenly scattered observations (issue #19)', () => {
     const tag = fuse([[1, 1, 1], [1, 1, 1], [1, 1, 1], [1.002, 1, 1], [2, 2, 2]]);
     expect(tag.inlierCount).toBe(4);
     expect(tag.spreadM).toBeLessThan(0.005);
+  });
+});
+
+describe('independent views need a real baseline, and the bucket key uses WebXR Y-up axes (issue #17)', () => {
+  const at = (cameraForward: [number, number, number], cameraPosition: [number, number, number] = [0, 1.5, 0]): TagObservation =>
+    ({ tagId: 1, positionScan: [0, 0, 0], cameraPosition, cameraForward });
+  const level: [number, number, number] = [0, 0, -1];
+  const up: [number, number, number] = [0, 0.01, -Math.sqrt(1 - 0.0001)];
+  const down: [number, number, number] = [0, -0.01, -Math.sqrt(1 - 0.0001)];
+
+  it('does not confirm five sightings from one position with sub-degree tilts (the issue reproduction)', () => {
+    const result = fuseTagObservations([level, level, up, up, down].map((forward) => at(forward)));
+    const tag = result.byTagId[1]!;
+    expect(tag.observationCount).toBe(5);
+    expect(tag.independentViewCount).toBe(1);
+    expect(tag.confirmed).toBe(false);
+  });
+
+  it('does not count a turn on the spot as a new view either', () => {
+    const turned: [number, number, number][] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0], [0.7071, 0, -0.7071]];
+    const tag = fuseTagObservations(turned.map((forward) => at(forward))).byTagId[1]!;
+    expect(tag.independentViewCount).toBe(1);
+    expect(tag.confirmed).toBe(false);
+  });
+
+  it('counts sightings from positions at least the baseline apart, in any order', () => {
+    const observations = [0, 0.3, 0.6, 0.9, 1.2].map((x) => at(level, [x, 1.5, 0]));
+    const forward = fuseTagObservations(observations).byTagId[1]!;
+    const backward = fuseTagObservations([...observations].reverse()).byTagId[1]!;
+    expect(forward.independentViewCount).toBe(5);
+    expect(backward.independentViewCount).toBe(5);
+    expect(forward.confirmed).toBe(true);
+  });
+
+  it('merges camera positions closer than the baseline into one view (boundary jitter between buckets)', () => {
+    const jittered = [0.0, 0.04, 0.09, 0.3, 0.34].map((x) => at(level, [x, 1.5, 0]));
+    expect(countIndependentViews(jittered)).toBe(2);
+    expect(countIndependentViews([at(level, [0, 1.5, 0]), at(level, [TAG_OBSERVATION_MIN_BASELINE_METERS, 1.5, 0])])).toBe(2);
+  });
+
+  it('keeps legacy sightings without a pose as a single shared view', () => {
+    const legacy: TagObservation[] = [1, 2, 3].map(() => ({ tagId: 1, positionScan: [0, 0, 0] }));
+    expect(countIndependentViews(legacy)).toBe(1);
+    expect(countIndependentViews([...legacy, at(level, [2, 1.5, 0])])).toBe(2);
+  });
+
+  it('buckets the heading about the vertical Y axis and the tilt by the Y component', () => {
+    const key = (forward: [number, number, number]) => tagObservationViewBucketKey(at(forward));
+    expect(key(level)).toBe(key(up));                    /* a 0.57 degree tilt is the same bucket, not a new heading */
+    expect(key(level)).toBe(key(down));
+    expect(key([1, 0, 0])).not.toBe(key(level));         /* a 90 degree turn about the vertical is a different heading */
+    expect(key([0, 0.5, -Math.sqrt(0.75)])).not.toBe(key(level));   /* a 30 degree look-up is a different elevation */
   });
 });
