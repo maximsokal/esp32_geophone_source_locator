@@ -484,6 +484,8 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
     if (participation == NULL || layout == NULL || cs_geometry == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
     if (remote_count_out != NULL) *remote_count_out = 0U;
     if (!layout->available || !layout->nodes[0].valid) return ESP_ERR_NOT_FOUND;
+    /* Issue #35: a degenerate (collinear / flat) layout is not geometry; the Channel Sounding layout stays the answer. */
+    if (layout->weakest_main_triangle_height_mm < SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM) return ESP_ERR_NOT_FOUND;
 
     uint64_t identity_ms = 0U;
     size_t cs_computed = 0U;
@@ -499,7 +501,9 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
         const unsigned node = (unsigned)(i + 1U);
         const seismic_recorder_tag_node_t *tag = &layout->nodes[node];
         const seismic_recorder_pod_participation_t *pod_info = &participation->pods[i];
-        const bool belongs = tag->valid && tag->node_id == node && tag->tag_id == node &&
+        /* A tag that was never actually observed (no sightings, no views, zero uncertainty) is not a measured position. */
+        const bool measured = tag->observations >= 1U && tag->views >= 1U && tag->uncertainty_mm >= 1;
+        const bool belongs = tag->valid && measured && tag->node_id == node && tag->tag_id == node &&
             pod_info->assigned && pod_info->node_id_known && pod_info->node_id == node;
         object_store_pod_geometry_t *pod = &candidate.pods[i];
         if (!belongs) {

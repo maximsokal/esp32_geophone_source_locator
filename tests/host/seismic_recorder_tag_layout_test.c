@@ -47,6 +47,7 @@ static seismic_recorder_tag_layout_t layout_of(const unsigned *nodes, size_t cou
     seismic_recorder_tag_layout_t layout;
     memset(&layout, 0, sizeof(layout));
     layout.available = true;
+    layout.weakest_main_triangle_height_mm = 400;
     layout.main_scan_mm[0] = 1000; layout.main_scan_mm[1] = 2000; layout.main_scan_mm[2] = 1000;
     layout.nodes[0] = (seismic_recorder_tag_node_t){.valid = true, .node_id = 0U, .tag_id = 0U, .confirmed = true, .observations = 9U, .views = 4U};
     layout.node_count = 1U;
@@ -96,6 +97,32 @@ static void a_preliminary_tag_is_used_like_a_confirmed_one(void)
     object_store_geometry_t out;
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
     assert(out.pods[1].computed && out.pods[1].x_mm == 0 && out.pods[1].y_mm == 800);
+}
+
+/* Issue #35: zero-evidence, zero-uncertainty or flat layouts are not eligible geometry (a plain preliminary tag with real sightings still is). */
+static void unobserved_or_degenerate_layouts_are_not_geometry(void)
+{
+    const unsigned all[] = {1U, 2U, 3U, 4U};
+    const seismic_recorder_session_participation_t part = session(4U);
+    const object_store_geometry_t cs = cs_geometry(4U);
+    object_store_geometry_t out;
+
+    seismic_recorder_tag_layout_t flat = layout_of(all, 4U);
+    flat.weakest_main_triangle_height_mm = SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM - 1;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &flat, &cs, &out, NULL) == ESP_ERR_NOT_FOUND);
+    flat.weakest_main_triangle_height_mm = SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &flat, &cs, &out, NULL) == ESP_OK);
+
+    seismic_recorder_tag_layout_t unseen = layout_of(all, 4U);
+    for (unsigned node = 1U; node <= 4U; ++node) { unseen.nodes[node].observations = 0U; unseen.nodes[node].views = 0U; }
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &unseen, &cs, &out, NULL) == ESP_ERR_NOT_FOUND);
+
+    seismic_recorder_tag_layout_t no_views = layout_of(all, 4U);
+    no_views.nodes[3].views = 0U;                       /* the unobserved remote drops out; three tagged cannot cover the four Channel Sounding pods */
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &no_views, &cs, &out, NULL) == ESP_ERR_INVALID_SIZE);
+    seismic_recorder_tag_layout_t exact = layout_of(all, 4U);
+    exact.nodes[3].uncertainty_mm = 0;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &exact, &cs, &out, NULL) == ESP_ERR_INVALID_SIZE);
 }
 
 static void only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position(void)
@@ -222,6 +249,7 @@ int main(int argc, char **argv)
     static const struct { const char *name; void (*run)(void); } cases[] = {
         {"a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone", a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone},
         {"a_preliminary_tag_is_used_like_a_confirmed_one", a_preliminary_tag_is_used_like_a_confirmed_one},
+        {"unobserved_or_degenerate_layouts_are_not_geometry", unobserved_or_degenerate_layouts_are_not_geometry},
         {"only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position", only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position},
         {"a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used", a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used},
         {"a_layout_can_serve_when_channel_sounding_could_not_place_every_remote", a_layout_can_serve_when_channel_sounding_could_not_place_every_remote},

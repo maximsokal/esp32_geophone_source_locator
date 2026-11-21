@@ -19,6 +19,8 @@
 #define SEISMIC_RECORDER_TAG_LAYOUT_SCAN_ID_MAX 48U
 /* A localization needs at least three participating remotes (LOCALIZATION_DIMENSIONALITY_MIN_PLANAR_2D); a tag layout is used only if it has them. */
 #define SEISMIC_RECORDER_TAG_LAYOUT_MIN_REMOTES 3U
+/* Same figure the phone builds a layout with: a layout whose weakest MAIN triangle is flatter than this fixes the geometry badly. */
+#define SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM 30
 
 typedef struct
 {
