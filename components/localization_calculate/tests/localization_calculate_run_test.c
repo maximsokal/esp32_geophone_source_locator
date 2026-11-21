@@ -26,6 +26,7 @@
 #endif
 
 #include "localization_calculate.h"
+#include "scan_sha256.h"
 #include "localization_calculate_failure_class_test_support.h"
 #include "localization_calculate_policy.h"
 #include "localization_dimensionality_policy.h"
@@ -1589,6 +1590,9 @@ static void write_test_scan_file(
 }
 
 
+/* When non-NULL, the occupancy fixture also names the SHA-256 of its scan (issue #34). */
+static const char *s_test_occupancy_scan_sha256 = NULL;
+
 static void write_test_occupancy_file(
     const char *object_id,
     const char *session_id,
@@ -1603,6 +1607,10 @@ static void write_test_occupancy_file(
     );
     assert(path_written > 0 && (size_t)path_written < sizeof(path));
 
+    char frame_field[160];
+    (void)snprintf(frame_field, sizeof(frame_field), "%s%s%s", frame_id,
+        s_test_occupancy_scan_sha256 != NULL ? "\",\"scan_sha256\":\"" : "",
+        s_test_occupancy_scan_sha256 != NULL ? s_test_occupancy_scan_sha256 : "");
     char header[1024];
     const char *transform = reflected
         ? "[-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]"
@@ -1615,7 +1623,7 @@ static void write_test_occupancy_file(
         "\"frame\":\"project_z_up\",\"geometry_computed_at_ms\":1000,"
         "\"residual_m\":0.01,\"threshold_m\":0.05,"
         "\"sensor_to_scan\":%s}}",
-        frame_id, transform
+        frame_field, transform
     );
     assert(header_written > 0 && (size_t)header_written < sizeof(header));
 
@@ -1691,6 +1699,81 @@ static void assert_scan_identity_rejected(
         assert(record->occupancy_created_at_ms == 0U);
         assert(record->registration_geometry_computed_at_ms == 0U);
     }
+}
+
+
+/* Issue #34: an occupancy that names the SHA-256 of its scan is ineligible for another scan with the SAME CRC32 (pinned collision vectors). */
+static size_t read_collision_vector(const char *name, uint8_t *out, size_t capacity)
+{
+    static const char *const prefixes[] = {"tests/vectors/", "../../../tests/vectors/", "../../../../tests/vectors/"};
+    for (size_t i = 0U; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        char path[160];
+        (void)snprintf(path, sizeof(path), "%s%s", prefixes[i], name);
+        FILE *file = fopen(path, "rb");
+        if (file == NULL) continue;
+        const size_t length = fread(out, 1U, capacity, file);
+        assert(ferror(file) == 0 && feof(file));
+        (void)fclose(file);
+        return length;
+    }
+    assert(!"collision vector not found");
+    return 0U;
+}
+
+static void test_scan_sha256_refuses_a_scan_with_the_same_crc32(void)
+{
+    static uint8_t scan_a[4096], scan_b[4096];
+    const size_t length_a = read_collision_vector("scan_crc32_collision_a.bin", scan_a, sizeof(scan_a));
+    const size_t length_b = read_collision_vector("scan_crc32_collision_b.bin", scan_b, sizeof(scan_b));
+    assert(length_a == length_b && memcmp(scan_a, scan_b, length_a) != 0);
+    char frame_id[32];
+    test_scan_frame_id(scan_a, length_a, frame_id);
+    char frame_id_b[32];
+    test_scan_frame_id(scan_b, length_b, frame_id_b);
+    assert(strcmp(frame_id, frame_id_b) == 0);                       /* the alias: the CRC32 id cannot tell A from B */
+
+    scan_sha256_t sha;
+    unsigned char digest[SCAN_SHA256_BYTES];
+    char hex_a[SCAN_SHA256_HEX_CHARS + 1U];
+    scan_sha256_init(&sha);
+    scan_sha256_update(&sha, scan_a, length_a);
+    scan_sha256_final(&sha, digest);
+    for (size_t i = 0U; i < SCAN_SHA256_BYTES; ++i) (void)snprintf(hex_a + i * 2U, 3U, "%02x", digest[i]);
+
+    /* The occupancy names A's SHA-256 and the session holds B: no constraint, as for any other scan generation mismatch. */
+    s_test_occupancy_scan_sha256 = hex_a;
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    prepare_session_directory("OBJSHAB", "S098101");
+    write_test_occupancy_file("OBJSHAB", "S098101", frame_id, false);
+    write_test_scan_file("OBJSHAB", "S098101", scan_b, length_b);
+    assert_scan_identity_rejected("OBJSHAB", "S098101", "scan_generation_mismatch");
+    remove_test_scan_artifacts("OBJSHAB", "S098101");
+
+    /* The same occupancy over the scan it was built for is applied. */
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    prepare_session_directory("OBJSHAA", "S098102");
+    write_test_occupancy_file("OBJSHAA", "S098102", frame_id, false);
+    write_test_scan_file("OBJSHAA", "S098102", scan_a, length_a);
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJSHAA", "S098102", &config, 53000ULL, &summary) == ESP_OK);
+    const localization_run_record_t *applied = find_record("traveltime_scan_constrained");
+    assert(applied != NULL && applied->scan_constraint_applied);
+    remove_test_scan_artifacts("OBJSHAA", "S098102");
+
+    /* An occupancy without a digest (older artifact) is bound by CRC32 only, as before: the alias is accepted (documented weak mode). */
+    s_test_occupancy_scan_sha256 = NULL;
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    prepare_session_directory("OBJSHLG", "S098103");
+    write_test_occupancy_file("OBJSHLG", "S098103", frame_id, false);
+    write_test_scan_file("OBJSHLG", "S098103", scan_b, length_b);
+    assert(localization_calculate_run("OBJSHLG", "S098103", &config, 54000ULL, &summary) == ESP_OK);
+    const localization_run_record_t *legacy = find_record("traveltime_scan_constrained");
+    assert(legacy != NULL && legacy->scan_constraint_applied);
+    remove_test_scan_artifacts("OBJSHLG", "S098103");
 }
 
 
@@ -2313,6 +2396,7 @@ int main(void)
     test_too_long_known_hole_still_rejects_whole_recording();
     test_five_minute_late_event_stays_within_psram_window();
     test_scan_identity_mismatch_and_unavailable_fail_closed();
+    test_scan_sha256_refuses_a_scan_with_the_same_crc32();
     test_unusable_scan_reports_constraint_not_applied();
     test_record_stop_then_localize_with_reserved_psram();
     test_search_prefers_the_event_more_channels_agree_on();

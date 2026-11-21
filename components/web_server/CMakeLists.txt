@@ -394,6 +394,7 @@ idf_component_register(
         wifi_manager
         ranging_radio_pause
         mbedtls
+        scan_occupancy
         esp_hw_support
         esp_http_server
         esp_https_server

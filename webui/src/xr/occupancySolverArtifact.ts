@@ -88,6 +88,8 @@ export interface OccupancyArtifactHeader {
   saturated: boolean;
   created_at_ms: number;
   registration: OccupancyRegistration | null;
+  /** SHA-256 of the scan this occupancy was derived from (lowercase hex); absent in artifacts written before issue #34. */
+  scan_sha256?: string;
 }
 
 export interface DecodedOccupancyArtifact {
@@ -185,6 +187,8 @@ export interface OccupancyArtifactOptions {
   frameId: string;
   createdAtMs: number;
   registration?: OccupancyRegistration | null;
+  /** SHA-256 of the exact saved scan (ScanIdentity.sha256): the ESP32 then refuses this occupancy for another scan with the same CRC32. */
+  scanSha256?: string;
 }
 
 /**
@@ -223,7 +227,9 @@ export function encodeOccupancySolverArtifact(
     saturated: snapshot.occupancyCellsSaturated === true,
     created_at_ms: options.createdAtMs,
     registration,
+    ...(options.scanSha256 === undefined ? {} : { scan_sha256: options.scanSha256 }),
   };
+  if (header.scan_sha256 !== undefined && !/^[0-9a-f]{64}$/.test(header.scan_sha256)) throw new Error('Invalid scan SHA-256 for the occupancy artifact.');
 
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   const payloadBytes = (free.length + occupied.length) * Int16Array.BYTES_PER_ELEMENT;
@@ -274,6 +280,10 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (!Number.isFinite(header.voxel_size_m) || !(header.voxel_size_m >= MIN_OCCUPANCY_VOXEL_SIZE_METERS) ||
       header.voxel_size_m > MAX_OCCUPANCY_VOXEL_SIZE_METERS) {
     throw new Error('Invalid occupancy voxel size.');
+  }
+  if (header.scan_sha256 !== undefined && header.scan_sha256 !== null &&
+      (typeof header.scan_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(header.scan_sha256))) {
+    throw new Error('Invalid occupancy scan_sha256.');
   }
   if (header.envelope !== null && header.envelope !== undefined) {
     const { min, max } = header.envelope as { min?: unknown; max?: unknown };
@@ -402,5 +412,6 @@ export function buildSessionOccupancyArtifact(
     frameId: scanIdentity.frameId,
     createdAtMs,
     registration,
+    ...(scanIdentity.sha256 === undefined ? {} : { scanSha256: scanIdentity.sha256 }),
   });
 }

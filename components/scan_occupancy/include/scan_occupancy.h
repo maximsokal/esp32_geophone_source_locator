@@ -56,6 +56,9 @@ typedef struct
     double voxel_size_m;
     double below_surface_m;
     bool has_envelope;
+    /* SHA-256 of the scan this occupancy was built for (issue #34); absent in older artifacts (then the CRC32 frame_id is the only binding). */
+    bool has_scan_sha256;
+    unsigned char scan_sha256[32];
     double envelope_min[3];
     double envelope_max[3];
     bool saturated;

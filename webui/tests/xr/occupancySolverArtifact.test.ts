@@ -331,3 +331,42 @@ describe('solver occupancy grid for the ESP32', () => {
     expect(decoded.header.occupied_count).toBe(1);
   });
 });
+
+describe('occupancy artifact names the SHA-256 of its scan (issue #34)', () => {
+  const sha = 'ab'.repeat(32);
+  const options = { frameId: 'scan-crc32:deadbeef', createdAtMs: 1, registration: null };
+
+  it('writes scan_sha256 into the header when it is given and reads it back', () => {
+    const bytes = encodeOccupancySolverArtifact(projectRegistrationSnapshot(), { ...options, scanSha256: sha });
+    expect(decodeOccupancySolverArtifact(bytes).header.scan_sha256).toBe(sha);
+  });
+
+  it('writes nothing for a digest-less scan identity, so older artifacts and the golden vector are unchanged', () => {
+    const bytes = encodeOccupancySolverArtifact(projectRegistrationSnapshot(), options);
+    expect(decodeOccupancySolverArtifact(bytes).header.scan_sha256).toBeUndefined();
+    expect(new TextDecoder().decode(bytes)).not.toContain('scan_sha256');
+  });
+
+  it('refuses to write a malformed digest and refuses to read one', () => {
+    for (const bad of ['', 'AB'.repeat(32), 'ab'.repeat(31), 'zz'.repeat(32)]) {
+      expect(() => encodeOccupancySolverArtifact(projectRegistrationSnapshot(), { ...options, scanSha256: bad })).toThrow(/SHA-256/);
+    }
+    const header = new TextEncoder().encode(
+      '{"schema":1,"frame_id":"x","voxel_size_m":0.25,"below_surface_m":0,"envelope":null,"free_count":0,"occupied_count":0,' +
+      '"saturated":false,"created_at_ms":1,"registration":null,"scan_sha256":"nope"}',
+    );
+    const bytes = new Uint8Array(20 + header.length);
+    bytes.set(new TextEncoder().encode('GOCCUPY1'), 0);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(8, header.length, true);
+    bytes.set(header, 20);
+    view.setUint32(16, occupancyCrc32(bytes, 20), true);
+    expect(() => decodeOccupancySolverArtifact(bytes)).toThrow(/scan_sha256/);
+  });
+
+  it('buildSessionOccupancyArtifact carries the digest of the identity it is given', () => {
+    const identity = { byteLength: 3, crc32: 1, frameId: 'scan-crc32:00000001', sha256: sha };
+    const bytes = buildSessionOccupancyArtifact(projectRegistrationSnapshot() as never, identity, 5);
+    expect(decodeOccupancySolverArtifact(bytes).header.scan_sha256).toBe(sha);
+  });
+});

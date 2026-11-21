@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "json_number.h"
+#include "scan_sha256.h"
 
 
 #define FIXED_HEADER_BYTES 20U
@@ -215,8 +216,14 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         out->below_surface_m = below;
         out->saturated = cJSON_IsTrue(saturated);
         out->created_at_ms = created_ms;
+        out->has_scan_sha256 = false;
+        const cJSON *scan_sha = cJSON_GetObjectItemCaseSensitive(root, "scan_sha256");
+        if (scan_sha != NULL && !cJSON_IsNull(scan_sha)) {
+            if (cJSON_IsString(scan_sha) && scan_sha256_from_hex(scan_sha->valuestring, out->scan_sha256)) out->has_scan_sha256 = true;
+            else err = ESP_ERR_INVALID_ARG;
+        }
         out->has_envelope = false;
-        if (cJSON_IsObject(envelope)) {
+        if (err == ESP_OK && cJSON_IsObject(envelope)) {
             if (
                 !read_vec3(cJSON_GetObjectItemCaseSensitive(envelope, "min"), out->envelope_min) ||
                 !read_vec3(cJSON_GetObjectItemCaseSensitive(envelope, "max"), out->envelope_max)

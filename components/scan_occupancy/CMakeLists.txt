@@ -8,6 +8,7 @@ idf_component_register(
     REQUIRES
         json
         json_number
+        mbedtls
 )
 
 target_link_libraries(${COMPONENT_LIB} PRIVATE m)

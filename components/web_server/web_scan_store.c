@@ -14,7 +14,7 @@
 #endif
 #include "app_task_config.h"
 #include "cJSON.h"
-#include "web_scan_sha256.h"
+#include "scan_sha256.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -116,7 +116,7 @@ typedef struct
     bool valid;
     char path[WEB_SCAN_PATH_SIZE];
     uint32_t crc32;
-    unsigned char sha256[WEB_SCAN_SHA256_BYTES];
+    unsigned char sha256[SCAN_SHA256_BYTES];
 } web_scan_sha_cache_t;
 
 static web_scan_sha_cache_t s_scan_sha_cache;
@@ -132,7 +132,7 @@ static esp_err_t web_scan_current_scan_sha256(
     const char *object_id,
     const char *session_id,
     uint32_t expected_crc32,
-    unsigned char sha_out[WEB_SCAN_SHA256_BYTES]
+    unsigned char sha_out[SCAN_SHA256_BYTES]
 );
 static esp_err_t web_scan_validate_path_locked(
     const char *path,
@@ -1111,11 +1111,11 @@ static esp_err_t web_scan_commit_derivative_temp(
      * with the same CRC32 is refused here, and again under the lock below. A client that sends none is bound by CRC32 as before.
      */
     if (sha_query_present) {
-        unsigned char current_sha[WEB_SCAN_SHA256_BYTES];
+        unsigned char current_sha[SCAN_SHA256_BYTES];
         bool sha_matches = false;
         if (sha_query_valid && requested_sha256 != NULL) {
             err = web_scan_current_scan_sha256(object_id, session_id, current_crc32, current_sha);
-            if (err == ESP_OK) sha_matches = memcmp(current_sha, requested_sha256, WEB_SCAN_SHA256_BYTES) == 0;
+            if (err == ESP_OK) sha_matches = memcmp(current_sha, requested_sha256, SCAN_SHA256_BYTES) == 0;
             else if (err != ESP_ERR_INVALID_STATE && err != ESP_ERR_NOT_FOUND) return err;
         }
         if (!sha_matches) {
@@ -1161,7 +1161,7 @@ static esp_err_t web_scan_commit_derivative_temp(
     const bool sha_still_current = !sha_query_present || (
         sha_query_valid && requested_sha256 != NULL && s_scan_sha_cache.valid &&
         strcmp(s_scan_sha_cache.path, scan_path) == 0 && s_scan_sha_cache.crc32 == current_crc32 &&
-        memcmp(s_scan_sha_cache.sha256, requested_sha256, WEB_SCAN_SHA256_BYTES) == 0
+        memcmp(s_scan_sha_cache.sha256, requested_sha256, SCAN_SHA256_BYTES) == 0
     );
     if (
         err == ESP_OK && (!current_present || current_crc32 != source_crc32 || !sha_still_current ||
@@ -1224,8 +1224,8 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     char requested_sha_hex[WEB_SCAN_QUERY_SIZE] = {0};
     const esp_err_t sha_query_err = web_scan_query_value(request, "scan_sha", requested_sha_hex, sizeof(requested_sha_hex));
     const bool sha_query_present = sha_query_err != ESP_ERR_NOT_FOUND;
-    unsigned char requested_sha[WEB_SCAN_SHA256_BYTES] = {0};
-    const bool sha_query_valid = sha_query_err == ESP_OK && web_scan_sha256_from_hex(requested_sha_hex, requested_sha);
+    unsigned char requested_sha[SCAN_SHA256_BYTES] = {0};
+    const bool sha_query_valid = sha_query_err == ESP_OK && scan_sha256_from_hex(requested_sha_hex, requested_sha);
 
     if (!web_scan_kind_size_valid(kind, request->content_len)) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
@@ -1609,8 +1609,8 @@ static esp_err_t web_scan_hash_file(FILE *file, size_t size, uint32_t *crc_out, 
 
     size_t remaining = size;
     uint32_t crc = UINT32_C(0xffffffff);
-    web_scan_sha256_t sha;
-    if (sha_out != NULL) web_scan_sha256_init(&sha);
+    scan_sha256_t sha;
+    if (sha_out != NULL) scan_sha256_init(&sha);
     esp_err_t err = ESP_OK;
     while (remaining > 0U) {
         if (web_server_shutdown_requested()) {
@@ -1634,15 +1634,15 @@ static esp_err_t web_scan_hash_file(FILE *file, size_t size, uint32_t *crc_out, 
             break;
         }
         crc = web_scan_crc32_update(crc, buffer, read_count);
-        if (sha_out != NULL) web_scan_sha256_update(&sha, buffer, read_count);
+        if (sha_out != NULL) scan_sha256_update(&sha, buffer, read_count);
         remaining -= read_count;
         taskYIELD();
     }
 
     free(buffer);
     if (sha_out != NULL) {
-        if (err == ESP_OK) web_scan_sha256_final(&sha, sha_out);
-        else web_scan_sha256_abort(&sha);
+        if (err == ESP_OK) scan_sha256_final(&sha, sha_out);
+        else scan_sha256_abort(&sha);
     }
     if (err == ESP_OK) *crc_out = crc ^ UINT32_C(0xffffffff);
     return err;
@@ -1734,7 +1734,7 @@ static esp_err_t web_scan_current_scan_sha256(
     const char *object_id,
     const char *session_id,
     uint32_t expected_crc32,
-    unsigned char sha_out[WEB_SCAN_SHA256_BYTES]
+    unsigned char sha_out[SCAN_SHA256_BYTES]
 )
 {
     char final_path[WEB_SCAN_PATH_SIZE];
@@ -1746,7 +1746,7 @@ static esp_err_t web_scan_current_scan_sha256(
     err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
     const bool hit = s_scan_sha_cache.valid && strcmp(s_scan_sha_cache.path, final_path) == 0 && s_scan_sha_cache.crc32 == expected_crc32;
-    if (hit) memcpy(sha_out, s_scan_sha_cache.sha256, WEB_SCAN_SHA256_BYTES);
+    if (hit) memcpy(sha_out, s_scan_sha_cache.sha256, SCAN_SHA256_BYTES);
     storage_manager_operation_end();
     if (hit) return ESP_OK;
 
@@ -1767,7 +1767,7 @@ static esp_err_t web_scan_current_scan_sha256(
     if (s_scan_identity_cache.valid && strcmp(s_scan_identity_cache.path, final_path) == 0 && s_scan_identity_cache.crc32 == crc32) {
         memcpy(s_scan_sha_cache.path, final_path, strlen(final_path) + 1U);
         s_scan_sha_cache.crc32 = crc32;
-        memcpy(s_scan_sha_cache.sha256, sha_out, WEB_SCAN_SHA256_BYTES);
+        memcpy(s_scan_sha_cache.sha256, sha_out, SCAN_SHA256_BYTES);
         s_scan_sha_cache.valid = true;
     }
     storage_manager_operation_end();

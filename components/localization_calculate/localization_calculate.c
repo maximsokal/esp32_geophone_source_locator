@@ -21,6 +21,7 @@
 #include "localization_xcorr_tdoa.h"
 #include "seismic_dsp.h"
 #include "scan_occupancy.h"
+#include "scan_sha256.h"
 #include "seismic_recorder.h"
 #include "scan_artifact_path.h"
 #include "storage_manager.h"
@@ -281,10 +282,11 @@ static esp_err_t localization_scan_identity_run_chunk(
 static esp_err_t load_session_scan_frame_id(
     const char *object_id,
     const char *session_id,
-    char frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE]
+    char frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE],
+    unsigned char sha256_out[SCAN_SHA256_BYTES]
 )
 {
-    if (object_id == NULL || session_id == NULL || frame_id == NULL) {
+    if (object_id == NULL || session_id == NULL || frame_id == NULL || sha256_out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -327,6 +329,8 @@ static esp_err_t load_session_scan_frame_id(
                 err = ESP_ERR_NO_MEM;
             } else {
                 uint32_t crc = 0xFFFFFFFFU;
+                scan_sha256_t sha;
+                scan_sha256_init(&sha);
                 size_t remaining = (size_t)file_size;
                 while (remaining > 0U && err == ESP_OK) {
                     const size_t chunk_bytes = remaining < LOCALIZATION_SCAN_IDENTITY_CHUNK_BYTES
@@ -341,9 +345,12 @@ static esp_err_t load_session_scan_frame_id(
                     err = localization_scan_identity_run_chunk(&read);
                     if (err == ESP_OK) {
                         crc = localization_scan_crc32_update(crc, buffer, read.bytes_read);
+                        scan_sha256_update(&sha, buffer, read.bytes_read);
                         remaining -= read.bytes_read;
                     }
                 }
+                if (err == ESP_OK) scan_sha256_final(&sha, sha256_out);
+                else scan_sha256_abort(&sha);
                 if (err == ESP_OK) {
                     crc ^= 0xFFFFFFFFU;
                     const int frame_written = snprintf(
@@ -2228,11 +2235,14 @@ esp_err_t localization_calculate_run(
         : ESP_ERR_NOT_FOUND;
     if (scan_variants_planned) {
         char current_scan_frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE] = { 0 };
+        unsigned char current_scan_sha256[SCAN_SHA256_BYTES] = { 0 };
         const esp_err_t scan_identity_err = occupancy_err == ESP_OK
-            ? load_session_scan_frame_id(object_id, session_id, current_scan_frame_id)
+            ? load_session_scan_frame_id(object_id, session_id, current_scan_frame_id, current_scan_sha256)
             : ESP_ERR_NOT_FOUND;
+        /* The CRC32 id is only a corruption check: when the occupancy names the SHA-256 of its scan (issue #34), another scan with the same CRC32 does not match. */
         const bool scan_identity_matches = occupancy_err == ESP_OK &&
-            scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;
+            scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0 &&
+            (!occupancy.has_scan_sha256 || memcmp(occupancy.scan_sha256, current_scan_sha256, SCAN_SHA256_BYTES) == 0);
         const char *registration_reason = scan_identity_matches
             ? scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)
             : NULL;

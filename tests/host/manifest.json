@@ -2394,6 +2394,7 @@
         "components/app_config/include",
         "components/object_format/include",
         "components/seismic_recorder/include",
+        "components/scan_occupancy/include",
         "components/web_server"
       ],
       "libraries": ["m"]

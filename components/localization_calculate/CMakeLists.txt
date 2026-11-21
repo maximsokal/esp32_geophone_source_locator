@@ -20,6 +20,7 @@ idf_component_register(
         localization_semblance
         localization_traveltime_inversion
         localization_velocity_free
+        mbedtls
         object_store
         power_control
         scan_occupancy

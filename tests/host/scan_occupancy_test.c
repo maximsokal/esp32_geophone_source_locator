@@ -447,6 +447,40 @@ static void test_inverted_or_nonfinite_envelope_is_rejected(void)
     free(data);
 }
 
+/* Issue #34: the occupancy may name the SHA-256 of its scan; it is optional (older artifacts) and strict when present. */
+static void test_scan_sha256_is_optional_and_strict(void)
+{
+    static const char *const prefix =
+        "{\"schema\":1,\"frame_id\":\"sha\",\"voxel_size_m\":0.5,\"below_surface_m\":0,\"envelope\":null,"
+        "\"free_count\":0,\"occupied_count\":0,\"saturated\":false,\"created_at_ms\":1,\"registration\":null";
+    static const char *const good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    char header[512];
+    size_t length = 0U;
+    scan_occupancy_t occupancy;
+
+    (void)snprintf(header, sizeof(header), "%s}", prefix);
+    uint8_t *data = make_header_only_artifact(header, &length);
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK && !occupancy.has_scan_sha256);
+    scan_occupancy_free(&occupancy);
+    free(data);
+
+    (void)snprintf(header, sizeof(header), "%s,\"scan_sha256\":\"%s\"}", prefix, good);
+    data = make_header_only_artifact(header, &length);
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK && occupancy.has_scan_sha256);
+    assert(occupancy.scan_sha256[0] == 0xbaU && occupancy.scan_sha256[31] == 0xadU);
+    scan_occupancy_free(&occupancy);
+    free(data);
+
+    static const char *const bad[] = {"\"\"", "\"BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\"", "\"ba78\"", "12", "true",
+        "\"zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""};
+    for (size_t i = 0U; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        (void)snprintf(header, sizeof(header), "%s,\"scan_sha256\":%s}", prefix, bad[i]);
+        data = make_header_only_artifact(header, &length);
+        assert(scan_occupancy_parse(data, length, &occupancy) == ESP_ERR_INVALID_ARG);
+        free(data);
+    }
+}
+
 static void test_schema1_without_registration_still_classifies(void)
 {
     static const char header[] =
@@ -628,6 +662,7 @@ int main(void)
     test_golden_vector_parses_and_classifies();
     test_project_frame_v2_registration_and_candidate_classification();
     test_inverted_or_nonfinite_envelope_is_rejected();
+    test_scan_sha256_is_optional_and_strict();
     test_schema1_without_registration_still_classifies();
     test_duplicate_voxel_keys_and_voxel_size_fail_closed();
     test_registration_quality_requires_positive_threshold();

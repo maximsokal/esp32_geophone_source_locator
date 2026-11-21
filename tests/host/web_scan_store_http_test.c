@@ -1908,19 +1908,19 @@ static size_t read_collision_vector(const char *name, unsigned char *out, size_t
     return 0U;
 }
 
-static void sha256_hex_of(const unsigned char *bytes, size_t length, char hex[WEB_SCAN_SHA256_HEX_CHARS + 1U])
+static void sha256_hex_of(const unsigned char *bytes, size_t length, char hex[SCAN_SHA256_HEX_CHARS + 1U])
 {
-    web_scan_sha256_t state;
-    unsigned char digest[WEB_SCAN_SHA256_BYTES];
-    web_scan_sha256_init(&state);
-    web_scan_sha256_update(&state, bytes, length);
-    web_scan_sha256_final(&state, digest);
-    for (size_t i = 0U; i < WEB_SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
+    scan_sha256_t state;
+    unsigned char digest[SCAN_SHA256_BYTES];
+    scan_sha256_init(&state);
+    scan_sha256_update(&state, bytes, length);
+    scan_sha256_final(&state, digest);
+    for (size_t i = 0U; i < SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
 }
 
 static void test_sha256_matches_the_standard_vectors(void)
 {
-    char hex[WEB_SCAN_SHA256_HEX_CHARS + 1U];
+    char hex[SCAN_SHA256_HEX_CHARS + 1U];
     sha256_hex_of((const unsigned char *)"", 0U, hex);
     assert(strcmp(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == 0);
     sha256_hex_of((const unsigned char *)"abc", 3U, hex);
@@ -1932,30 +1932,30 @@ static void test_sha256_matches_the_standard_vectors(void)
     /* One million 'a' fed in odd-sized pieces: the streaming path used on the SD card must equal the one-shot digest. */
     static unsigned char million[1000000];
     memset(million, 'a', sizeof(million));
-    web_scan_sha256_t state;
-    unsigned char digest[WEB_SCAN_SHA256_BYTES];
-    web_scan_sha256_init(&state);
+    scan_sha256_t state;
+    unsigned char digest[SCAN_SHA256_BYTES];
+    scan_sha256_init(&state);
     size_t offset = 0U;
     size_t piece = 1U;
     while (offset < sizeof(million)) {
         size_t take = piece;
         if (take > sizeof(million) - offset) take = sizeof(million) - offset;
-        web_scan_sha256_update(&state, million + offset, take);
+        scan_sha256_update(&state, million + offset, take);
         offset += take;
         piece = piece * 3U % 977U + 1U;
     }
-    web_scan_sha256_final(&state, digest);
-    for (size_t i = 0U; i < WEB_SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
+    scan_sha256_final(&state, digest);
+    for (size_t i = 0U; i < SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
     assert(strcmp(hex, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0") == 0);
 
-    unsigned char parsed[WEB_SCAN_SHA256_BYTES];
-    assert(web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed) && parsed[0] == 0xbaU && parsed[31] == 0xadU);
-    assert(!web_scan_sha256_from_hex("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", parsed));   /* lowercase only */
-    assert(!web_scan_sha256_from_hex("ba78", parsed));
-    assert(!web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015a", parsed));    /* 63 digits */
-    assert(!web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015adff", parsed)); /* 66 digits */
-    assert(!web_scan_sha256_from_hex("zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed));
-    assert(!web_scan_sha256_from_hex(NULL, parsed));
+    unsigned char parsed[SCAN_SHA256_BYTES];
+    assert(scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed) && parsed[0] == 0xbaU && parsed[31] == 0xadU);
+    assert(!scan_sha256_from_hex("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", parsed));   /* lowercase only */
+    assert(!scan_sha256_from_hex("ba78", parsed));
+    assert(!scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015a", parsed));    /* 63 digits */
+    assert(!scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015adff", parsed)); /* 66 digits */
+    assert(!scan_sha256_from_hex("zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed));
+    assert(!scan_sha256_from_hex(NULL, parsed));
 }
 
 static bool save_occupancy_bound(const unsigned char *occupancy, size_t size, const char *scan_id, const char *scan_sha, char *response, size_t capacity, httpd_req_t *request_out)
@@ -1982,7 +1982,7 @@ static void test_derivative_is_bound_to_the_scan_by_sha256_not_only_by_crc32(voi
     assert(reference_crc32(scan_a, size_a) == reference_crc32(scan_b, size_b));        /* the pinned alias: same length, same CRC32 */
     char id[20];
     make_scan_id(reference_crc32(scan_a, size_a), id);
-    char sha_a[WEB_SCAN_SHA256_HEX_CHARS + 1U], sha_b[WEB_SCAN_SHA256_HEX_CHARS + 1U];
+    char sha_a[SCAN_SHA256_HEX_CHARS + 1U], sha_b[SCAN_SHA256_HEX_CHARS + 1U];
     sha256_hex_of(scan_a, size_a, sha_a);
     sha256_hex_of(scan_b, size_b, sha_b);
     assert(strcmp(sha_a, sha_b) != 0);
