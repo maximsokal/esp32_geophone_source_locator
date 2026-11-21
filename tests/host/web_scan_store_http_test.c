@@ -51,6 +51,9 @@ static const char *s_fail_remove_path;
 static const char *s_cut_after_remove_path;
 static const char *s_cut_after_rename_path;
 static bool s_replace_scan_before_derivative_commit;
+static bool s_replace_scan_with_collision_before_derivative_commit;
+static unsigned char s_collision_b[4096];
+static size_t s_collision_b_size;
 static bool s_replace_scan_before_identity_cache_store;
 static bool s_remove_scan_before_identity_cache_store;
 static bool s_storage_power_lost;
@@ -510,6 +513,7 @@ static void reset_web_scan_test_state(void)
     s_cut_after_remove_path = NULL;
     s_cut_after_rename_path = NULL;
     s_replace_scan_before_derivative_commit = false;
+    s_replace_scan_with_collision_before_derivative_commit = false;
     s_replace_scan_before_identity_cache_store = false;
     s_remove_scan_before_identity_cache_store = false;
     s_storage_power_lost = false;
@@ -551,6 +555,14 @@ static uint32_t reference_crc32(const unsigned char *bytes, size_t length)
 
 void web_scan_store_test_before_derivative_commit(void)
 {
+    if (s_replace_scan_with_collision_before_derivative_commit) {
+        /* A scan commit that lands between the first check and the final one: another valid scan with the SAME CRC32 (issue #34). */
+        s_replace_scan_with_collision_before_derivative_commit = false;
+        const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+        write_bytes(scan_path, s_collision_b, s_collision_b_size);
+        web_scan_identity_cache_set_locked(scan_path, s_collision_b_size, reference_crc32(s_collision_b, s_collision_b_size));
+        return;
+    }
     if (!s_replace_scan_before_derivative_commit) return;
     s_replace_scan_before_derivative_commit = false;
     static const unsigned char replacement_scan[] = {0x71U, 0x72U, 0x73U, 0x74U};
@@ -1877,6 +1889,163 @@ static void test_identity_cache_store_reports_a_scan_that_vanished(void)
 }
 
 
+/* ---- Issue #34: collision-resistant binding of derivatives to the scan ------------------------------------------------------------------ */
+
+static size_t read_collision_vector(const char *name, unsigned char *out, size_t capacity)
+{
+    static const char *const prefixes[] = {"tests/vectors/", "../../../tests/vectors/", "../../../../tests/vectors/"};
+    for (size_t i = 0U; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        char path[160];
+        (void)snprintf(path, sizeof(path), "%s%s", prefixes[i], name);
+        FILE *file = fopen(path, "rb");
+        if (file == NULL) continue;
+        const size_t length = fread(out, 1U, capacity, file);
+        assert(ferror(file) == 0 && feof(file));
+        (void)fclose(file);
+        return length;
+    }
+    assert(!"collision vector not found");
+    return 0U;
+}
+
+static void sha256_hex_of(const unsigned char *bytes, size_t length, char hex[WEB_SCAN_SHA256_HEX_CHARS + 1U])
+{
+    web_scan_sha256_t state;
+    unsigned char digest[WEB_SCAN_SHA256_BYTES];
+    web_scan_sha256_init(&state);
+    web_scan_sha256_update(&state, bytes, length);
+    web_scan_sha256_final(&state, digest);
+    for (size_t i = 0U; i < WEB_SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
+}
+
+static void test_sha256_matches_the_standard_vectors(void)
+{
+    char hex[WEB_SCAN_SHA256_HEX_CHARS + 1U];
+    sha256_hex_of((const unsigned char *)"", 0U, hex);
+    assert(strcmp(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == 0);
+    sha256_hex_of((const unsigned char *)"abc", 3U, hex);
+    assert(strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0);
+    static const char two_blocks[] = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    sha256_hex_of((const unsigned char *)two_blocks, sizeof(two_blocks) - 1U, hex);
+    assert(strcmp(hex, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") == 0);
+
+    /* One million 'a' fed in odd-sized pieces: the streaming path used on the SD card must equal the one-shot digest. */
+    static unsigned char million[1000000];
+    memset(million, 'a', sizeof(million));
+    web_scan_sha256_t state;
+    unsigned char digest[WEB_SCAN_SHA256_BYTES];
+    web_scan_sha256_init(&state);
+    size_t offset = 0U;
+    size_t piece = 1U;
+    while (offset < sizeof(million)) {
+        size_t take = piece;
+        if (take > sizeof(million) - offset) take = sizeof(million) - offset;
+        web_scan_sha256_update(&state, million + offset, take);
+        offset += take;
+        piece = piece * 3U % 977U + 1U;
+    }
+    web_scan_sha256_final(&state, digest);
+    for (size_t i = 0U; i < WEB_SCAN_SHA256_BYTES; ++i) (void)snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
+    assert(strcmp(hex, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0") == 0);
+
+    unsigned char parsed[WEB_SCAN_SHA256_BYTES];
+    assert(web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed) && parsed[0] == 0xbaU && parsed[31] == 0xadU);
+    assert(!web_scan_sha256_from_hex("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", parsed));   /* lowercase only */
+    assert(!web_scan_sha256_from_hex("ba78", parsed));
+    assert(!web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015a", parsed));    /* 63 digits */
+    assert(!web_scan_sha256_from_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015adff", parsed)); /* 66 digits */
+    assert(!web_scan_sha256_from_hex("zz7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", parsed));
+    assert(!web_scan_sha256_from_hex(NULL, parsed));
+}
+
+static bool save_occupancy_bound(const unsigned char *occupancy, size_t size, const char *scan_id, const char *scan_sha, char *response, size_t capacity, httpd_req_t *request_out)
+{
+    char query[320];
+    int written = snprintf(query, sizeof(query), "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001");
+    if (scan_id != NULL) written += snprintf(query + written, sizeof(query) - (size_t)written, "&scan_id=%s", scan_id);
+    if (scan_sha != NULL) written += snprintf(query + written, sizeof(query) - (size_t)written, "&scan_sha=%s", scan_sha);
+    assert(written > 0 && (size_t)written < sizeof(query));
+    memset(response, 0, capacity);
+    *request_out = make_request(query, occupancy, size, response, capacity);
+    bool handled = false;
+    assert(web_scan_store_try_handle(request_out, &handled) == ESP_OK && handled);
+    return strstr(response, "\"ok\":true") != NULL;
+}
+
+static void test_derivative_is_bound_to_the_scan_by_sha256_not_only_by_crc32(void)
+{
+    make_layout();
+    static unsigned char scan_a[4096], scan_b[4096];
+    const size_t size_a = read_collision_vector("scan_crc32_collision_a.bin", scan_a, sizeof(scan_a));
+    const size_t size_b = read_collision_vector("scan_crc32_collision_b.bin", scan_b, sizeof(scan_b));
+    assert(size_a == size_b && size_a > 100U && memcmp(scan_a, scan_b, size_a) != 0);
+    assert(reference_crc32(scan_a, size_a) == reference_crc32(scan_b, size_b));        /* the pinned alias: same length, same CRC32 */
+    char id[20];
+    make_scan_id(reference_crc32(scan_a, size_a), id);
+    char sha_a[WEB_SCAN_SHA256_HEX_CHARS + 1U], sha_b[WEB_SCAN_SHA256_HEX_CHARS + 1U];
+    sha256_hex_of(scan_a, size_a, sha_a);
+    sha256_hex_of(scan_b, size_b, sha_b);
+    assert(strcmp(sha_a, sha_b) != 0);
+
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    unsigned char occupancy[256];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), id);
+    char response[512];
+    httpd_req_t request;
+
+    /* 1. Scan A on the card; a derivative bound to A's SHA-256 is accepted, one bound to B's is refused. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, size_a));
+    assert(!save_occupancy_bound(occupancy, occupancy_size, id, sha_b, response, sizeof(response), &request));
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp));
+    assert(save_occupancy_bound(occupancy, occupancy_size, id, sha_a, response, sizeof(response), &request));
+    assert(path_exists(occupancy_path));
+
+    /* 2. Malformed digests never pass. */
+    assert(!save_occupancy_bound(occupancy, occupancy_size, id, "not-a-digest", response, sizeof(response), &request));
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    /* (an empty scan_sha= is not modelled here: the host query stub reports an empty value as absent, the device httpd returns it as an invalid digest) */
+
+    /* 3. Scan B replaces A (same CRC32, same length): A's derivative is dropped with the replacement and A's SHA-256 is refused for B. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_b, size_b));
+    assert(file_matches_bytes(scan_path, scan_b, size_b));
+    assert(!path_exists(occupancy_path));
+    assert(!save_occupancy_bound(occupancy, occupancy_size, id, sha_a, response, sizeof(response), &request));
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp));
+    assert(save_occupancy_bound(occupancy, occupancy_size, id, sha_b, response, sizeof(response), &request));
+    assert(path_exists(occupancy_path));
+    assert(remove(occupancy_path) == 0);
+
+    /* 4. A client that sends no digest is bound by CRC32 only, as before: the alias is accepted (the documented weak mode). */
+    assert(save_occupancy_bound(occupancy, occupancy_size, id, NULL, response, sizeof(response), &request));
+    assert(path_exists(occupancy_path));
+    assert(remove(occupancy_path) == 0);
+
+    /* 5. The race of the issue: A is on the card, A's upload passes the first check, then B (same CRC32) is committed before the final check. */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, size_a));
+    memcpy(s_collision_b, scan_b, size_b);
+    s_collision_b_size = size_b;
+    s_replace_scan_with_collision_before_derivative_commit = true;
+    assert(!save_occupancy_bound(occupancy, occupancy_size, id, sha_a, response, sizeof(response), &request));
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    assert(file_matches_bytes(scan_path, scan_b, size_b));            /* B really replaced A under the first check */
+    assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp));
+
+    /* ...while a CRC-only client loses that race silently (control: this is the defect the digest closes). */
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, size_a));
+    s_replace_scan_with_collision_before_derivative_commit = true;
+    assert(save_occupancy_bound(occupancy, occupancy_size, id, NULL, response, sizeof(response), &request));
+    assert(file_matches_bytes(scan_path, scan_b, size_b) && path_exists(occupancy_path));
+    (void)remove(occupancy_path);
+    remove_layout();
+}
+
+
 static void test_identity_cache_publish_preserves_replacement(void)
 {
     make_layout();
@@ -2828,6 +2997,8 @@ int main(void)
     test_derivative_compare_and_commit_rejects_stale_uploads();
     test_derivative_compare_and_commit_toctou_recheck();
     test_identity_cache_publish_preserves_replacement();
+    test_sha256_matches_the_standard_vectors();
+    test_derivative_is_bound_to_the_scan_by_sha256_not_only_by_crc32();
     test_identity_cache_store_reports_a_scan_that_vanished();
     test_registration_unbound_is_rejected();
     test_registration_round_trip_bounds_and_session_validation();

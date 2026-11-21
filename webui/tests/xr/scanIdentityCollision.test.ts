@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decodeScanArtifact, decodeScanArtifactWithIdentity, encodeScanArtifactWithIdentity } from '../../src/xr/scanArtifact';
 import { makeValidScanSnapshot } from './support/validScanSnapshot';
@@ -56,6 +58,12 @@ describe('legacy scan identity is a 32-bit CRC: a pinned collision (issue #34)',
     expect(a.identity.sha256).toBe(sha256(a.bytes));
     expect(a.identity.sha256).not.toBe(b.identity.sha256);
     expect(decodeScanArtifactWithIdentity(a.bytes).identity.sha256).toBe(a.identity.sha256);   /* the restore path reproduces it */
+  });
+
+  it('the binary vectors the C host tests use are exactly these two scans', () => {
+    const vector = (name: string): Buffer => readFileSync(resolve(__dirname, `../../../tests/vectors/scan_crc32_collision_${name}.bin`));
+    expect(vector('a').equals(Buffer.from(a.bytes))).toBe(true);
+    expect(vector('b').equals(Buffer.from(b.bytes))).toBe(true);
   });
 
   it('an independent content digest does tell them apart (what a strong identity must carry)', () => {

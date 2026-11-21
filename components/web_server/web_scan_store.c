@@ -14,6 +14,7 @@
 #endif
 #include "app_task_config.h"
 #include "cJSON.h"
+#include "web_scan_sha256.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -27,7 +28,8 @@
 #include "storage_bulk_admission.h"
 #include "storage_manager.h"
 
-#define WEB_SCAN_QUERY_SIZE       160U
+/* The whole query string, scan_sha (64 hex) included: save/occupancy/object/session/scan_id/scan_sha is about 190 bytes for the longest ids. */
+#define WEB_SCAN_QUERY_SIZE       256U
 #define WEB_SCAN_PATH_SIZE        192U
 #define WEB_SCAN_IO_BUFFER_SIZE   4096U
 #define WEB_SCAN_HEADER_PEEK_MAX_BYTES 4096U
@@ -108,12 +110,29 @@ typedef struct
 
 static web_scan_identity_cache_t s_scan_identity_cache;
 
+/* SHA-256 of the scan the identity cache names (issue #34): filled lazily, dropped together with the identity whenever the scan changes. */
+typedef struct
+{
+    bool valid;
+    char path[WEB_SCAN_PATH_SIZE];
+    uint32_t crc32;
+    unsigned char sha256[WEB_SCAN_SHA256_BYTES];
+} web_scan_sha_cache_t;
+
+static web_scan_sha_cache_t s_scan_sha_cache;
+
 static esp_err_t web_scan_get_scan_identity(
     const char *object_id,
     const char *session_id,
     bool *present_out,
     size_t *size_out,
     uint32_t *crc_out
+);
+static esp_err_t web_scan_current_scan_sha256(
+    const char *object_id,
+    const char *session_id,
+    uint32_t expected_crc32,
+    unsigned char sha_out[WEB_SCAN_SHA256_BYTES]
 );
 static esp_err_t web_scan_validate_path_locked(
     const char *path,
@@ -182,11 +201,13 @@ static void web_scan_identity_cache_clear_locked(const char *path)
 {
     if (path == NULL || (s_scan_identity_cache.valid && strcmp(s_scan_identity_cache.path, path) == 0)) {
         s_scan_identity_cache.valid = false;
+        s_scan_sha_cache.valid = false;
     }
 }
 
 static void web_scan_identity_cache_set_locked(const char *path, size_t size, uint32_t crc32)
 {
+    s_scan_sha_cache.valid = false; /* a new identity is a new scan: its digest is unknown until computed */
     if (path == NULL) {
         s_scan_identity_cache.valid = false;
         return;
@@ -1049,6 +1070,9 @@ static esp_err_t web_scan_commit_derivative_temp(
     const char *requested_scan_id,
     bool query_present,
     bool query_valid,
+    const unsigned char *requested_sha256,
+    bool sha_query_present,
+    bool sha_query_valid,
     bool *generation_mismatch_out,
     char current_id[WEB_SCAN_CRC32_ID_SIZE]
 )
@@ -1080,6 +1104,25 @@ static esp_err_t web_scan_commit_derivative_temp(
         *generation_mismatch_out = true;
         web_scan_remove_temp_best_effort(temp_path);
         return ESP_OK;
+    }
+
+    /*
+     * Issue #34: a client that names the SHA-256 of the scan its sidecar was built for is bound by it, not only by the 32-bit CRC. A different scan
+     * with the same CRC32 is refused here, and again under the lock below. A client that sends none is bound by CRC32 as before.
+     */
+    if (sha_query_present) {
+        unsigned char current_sha[WEB_SCAN_SHA256_BYTES];
+        bool sha_matches = false;
+        if (sha_query_valid && requested_sha256 != NULL) {
+            err = web_scan_current_scan_sha256(object_id, session_id, current_crc32, current_sha);
+            if (err == ESP_OK) sha_matches = memcmp(current_sha, requested_sha256, WEB_SCAN_SHA256_BYTES) == 0;
+            else if (err != ESP_ERR_INVALID_STATE && err != ESP_ERR_NOT_FOUND) return err;
+        }
+        if (!sha_matches) {
+            *generation_mismatch_out = true;
+            web_scan_remove_temp_best_effort(temp_path);
+            return ESP_OK;
+        }
     }
 
     /* The storage operation lock is the generation lock. Scan replacement
@@ -1115,8 +1158,13 @@ static esp_err_t web_scan_commit_derivative_temp(
         current_id[0] = '\0';
     }
 
+    const bool sha_still_current = !sha_query_present || (
+        sha_query_valid && requested_sha256 != NULL && s_scan_sha_cache.valid &&
+        strcmp(s_scan_sha_cache.path, scan_path) == 0 && s_scan_sha_cache.crc32 == current_crc32 &&
+        memcmp(s_scan_sha_cache.sha256, requested_sha256, WEB_SCAN_SHA256_BYTES) == 0
+    );
     if (
-        err == ESP_OK && (!current_present || current_crc32 != source_crc32 ||
+        err == ESP_OK && (!current_present || current_crc32 != source_crc32 || !sha_still_current ||
         (query_present && (!query_valid || strcmp(requested_scan_id, content_id) != 0)))
     ) {
         *generation_mismatch_out = true;
@@ -1173,6 +1221,11 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     );
     const bool query_present = query_err != ESP_ERR_NOT_FOUND;
     const bool query_valid = query_err == ESP_OK;
+    char requested_sha_hex[WEB_SCAN_QUERY_SIZE] = {0};
+    const esp_err_t sha_query_err = web_scan_query_value(request, "scan_sha", requested_sha_hex, sizeof(requested_sha_hex));
+    const bool sha_query_present = sha_query_err != ESP_ERR_NOT_FOUND;
+    unsigned char requested_sha[WEB_SCAN_SHA256_BYTES] = {0};
+    const bool sha_query_valid = sha_query_err == ESP_OK && web_scan_sha256_from_hex(requested_sha_hex, requested_sha);
 
     if (!web_scan_kind_size_valid(kind, request->content_len)) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
@@ -1318,6 +1371,9 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
                     requested_scan_id,
                     query_present,
                     query_valid,
+                    requested_sha,
+                    sha_query_present,
+                    sha_query_valid,
                     &generation_rejected,
                     mismatch_current_id
                 );
@@ -1545,7 +1601,7 @@ static esp_err_t web_scan_identity_cache_store(
 }
 
 
-static esp_err_t web_scan_crc32_file(FILE *file, size_t size, uint32_t *crc_out)
+static esp_err_t web_scan_hash_file(FILE *file, size_t size, uint32_t *crc_out, unsigned char *sha_out)
 {
     if (file == NULL || crc_out == NULL) return ESP_ERR_INVALID_ARG;
     unsigned char *buffer = heap_caps_malloc(WEB_SCAN_IO_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1553,6 +1609,8 @@ static esp_err_t web_scan_crc32_file(FILE *file, size_t size, uint32_t *crc_out)
 
     size_t remaining = size;
     uint32_t crc = UINT32_C(0xffffffff);
+    web_scan_sha256_t sha;
+    if (sha_out != NULL) web_scan_sha256_init(&sha);
     esp_err_t err = ESP_OK;
     while (remaining > 0U) {
         if (web_server_shutdown_requested()) {
@@ -1576,13 +1634,24 @@ static esp_err_t web_scan_crc32_file(FILE *file, size_t size, uint32_t *crc_out)
             break;
         }
         crc = web_scan_crc32_update(crc, buffer, read_count);
+        if (sha_out != NULL) web_scan_sha256_update(&sha, buffer, read_count);
         remaining -= read_count;
         taskYIELD();
     }
 
     free(buffer);
+    if (sha_out != NULL) {
+        if (err == ESP_OK) web_scan_sha256_final(&sha, sha_out);
+        else web_scan_sha256_abort(&sha);
+    }
     if (err == ESP_OK) *crc_out = crc ^ UINT32_C(0xffffffff);
     return err;
+}
+
+
+static esp_err_t web_scan_crc32_file(FILE *file, size_t size, uint32_t *crc_out)
+{
+    return web_scan_hash_file(file, size, crc_out, NULL);
 }
 
 
@@ -1653,6 +1722,55 @@ static esp_err_t web_scan_get_scan_identity(
     *present_out = true;
     *size_out = file_size;
     *crc_out = crc32;
+    return ESP_OK;
+}
+
+
+/*
+ * The SHA-256 of the scan this session reads, for the scan whose CRC32 identity is `expected_crc32`. ESP_ERR_INVALID_STATE means the scan on the
+ * card is no longer the one with that CRC (it was replaced while it was hashed).
+ */
+static esp_err_t web_scan_current_scan_sha256(
+    const char *object_id,
+    const char *session_id,
+    uint32_t expected_crc32,
+    unsigned char sha_out[WEB_SCAN_SHA256_BYTES]
+)
+{
+    char final_path[WEB_SCAN_PATH_SIZE];
+    char temp_path[WEB_SCAN_PATH_SIZE];
+    char backup_path[WEB_SCAN_PATH_SIZE];
+    esp_err_t err = web_scan_paths_for_read(object_id, session_id, &WEB_SCAN_KIND_SCAN, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return err;
+
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    const bool hit = s_scan_sha_cache.valid && strcmp(s_scan_sha_cache.path, final_path) == 0 && s_scan_sha_cache.crc32 == expected_crc32;
+    if (hit) memcpy(sha_out, s_scan_sha_cache.sha256, WEB_SCAN_SHA256_BYTES);
+    storage_manager_operation_end();
+    if (hit) return ESP_OK;
+
+    FILE *file = NULL;
+    size_t file_size = 0U;
+    err = web_scan_open_for_stream(final_path, temp_path, backup_path, &WEB_SCAN_KIND_SCAN, &file, &file_size);
+    if (err != ESP_OK) return err;
+    uint32_t crc32 = 0U;
+    err = web_scan_hash_file(file, file_size, &crc32, sha_out);
+    const esp_err_t close_err = web_scan_close_reader(&file);
+    if (err == ESP_OK) err = close_err;
+    if (err != ESP_OK) return err;
+    if (crc32 != expected_crc32) return ESP_ERR_INVALID_STATE;
+
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    /* Remember it only while the identity cache still names this very scan: a replacement in between cleared it, and then there is nothing to keep. */
+    if (s_scan_identity_cache.valid && strcmp(s_scan_identity_cache.path, final_path) == 0 && s_scan_identity_cache.crc32 == crc32) {
+        memcpy(s_scan_sha_cache.path, final_path, strlen(final_path) + 1U);
+        s_scan_sha_cache.crc32 = crc32;
+        memcpy(s_scan_sha_cache.sha256, sha_out, WEB_SCAN_SHA256_BYTES);
+        s_scan_sha_cache.valid = true;
+    }
+    storage_manager_operation_end();
     return ESP_OK;
 }
 
