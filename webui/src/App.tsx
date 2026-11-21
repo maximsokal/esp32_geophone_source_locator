@@ -869,6 +869,16 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     return true;
   }, [objectId, sessionId, scanDurability, publishRegistration, cancelContinuation, cancelScanEncode, cancelScanDecode]);
 
+  /*
+   * The launch ended and no immersive session is active. If Fresh already dropped the registration from memory but capture never began
+   * (WebXR missing, permission denied, requestSession rejected), nothing was replaced: put the saved registration back (issue #23).
+   */
+  const handleScanLaunchAborted = useCallback((): void => {
+    if (scanDurabilityRef.current.captureActive || !freshClearedRegistration.current) return;
+    freshClearedRegistration.current = false;
+    reloadSessionRegistration();
+  }, [reloadSessionRegistration]);
+
   const handleSessionActiveChange = useCallback((active: boolean): void => {
     setXrSessionActive(active);
     if (!active) {
@@ -1466,6 +1476,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         onScanIntent={handleScanIntent}
         onDeleteSavedScan={deleteSavedScan}
         onSessionActiveChange={handleSessionActiveChange}
+        onScanLaunchAborted={handleScanLaunchAborted}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
         onRegistrationChange={onRegistrationChange}

@@ -268,6 +268,31 @@ describe('App registration ownership across scans (MAX-405, MAX-416)', () => {
     }
   });
 
+  it('puts the saved registration back when a Fresh launch never reaches an immersive session (issue #23)', async () => {
+    await openSavedScanWithRegistration();
+    h.loadReg.mockClear();
+    await act(async () => { h.props.onScanIntent('fresh'); });
+    await flush();
+    expect(h.loadReg).not.toHaveBeenCalled();           /* intent alone changes nothing durable and nothing is reloaded yet */
+    await act(async () => { h.props.onScanLaunchAborted(); });
+    await flush();
+    expect(h.loadReg).toHaveBeenCalledTimes(1);          /* WebXR missing / permission denied: the registration comes back */
+    expect(h.delReg).not.toHaveBeenCalled();
+    expect(h.saveReg).not.toHaveBeenCalled();
+    await act(async () => { h.props.onScanLaunchAborted(); });
+    await flush();
+    expect(h.loadReg).toHaveBeenCalledTimes(1);          /* a second abort callback has nothing left to restore */
+  });
+
+  it('does not reload anything when the launch aborts after capture really began', async () => {
+    await openSavedScanWithRegistration();
+    await act(async () => { h.props.onScanIntent('fresh'); h.props.onPointCloudReady(null); });
+    h.loadReg.mockClear();
+    await act(async () => { h.props.onScanLaunchAborted(); });
+    await flush();
+    expect(h.loadReg).not.toHaveBeenCalled();
+  });
+
   it('changes nothing durable when a continuation is rejected', async () => {
     const { aId } = await openSavedScanWithRegistration();
     const scanBefore = device.scan!.slice();

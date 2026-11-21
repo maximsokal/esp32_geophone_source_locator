@@ -92,6 +92,8 @@ interface XrRuntimePanelProps {
   onTagRegistrationResult?: (artifact:RegistrationArtifact|null,final:boolean)=>void;
   /** Tags confirmed from several viewpoints during this scan, for the result view (memory only; not part of the registration contract). */
   onTagAnchors?: (anchors:TagSensorAnchor[])=>void;
+  /** The launch ended without an immersive session ever starting (preflight rejected, permission denied, unsupported): the intent never took effect. */
+  onScanLaunchAborted?: ()=>void;
 }
 function boundedWait(promise:Promise<unknown>,ms:number):Promise<void>{
   return new Promise<void>((resolve)=>{const timer=setTimeout(resolve,ms);promise.then(()=>{clearTimeout(timer);resolve();},()=>{clearTimeout(timer);resolve();});});
@@ -135,6 +137,7 @@ export function XrRuntimePanel({
   baseScanFrameId=null,
   onTagRegistrationResult,
   onTagAnchors,
+  onScanLaunchAborted,
 }:XrRuntimePanelProps){
   const {locale}=useLocale();const t=useT();
   const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiStagingAllowed,setAiStagingAllowed]=useState(true);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
@@ -395,7 +398,11 @@ export function XrRuntimePanel({
     setComputePreparing(true);
     try{
       await launchImmersiveArFromUserGesture({beginScan:()=>liveComputeScheduler.beginScan(),startRuntime:()=>runtime.start(),prepareCompute:()=>liveComputeScheduler.prepare(),onPrepared:(prepared)=>{clientDiagnostics.info('XR_COMPUTE_BUDGET_PREPARED',{maximumWorkers:prepared.maximumBudget,effectiveWorkers:prepared.effectiveBudget,pressure:prepared.pressure,degraded:prepared.degraded,scanIntent:intent});void clientDiagnostics.flush();}});
-    }finally{setComputePreparing(false);}
+    }finally{
+      setComputePreparing(false);
+      const phase=runtime.getState().phase;
+      if(phase!=='starting'&&phase!=='running'&&phase!=='stopping')onScanLaunchAborted?.();
+    }
   };
 
   const continuationSampleReady=runtimeState.pointCount>=120;
