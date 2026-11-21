@@ -2044,6 +2044,7 @@ export const en: Record<I18nKey, string> = {
   "xr.motion.new_view": "NEW VIEW ✓",
   "xr.motion.polishing": "POLISHING",
   "xr.motion.too_fast": "TOO FAST",
+  "xr.origin_reset": "AR tracking was reset: the scan is paused so old and new points are not mixed. Use “Finish & save scan” to keep what was scanned before, or stop and scan again.",
   "xr.overlay.continue_enough": "Enough stable points exist for a registration attempt; keep some old area in view before expanding.",
   "xr.overlay.continue_hint": "First scan a recognizable area already in the saved model from several viewpoints. {sample} Finish keeps the old SD scan if rigid registration fails.",
   "xr.overlay.continue_mode": "CONTINUE MODE",

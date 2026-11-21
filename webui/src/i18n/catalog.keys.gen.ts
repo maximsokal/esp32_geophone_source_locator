@@ -2042,6 +2042,7 @@ export const i18nKeys = [
   "xr.motion.new_view",
   "xr.motion.polishing",
   "xr.motion.too_fast",
+  "xr.origin_reset",
   "xr.overlay.continue_enough",
   "xr.overlay.continue_hint",
   "xr.overlay.continue_mode",

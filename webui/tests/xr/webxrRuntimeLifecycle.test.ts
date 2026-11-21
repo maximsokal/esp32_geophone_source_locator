@@ -383,3 +383,69 @@ describe('WebXrRuntime lifecycle ownership',()=>{
     await runtime.stop();const second=runtime.getPointCloudSnapshot();expect(second).not.toBe(first);expect(runtime.getPointCloudSnapshot()).toBe(second);
   });
 });
+
+describe('XRReferenceSpace reset inside a running session (issue #36)',()=>{
+  class FakeReferenceSpace extends EventTarget{
+    added=0;removed=0;
+    addEventListener(type:string,listener:EventListenerOrEventListenerObject|null,options?:boolean|AddEventListenerOptions):void{if(type==='reset')this.added+=1;super.addEventListener(type,listener,options);}
+    removeEventListener(type:string,listener:EventListenerOrEventListenerObject|null,options?:boolean|EventListenerOptions):void{if(type==='reset')this.removed+=1;super.removeEventListener(type,listener,options);}
+  }
+  const depthSession=(space:FakeReferenceSpace):FakeXrSession=>{
+    const session=new FakeXrSession();session.depthUsage='cpu-optimized';session.depthDataFormat='luminance-alpha';session.depthType='raw';session.depthActive=true;
+    session.referenceSpacePromises.set('local-floor',Promise.resolve(space));return session;
+  };
+
+  it('pauses evidence collection on reset, warns, and never mixes the two coordinate frames',async()=>{
+    const warn=vi.spyOn(clientDiagnostics,'warn');
+    const space=new FakeReferenceSpace();const session=depthSession(space);xr.queue(session);
+    const runtime=createRuntime();await runtime.start();await flushMicrotasks();
+    expect(space.added).toBe(1);
+    expect(runtime.getState().originReset).toBe(false);
+
+    session.driveNextFrame(16,evidenceFrame(session));
+    expect(runtime.getState().depthFrameCount).toBe(1);
+
+    const event=Object.assign(new Event('reset'),{transform:{matrix:new Float32Array(16)}});
+    space.dispatchEvent(event);
+    expect(runtime.getState().originReset).toBe(true);
+    expect(runtime.getState().scanPaused).toBe(true);
+    expect(warn).toHaveBeenCalledWith('XR_REFERENCE_SPACE_RESET',expect.objectContaining({transformAvailable:true,action:'evidence_paused'}));
+
+    for(const time of [200,400,600])session.driveNextFrame(time,evidenceFrame(session));
+    expect(runtime.getState().depthFrameCount).toBe(1);               /* no depth sample after the reset */
+    expect(runtime.getState().originReset).toBe(true);                /* the periodic state update keeps the pause visible */
+    expect(runtime.getState().scanPaused).toBe(true);
+    expect(runtime.getState().phase).toBe('running');                 /* Finish still works: what was scanned before the reset is kept */
+  });
+
+  it('reports a reset without a transform the same way and reacts only once',async()=>{
+    const warn=vi.spyOn(clientDiagnostics,'warn');
+    const space=new FakeReferenceSpace();const session=depthSession(space);xr.queue(session);
+    const runtime=createRuntime();await runtime.start();await flushMicrotasks();
+    space.dispatchEvent(new Event('reset'));space.dispatchEvent(new Event('reset'));
+    expect(runtime.getState().originReset).toBe(true);
+    expect(warn.mock.calls.filter(([event])=>event==='XR_REFERENCE_SPACE_RESET')).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith('XR_REFERENCE_SPACE_RESET',expect.objectContaining({transformAvailable:false}));
+  });
+
+  it('removes the listener on stop and ignores a reset that arrives afterwards',async()=>{
+    const space=new FakeReferenceSpace();const session=depthSession(space);xr.queue(session);
+    const runtime=createRuntime();await runtime.start();await flushMicrotasks();
+    await runtime.stop();
+    expect(space.removed).toBe(space.added);
+    space.dispatchEvent(new Event('reset'));
+    expect(runtime.getState().originReset).toBe(false);
+  });
+
+  it('starts the next scan without the pause',async()=>{
+    const space=new FakeReferenceSpace();const session=depthSession(space);xr.queue(session);
+    const runtime=createRuntime();await runtime.start();await flushMicrotasks();
+    space.dispatchEvent(new Event('reset'));expect(runtime.getState().originReset).toBe(true);
+    await runtime.stop();
+    const nextSpace=new FakeReferenceSpace();const next=depthSession(nextSpace);xr.queue(next);
+    await runtime.start();await flushMicrotasks();
+    expect(runtime.getState().originReset).toBe(false);
+    next.driveNextFrame(16,evidenceFrame(next));
+    expect(runtime.getState().depthFrameCount).toBe(1);
+  });
+});
