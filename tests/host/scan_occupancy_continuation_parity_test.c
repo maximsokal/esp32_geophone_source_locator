@@ -182,8 +182,28 @@ static void test_occupied_candidates_survive_project_frame_decode(void)
     scan_occupancy_free(&occupancy);
 }
 
+/* Issue #32: an occupancy whose voxel size slipped past the parser must not make the ray sampler spin or run unbounded. */
+static void test_absurd_voxel_size_ray_returns_without_looping(void)
+{
+    static const double sizes[] = { 5e-324, 1e-50, 1e-300, 1e-9 };
+    const localization_point3d_t sensor = { 0.0, 0.0, 0.0 };
+    const localization_point3d_t far_candidate = { 1.0, 0.0, 0.0 };
+    const localization_point3d_t same_point = { 0.0, 0.0, 0.0 };
+    for (size_t index = 0U; index < sizeof(sizes) / sizeof(sizes[0]); ++index) {
+        scan_occupancy_t occupancy;
+        memset(&occupancy, 0, sizeof(occupancy));
+        occupancy.voxel_size_m = sizes[index];
+        const localization_calculate_scan_ray_context_t ray = { .occupancy = &occupancy, .sensor_clearance_m = 0.0 };
+        assert(localization_calculate_scan_ray_clear(&sensor, &far_candidate, (void *)&ray));
+        assert(localization_calculate_scan_ray_clear(&sensor, &same_point, (void *)&ray));
+        const localization_calculate_scan_ray_context_t past_end = { .occupancy = &occupancy, .sensor_clearance_m = 5.0 };
+        assert(localization_calculate_scan_ray_clear(&sensor, &far_candidate, (void *)&past_end));
+    }
+}
+
 int main(void)
 {
+    test_absurd_voxel_size_ray_returns_without_looping();
     test_saturated_artifact_preserves_listed_evidence();
     size_t length = 0U;
     uint8_t *data = read_vector(&length);

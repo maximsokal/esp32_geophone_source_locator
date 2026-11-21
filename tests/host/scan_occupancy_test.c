@@ -263,6 +263,16 @@ static void test_duplicate_voxel_keys_and_voxel_size_fail_closed(void)
     assert_voxel_artifact_rejected("0", NULL, 0U, NULL, 0U);
     assert_voxel_artifact_rejected("-0.18", NULL, 0U, NULL, 0U);
     assert_voxel_artifact_rejected("1e308", NULL, 0U, NULL, 0U);
+
+    /* Issue #32: a positive but absurdly fine cell would make the ray sampler non-terminating. 1 mm is the finest accepted. */
+    assert_voxel_artifact_rejected("5e-324", NULL, 0U, NULL, 0U);
+    assert_voxel_artifact_rejected("1e-50", NULL, 0U, NULL, 0U);
+    assert_voxel_artifact_rejected("0.0009", NULL, 0U, NULL, 0U);
+    data = make_voxel_artifact("0.001", NULL, 0U, NULL, 0U, &length);
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    assert(occupancy.voxel_size_m == 0.001);
+    scan_occupancy_free(&occupancy);
+    free(data);
 }
 
 

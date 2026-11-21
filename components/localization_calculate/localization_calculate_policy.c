@@ -6,6 +6,8 @@
 
 
 #define LOCALIZATION_CALCULATE_SEARCH_STEP_M 0.1
+/* A ray is sampled at half a voxel; 1 mm voxels over a 100 m ray is 200000 samples, so this is generous for any real scan. */
+#define LOCALIZATION_SCAN_RAY_MAX_SAMPLES 262144.0
 #define LOCALIZATION_CALCULATE_SEARCH_MARGIN_FRACTION 0.5
 #define LOCALIZATION_CALCULATE_SEARCH_MIN_MARGIN_M 1.0
 
@@ -1205,9 +1207,19 @@ bool localization_calculate_scan_ray_clear(
     }
     const double step = 0.5 * ray->occupancy->voxel_size_m;
     const double clearance = ray->sensor_clearance_m > 0.0 ? ray->sensor_clearance_m : 0.0;
+    if (!(step > 0.0) || !isfinite(step) || !isfinite(clearance) || clearance > length) {
+        return true;
+    }
+    /* Bounded work: a ray needing more samples than the cap is not vetoed (fail open, the unconstrained estimate stands). */
+    const double samples = (length - clearance) / step;
+    if (!(samples <= (double)LOCALIZATION_SCAN_RAY_MAX_SAMPLES)) {
+        return true;
+    }
+    const unsigned sample_count = (unsigned)samples + 1U;
 
     unsigned free_run = 0U;
-    for (double t = clearance; t <= length; t += step) {
+    for (unsigned i = 0U; i < sample_count; ++i) {
+        const double t = clearance + (double)i * step;
         const double f = length > 0.0 ? t / length : 0.0;
         const double point[3] = { sensor->x_m + f * dx, sensor->y_m + f * dy, sensor->z_m + f * dz };
         double scan[3];

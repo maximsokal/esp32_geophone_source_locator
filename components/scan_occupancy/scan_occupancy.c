@@ -12,6 +12,8 @@
 #define FIXED_HEADER_BYTES 20U
 /* Sanity bound only: production clamps fine voxels to 0.08..0.50 m, fixtures may use coarser grids. */
 #define MAX_SUPPORTED_VOXEL_SIZE_M 10.0
+/* Below 1 mm a cell is not physically meaningful and the ray sampler (step = voxel / 2) would need an unbounded number of samples. */
+#define MIN_SUPPORTED_VOXEL_SIZE_M 0.001
 static const uint8_t MAGIC[8] = { 'G', 'O', 'C', 'C', 'U', 'P', 'Y', '1' };
 
 
@@ -192,7 +194,7 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         err = ESP_ERR_INVALID_VERSION;
     } else if (
         !cJSON_IsString(frame_id) || frame_id->valuestring[0] == '\0' ||
-        !read_number(root, "voxel_size_m", &voxel) || !(voxel > 0.0) ||
+        !read_number(root, "voxel_size_m", &voxel) || !(voxel >= MIN_SUPPORTED_VOXEL_SIZE_M) ||
         voxel > MAX_SUPPORTED_VOXEL_SIZE_M ||
         !read_number(root, "below_surface_m", &below) || below < 0.0 ||
         !read_number(root, "free_count", &frees) ||

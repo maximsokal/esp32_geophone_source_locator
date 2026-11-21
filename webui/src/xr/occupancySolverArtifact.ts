@@ -36,6 +36,8 @@ export const LEGACY_OCCUPANCY_ARTIFACT_SCHEMA = 1;
 export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
 /* Sanity bound only: production clamps fine voxels to 0.08..0.50 m, fixtures may use coarser grids. */
 const MAX_OCCUPANCY_VOXEL_SIZE_METERS = 10;
+/** Same lower bound as the ESP32 parser: a finer cell is not physical and would make the ray sampler unbounded. */
+const MIN_OCCUPANCY_VOXEL_SIZE_METERS = 0.001;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 /*
@@ -191,7 +193,7 @@ export function encodeOccupancySolverArtifact(
   options: OccupancyArtifactOptions,
 ): Uint8Array {
   const fineVoxelSizeMeters = snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
-  if (!(fineVoxelSizeMeters > 0)) throw new Error('Invalid occupancy voxel size.');
+  if (!(fineVoxelSizeMeters >= MIN_OCCUPANCY_VOXEL_SIZE_METERS)) throw new Error('Invalid occupancy voxel size.');
   if (options.frameId.trim().length === 0) throw new Error('Occupancy artifact needs a frame id.');
   const registration = registrationInProjectFrame(options.registration ?? null);
 
@@ -259,7 +261,7 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (header.schema !== LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) {
     throw new Error('Unsupported occupancy artifact schema.');
   }
-  if (!Number.isFinite(header.voxel_size_m) || !(header.voxel_size_m > 0) ||
+  if (!Number.isFinite(header.voxel_size_m) || !(header.voxel_size_m >= MIN_OCCUPANCY_VOXEL_SIZE_METERS) ||
       header.voxel_size_m > MAX_OCCUPANCY_VOXEL_SIZE_METERS) {
     throw new Error('Invalid occupancy voxel size.');
   }

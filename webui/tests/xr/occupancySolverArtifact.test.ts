@@ -105,6 +105,19 @@ function makeVoxelArtifact(
   return result;
 }
 
+describe('occupancy voxel size lower bound (issue #32, same policy as the ESP32 parser)', () => {
+  it.each(['5e-324', '1e-50', '0.0009'])('rejects a positive but non-physical voxel size %s', (size) => {
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact(size, [], []))).toThrow();
+  });
+
+  it('accepts exactly 1 mm and refuses to encode a finer cell', () => {
+    expect(decodeOccupancySolverArtifact(makeVoxelArtifact('0.001', [], [])).header.voxel_size_m).toBe(0.001);
+    expect(() => encodeOccupancySolverArtifact({ ...projectRegistrationSnapshot(), occupancyFineVoxelSizeMeters: 1e-50 }, {
+      frameId: 'scan-crc32:deadbeef', createdAtMs: 1, registration: createProjectFrameRegistration().occupancyRegistration,
+    })).toThrow();
+  });
+});
+
 describe('compact occupancy solver artifact (MAX-162)', () => {
   it.skipIf(process.env.WRITE_GOLDEN_VECTORS !== '1')('writes the registered v2 vector from the production encoder', () => {
     writeFileSync(VECTOR_PATH, projectGoldenBytes());
