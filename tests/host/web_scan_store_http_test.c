@@ -52,6 +52,7 @@ static const char *s_cut_after_remove_path;
 static const char *s_cut_after_rename_path;
 static bool s_replace_scan_before_derivative_commit;
 static bool s_replace_scan_before_identity_cache_store;
+static bool s_remove_scan_before_identity_cache_store;
 static bool s_storage_power_lost;
 static bool s_chunked_response_terminated;
 static seismic_recorder_snapshot_t s_recorder_snapshot;
@@ -510,6 +511,7 @@ static void reset_web_scan_test_state(void)
     s_cut_after_rename_path = NULL;
     s_replace_scan_before_derivative_commit = false;
     s_replace_scan_before_identity_cache_store = false;
+    s_remove_scan_before_identity_cache_store = false;
     s_storage_power_lost = false;
     s_scan_identity_cache.valid = false;
 }
@@ -562,6 +564,11 @@ void web_scan_store_test_before_derivative_commit(void)
 
 void web_scan_store_test_before_identity_cache_store(void)
 {
+    if (s_remove_scan_before_identity_cache_store) {
+        s_remove_scan_before_identity_cache_store = false;
+        (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin");
+        return;
+    }
     if (!s_replace_scan_before_identity_cache_store) return;
     s_replace_scan_before_identity_cache_store = false;
     static const unsigned char replacement_scan[] = {0x71U, 0x72U, 0x73U, 0x74U};
@@ -1783,6 +1790,34 @@ static void test_derivative_compare_and_commit_toctou_recheck(void)
 }
 
 
+/* Issue #30: a scan that disappears between hashing and the identity-cache store is reported as missing, never as present with a stale id. */
+static void test_identity_cache_store_reports_a_scan_that_vanished(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {2U, 4U, 6U, 8U};
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    web_scan_identity_cache_clear_locked(scan_path);
+    s_remove_scan_before_identity_cache_store = true;
+
+    char response[512] = {0};
+    httpd_req_t info;
+    request_info_kind("scan", response, sizeof(response), &info);
+    assert(strstr(response, "\"ok\":true") == NULL);
+    assert(strstr(response, scan_id) == NULL);                        /* no stale identity claim */
+    assert(!path_exists(scan_path));
+
+    /* The race did not poison the cache: asking again just says "not found". */
+    char again[512] = {0};
+    httpd_req_t second;
+    request_info_kind("scan", again, sizeof(again), &second);
+    assert(strstr(again, "\"ok\":true") == NULL && strstr(again, scan_id) == NULL);
+    remove_layout();
+}
+
+
 static void test_identity_cache_publish_preserves_replacement(void)
 {
     make_layout();
@@ -2733,6 +2768,7 @@ int main(void)
     test_derivative_compare_and_commit_rejects_stale_uploads();
     test_derivative_compare_and_commit_toctou_recheck();
     test_identity_cache_publish_preserves_replacement();
+    test_identity_cache_store_reports_a_scan_that_vanished();
     test_registration_unbound_is_rejected();
     test_registration_round_trip_bounds_and_session_validation();
     test_registration_admission_parses_the_root_object();

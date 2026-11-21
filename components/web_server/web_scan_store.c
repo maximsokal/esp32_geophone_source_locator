@@ -1496,7 +1496,7 @@ static esp_err_t web_scan_identity_cache_store(
         *crc32_out = crc32;
     }
     storage_manager_operation_end();
-    return ESP_OK;
+    return err; /* a scan that vanished after hashing must not be reported present (issue #30) */
 }
 
 
