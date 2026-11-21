@@ -1496,6 +1496,42 @@ static void test_scan_replacement_invalidates_derivatives_and_returns_crc(void)
 }
 
 
+/* Issue #24: deleting the scan of ONE recording unlinks that session's scan-ref; the shared scan and the other sessions stay intact. */
+static void test_deleting_a_shared_scan_unlinks_only_this_sessions_reference(void)
+{
+    make_layout();
+    const char *scans = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans";
+    const char *shared = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001";
+    const char *shared_scan = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/scan-v1.bin";
+    const char *ref_one = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref";
+    const char *ref_two = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-ref";
+    make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002");
+    make_directory(scans);
+    make_directory(shared);
+    static const unsigned char scan[] = {7U, 14U, 21U};
+    static const unsigned char reference[] = "SC000001";
+    write_bytes(shared_scan, scan, sizeof(scan));
+    write_bytes(ref_one, reference, sizeof(reference) - 1U);
+    write_bytes(ref_two, reference, sizeof(reference) - 1U);
+
+    assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
+    assert(!path_exists(ref_one));                                   /* this recording no longer resolves the shared scan */
+    assert(path_exists(ref_two));                                    /* the other recording keeps its reference... */
+    assert(file_matches_bytes(shared_scan, scan, sizeof(scan)));     /* ...and the shared scan itself is untouched */
+
+    /* Deleting again is still a success (nothing left to unlink) and changes nothing else. */
+    assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
+    assert(path_exists(ref_two) && file_matches_bytes(shared_scan, scan, sizeof(scan)));
+
+    (void)remove(ref_two);
+    (void)remove(shared_scan);
+    (void)_rmdir(shared);
+    (void)_rmdir(scans);
+    (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002");
+    remove_layout();
+}
+
+
 static void test_scan_replacement_delete_failure_keeps_old_scan(void)
 {
     make_layout();
@@ -2692,6 +2728,7 @@ int main(void)
     test_occupancy_kind_is_stored_beside_the_scan();
     test_scan_replacement_invalidates_derivatives_and_returns_crc();
     test_scan_replacement_delete_failure_keeps_old_scan();
+    test_deleting_a_shared_scan_unlinks_only_this_sessions_reference();
     test_scan_replacement_power_loss_ordering();
     test_derivative_compare_and_commit_rejects_stale_uploads();
     test_derivative_compare_and_commit_toctou_recheck();

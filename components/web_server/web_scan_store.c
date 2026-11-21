@@ -2312,6 +2312,19 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
             err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_PREVIEW);
         }
         if (err == ESP_OK) err = web_scan_remove_paths_locked(final_path, temp_path, backup_path);
+        /*
+         * A recorded session usually holds no scan bytes of its own, only a scan-ref to the shared scans/SCnnnnnn. "Delete the scan of this
+         * recording" means: unlink THIS session's reference (issue #24). The shared scan stays for the other sessions that use it; without
+         * this the delete answered ok and the shared scan resolved again on the next read.
+         */
+        if (err == ESP_OK && !web_scan_session_is_staging(session_id)) {
+            char ref_path[WEB_SCAN_PATH_SIZE];
+            if (scan_artifact_session_path(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, SCAN_ARTIFACT_REF_FILE, ref_path, sizeof(ref_path)) != 0) {
+                err = ESP_ERR_INVALID_SIZE;
+            } else if (remove(ref_path) != 0 && errno != ENOENT) {
+                err = ESP_FAIL;
+            }
+        }
     }
     else err = web_scan_remove_paths_locked(final_path, temp_path, backup_path);
     storage_manager_operation_end();
