@@ -108,9 +108,13 @@ export function fuseTagObservations(
     const distances = group.map((item) => Math.hypot(
       item.positionScan[0] - medianPosition[0], item.positionScan[1] - medianPosition[1], item.positionScan[2] - medianPosition[2],
     ));
-    const distanceMedian = median(distances);
-    const mad = median(distances.map((distance) => Math.abs(distance - distanceMedian)));
-    const gateM = Math.max(3 * 1.4826 * mad, 0.005);
+    /*
+     * `distances` are already residuals about the coordinate median, so their robust scale is the median residual itself (a MAD about
+     * ZERO). Taking the MAD around the median RADIUS instead gave 0 for any evenly scattered group and the 5 mm floor then dropped
+     * every sample but one (issue #19). At least half of the samples are within the median residual, so the gate is never empty and
+     * the estimate does not depend on observation order.
+     */
+    const gateM = Math.max(3 * 1.4826 * median(distances), 0.005);
     let inliers = group.filter((_, index) => distances[index] <= gateM);
     if (inliers.length === 0) inliers = [group[distances.indexOf(Math.min(...distances))]];
     rejectedCount += group.length - inliers.length;

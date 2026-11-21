@@ -57,14 +57,14 @@ describe('fiducial observation fusion', () => {
     expect(result.byTagId[3]).toBeUndefined();
   });
 
-  it('keeps a finite deterministic center when a symmetric set leaves the MAD gate empty', () => {
+  it('keeps every sample of a symmetric set and reports its real spread (issue #19: no arbitrary single point with zero spread)', () => {
     const ring: TagObservation[] = [[0.02, 0, 0], [-0.02, 0, 0], [0, 0.02, 0], [0, -0.02, 0], [0, 0, 0.02], [0, 0, -0.02]]
       .map((positionScan) => ({ tagId: 2, positionScan }));
     const result = fuseTagObservations(ring);
-    expect(result.byTagId[2]?.positionScan).toEqual([0.02, 0, 0]);
-    expect(result.byTagId[2]?.inlierCount).toBe(1);
-    expect(result.byTagId[2]?.spreadM).toBe(0);
-    expect(result.rejectedCount).toBe(5);
+    expect(result.byTagId[2]?.positionScan).toEqual([0, 0, 0]);
+    expect(result.byTagId[2]?.inlierCount).toBe(6);
+    expect(result.byTagId[2]?.spreadM).toBeCloseTo(0.02, 12);
+    expect(result.rejectedCount).toBe(0);
     expect(result.byTagId[2]?.independentViewCount).toBe(1);
     expect(result.byTagId[2]?.confirmed).toBe(false);
   });
@@ -101,5 +101,46 @@ describe('fiducial observation fusion', () => {
     expect(fused.inlierCount).toBe(5);
     expect(fused.independentViewCount).toBe(1);
     expect(fused.confirmed).toBe(false);
+  });
+});
+
+describe('fusion of evenly scattered observations (issue #19)', () => {
+  const ring: [number, number, number][] = [[0.02, 0, 0], [-0.02, 0, 0], [0, 0.02, 0], [0, -0.02, 0], [0, 0, 0.02]];
+  const fuse = (points: [number, number, number][]) =>
+    fuseTagObservations(points.map((point, index) => observedFromView(1, point, index))).byTagId[1]!;
+
+  it('keeps all five plausible 20 mm scattered measurements and reports their real spread, not one point with zero spread', () => {
+    const result = fuseTagObservations(ring.map((point, index) => observedFromView(1, point, index)));
+    const tag = result.byTagId[1]!;
+    expect(result.rejectedCount).toBe(0);
+    expect(tag.inlierCount).toBe(5);
+    expect(tag.spreadM).toBeGreaterThan(0.01);
+    expect(tag.spreadM).toBeLessThan(0.03);
+  });
+
+  it('gives the same position and spread for every observation order', () => {
+    const reference = fuse(ring);
+    const orders: [number, number, number][][] = [
+      [...ring].reverse(), [ring[2], ring[4], ring[0], ring[3], ring[1]], [ring[4], ring[3], ring[2], ring[1], ring[0]],
+    ];
+    for (const order of orders) {
+      const other = fuse(order);
+      expect(other.spreadM).toBeCloseTo(reference.spreadM, 12);
+      other.positionScan.forEach((value, axis) => expect(value).toBeCloseTo(reference.positionScan[axis], 12));
+      expect(other.inlierCount).toBe(reference.inlierCount);
+    }
+  });
+
+  it('still rejects a gross 0.5 m outlier among scattered samples', () => {
+    const tag = fuse([...ring, [0.5, 0.5, 0.5]]);
+    expect(tag.inlierCount).toBe(5);
+    expect(tag.observationCount).toBe(6);
+    expect(Math.hypot(...tag.positionScan)).toBeLessThan(0.01);
+  });
+
+  it('keeps two identical observations as one tight cluster (median radius 0 falls back to the 5 mm floor)', () => {
+    const tag = fuse([[1, 1, 1], [1, 1, 1], [1, 1, 1], [1.002, 1, 1], [2, 2, 2]]);
+    expect(tag.inlierCount).toBe(4);
+    expect(tag.spreadM).toBeLessThan(0.005);
   });
 });
