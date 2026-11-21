@@ -424,6 +424,60 @@ describe('App scan information: distances recalculated from the scan', () => {
       }
     });
 
+    it('retries a failed save of the layout after a delay instead of treating the layout as handled (issue #20)', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        h.saveTags.mockReset().mockResolvedValueOnce({ ok: false, error: 'sd_busy' }).mockResolvedValue({ ok: true });
+        await mountApp();
+        await finishScan('fresh', null);
+        await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+        await flush();
+        expect(h.saveTags).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+        await flush();
+        expect(h.saveTags).toHaveBeenCalledTimes(1);          /* not before the first delay */
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+        await flush();
+        expect(h.saveTags).toHaveBeenCalledTimes(2);          /* the same layout, uploaded again */
+        const [, , first] = h.saveTags.mock.calls[0] as [string, string, string];
+        const [, , second] = h.saveTags.mock.calls[1] as [string, string, string];
+        expect(decodeTagPositions(second).nodes).toEqual(decodeTagPositions(first).nodes);
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        await flush();
+        expect(h.saveTags).toHaveBeenCalledTimes(2);          /* a success stops the retries */
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('gives up after a bounded number of retries and keeps retrying only through a changed layout', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        h.saveTags.mockReset().mockResolvedValue({ ok: false, error: 'sd_busy' });
+        await mountApp();
+        await finishScan('fresh', null);
+        await act(async () => { h.props.onTagAnchors([MAIN, G1, G2]); });
+        await flush();
+        for (let step = 0; step < 6; step += 1) { await act(async () => { await vi.advanceTimersByTimeAsync(60_000); }); await flush(); }
+        expect(h.saveTags).toHaveBeenCalledTimes(4);          /* first try + 3 retries */
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('does not report "no tags" when deleting the old layout failed, and retries the delete', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const info = vi.spyOn(clientDiagnostics, 'info');
+        h.delTags.mockReset().mockRejectedValueOnce(new Error('sd_busy')).mockResolvedValue({ ok: true });
+        await mountApp();
+        await finishScan('fresh', null);
+        await act(async () => { h.props.onTagAnchors([G1, G2]); });   /* no MAIN: no layout */
+        await flush();
+        expect(h.delTags).toHaveBeenCalledTimes(1);
+        expect(info).not.toHaveBeenCalledWith('TAG_POSITIONS_NONE', expect.anything());
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_500); });
+        await flush();
+        expect(h.delTags).toHaveBeenCalledTimes(2);
+      } finally { vi.useRealTimers(); }
+    });
+
     it('does not upload the same layout twice, but uploads again when it changes', async () => {
       await mountApp();
       await finishScan('fresh', null);

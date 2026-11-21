@@ -260,6 +260,9 @@ function persistedScanStorageLabel(
   return `${scanLabel} | ${occupancyStatusLabel(persistence, locale)}`;
 }
 
+const TAG_UPLOAD_MAX_RETRIES = 3;
+const TAG_UPLOAD_RETRY_BASE_MS = 5000;
+
 export default function App({ objectId, sessionId, status, onScanSaved }: AppProps) {
   const { locale } = useLocale();
   const t = useT();
@@ -287,6 +290,10 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* True once the scanner has handed over its tags for this scan (an empty list counts: it means none were seen). */
   const [tagAnchorsDelivered, setTagAnchorsDelivered] = useState(false);
   const tagUploadKeyRef = useRef<string | null>(null);
+  /* A failed save/delete of the tag sidecar is retried a few times with growing delays (issue #20); the tick re-runs the upload effect. */
+  const [tagRetryTick, setTagRetryTick] = useState(0);
+  const tagRetryAttempts = useRef(0);
+  const tagRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /*
    * Who owns the delivered anchors. `baseId` is the durable scan that was on screen when the scanner started: anchors may only be saved once a
    * DIFFERENT durable scan exists (a rejected continuation leaves the base durable, so nothing is written against it). `frame` is 'pending'
@@ -1337,7 +1344,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     void (async () => {
       try {
         if (built.layout === null) {
-          await deleteSessionTagPositions(objectId, scanSessionId).catch(() => undefined);
+          /* A failed delete leaves the previous sidecar behind: that is a failure to retry, never a quiet "no tags". */
+          await deleteSessionTagPositions(objectId, scanSessionId);
           clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: scanFrameAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
         } else {
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(tagPositionsFromLayout(built.layout, scanId, Date.now())));
@@ -1348,12 +1356,24 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             triangles: built.layout.triangles.length, weakestMm: built.layout.weakestMainTriangleHeightMm, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(','),
           });
         }
+        tagRetryAttempts.current = 0;
       } catch (reason) {
-        clientDiagnostics.warn('TAG_POSITIONS_SAVE_FAILED', { objectId, sessionId: scanSessionId, error: reason instanceof Error ? reason.message : String(reason) });
+        clientDiagnostics.warn('TAG_POSITIONS_SAVE_FAILED', { objectId, sessionId: scanSessionId, error: reason instanceof Error ? reason.message : String(reason), attempt: tagRetryAttempts.current + 1 });
+        /* Only the owner of the latest attempt may reopen it: a newer key (other scan, anchors or object) keeps its own state. */
+        if (tagUploadKeyRef.current === key) {
+          tagUploadKeyRef.current = null;
+          if (tagRetryAttempts.current < TAG_UPLOAD_MAX_RETRIES) {
+            const delayMs = TAG_UPLOAD_RETRY_BASE_MS * 3 ** tagRetryAttempts.current;
+            tagRetryAttempts.current += 1;
+            if (tagRetryTimer.current !== null) clearTimeout(tagRetryTimer.current);
+            tagRetryTimer.current = setTimeout(() => { tagRetryTimer.current = null; setTagRetryTick((tick) => tick + 1); }, delayMs);
+          }
+        }
       }
       void clientDiagnostics.flush();
     })();
-  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors]);
+  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors, tagRetryTick]);
+  useEffect(() => () => { if (tagRetryTimer.current !== null) clearTimeout(tagRetryTimer.current); }, []);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(
     () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, scanFrameAnchors) : [],
