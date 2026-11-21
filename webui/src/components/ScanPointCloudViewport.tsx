@@ -29,6 +29,7 @@ import {
 } from '../xr/scanDisplayModes';
 import {
   cameraPoseForPreset,
+  shouldRefitCamera,
   clamp,
   orbitDistanceLimits,
   scanViewFitExtent,
@@ -252,15 +253,22 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
 function CameraController({ command, extent, onInteractionEnd, controlsRef }: { command: ViewCommand; extent: number; onInteractionEnd: (distance: number) => void; controlsRef: OrbitControlsRef }) {
   const { camera } = useThree();
   const controls = useOwnedOrbitControls(controlsRef);
+  const operatorMoved = useRef(false);
+  const lastCommandKey = useRef<string | null>(null);
   useEffect(() => {
     const limits = orbitDistanceLimits(extent);
-    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.target.set(0,0,0); controls.update();
-    const handleStart = (): void => clientDiagnostics.info('SCAN_VIEW_GESTURE_START');
+    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.update();
+    const handleStart = (): void => { operatorMoved.current = true; clientDiagnostics.info('SCAN_VIEW_GESTURE_START'); };
     const handleEnd = (): void => { const distance = controls.getDistance(); onInteractionEnd(distance); clientDiagnostics.info('SCAN_VIEW_GESTURE_END', { distance: Number(distance.toFixed(3)), x: Number(camera.position.x.toFixed(3)), y: Number(camera.position.y.toFixed(3)), z: Number(camera.position.z.toFixed(3)) }); };
     controls.addEventListener('start', handleStart); controls.addEventListener('end', handleEnd);
     return () => { controls.removeEventListener('start', handleStart); controls.removeEventListener('end', handleEnd); };
   }, [camera, controls, extent, onInteractionEnd]);
   useEffect(() => {
+    const commandKey = `${command.preset}:${command.sequence}`;
+    const commandChanged = lastCommandKey.current !== commandKey;
+    lastCommandKey.current = commandKey;
+    if (!shouldRefitCamera({ commandChanged, operatorMovedCamera: operatorMoved.current })) return;
+    operatorMoved.current = false;
     const pose = cameraPoseForPreset(command.preset, extent);
     controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
     camera.up.set(pose.up[0], pose.up[1], pose.up[2]);

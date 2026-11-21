@@ -455,6 +455,15 @@ export function cameraPoseForPreset(preset: ViewportPreset, extent: number): Cam
   return { position: [distance * 0.66, distance * 0.52, distance * 0.72], up: [0, 1, 0], target };
 }
 
+/**
+ * Whether the camera is put back to a preset pose. An explicit view command (3D / Top / Front / Reset) always does. A change of the fitted
+ * extent alone (a layer toggled, candidate depth or source overlay changed the bounds) re-fits only while the operator has not moved the
+ * camera; afterwards it only updates the zoom limits, so a pan or rotation is never undone behind their back (issue #41).
+ */
+export function shouldRefitCamera(input: { commandChanged: boolean; operatorMovedCamera: boolean }): boolean {
+  return input.commandChanged || !input.operatorMovedCamera;
+}
+
 export function orbitDistanceLimits(extent: number): { minDistance: number; maxDistance: number } {
   return { minDistance: Math.max(0.18, extent * 0.10), maxDistance: Math.max(18, extent * 10) };
 }

@@ -9,6 +9,7 @@ import {
 } from '../../src/xr/scanDisplayModes';
 import {
   cameraPoseForPreset,
+  shouldRefitCamera,
   orbitDistanceLimits,
   prepareScanScene,
   scanViewFitExtent,
@@ -347,5 +348,17 @@ describe('scan viewport overlay text', () => {
     expect(scanSourceBadgeText(snapshot, locale)).toBe(`${translate(locale, 'scan.badge.surface')} ${formatNumber(locale, 1234)} · ${translate(locale, 'scan.badge.free')} ${formatNumber(locale, 56)} · ${translate(locale, 'scan.badge.unknown')} ${formatNumber(locale, 7)} · ${translate(locale, 'scan.badge.pins')} ${formatNumber(locale, 2)} · ${translate(locale, 'scan.badge.edges')} ${formatNumber(locale, 1)}`);
     const dimensions = prepareScanScene(source());
     expect(scanDimensionsText(dimensions, locale)).toBe(`X ${formatDistance(locale, dimensions.extentX)} · Y ${formatDistance(locale, dimensions.extentY)} · Z ${formatDistance(locale, dimensions.extentZ)}`);
+  });
+});
+
+describe('camera re-fit policy (issue #41)', () => {
+  it('re-fits on an explicit view command whether or not the operator moved the camera', () => {
+    expect(shouldRefitCamera({ commandChanged: true, operatorMovedCamera: false })).toBe(true);
+    expect(shouldRefitCamera({ commandChanged: true, operatorMovedCamera: true })).toBe(true);
+  });
+
+  it('re-fits on an extent change only while the operator has not moved the camera', () => {
+    expect(shouldRefitCamera({ commandChanged: false, operatorMovedCamera: false })).toBe(true);
+    expect(shouldRefitCamera({ commandChanged: false, operatorMovedCamera: true })).toBe(false);
   });
 });
