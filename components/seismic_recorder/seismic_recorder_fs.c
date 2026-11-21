@@ -415,11 +415,40 @@ static bool seismic_recorder_fs_write_scan_ref(const char *session_dir, const ch
     return fclose(file) == 0 && ok;
 }
 
-/* Moves every artifact in `from_dir` into a new shared scan; returns the artifacts moved (0 and nothing created if none). */
+#define SEISMIC_RECORDER_FS_PRIMARY_SCAN_MASK (1U << 0U)
+
+/* Moves the artifacts named by `moved_mask` from `shared_dir` back into `from_dir`; true when every one went back. */
+static bool seismic_recorder_fs_move_back(const char *shared_dir, const char *from_dir, unsigned moved_mask)
+{
+    bool all_back = true;
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
+        if ((moved_mask & artifact->mask) == 0U) continue;
+        char from[SEISMIC_RECORDER_PATH_SIZE], to[SEISMIC_RECORDER_PATH_SIZE];
+        if (snprintf(from, sizeof(from), "%s/%s", shared_dir, artifact->file_name) >= (int)sizeof(from) ||
+            snprintf(to, sizeof(to), "%s/%s", from_dir, artifact->file_name) >= (int)sizeof(to) ||
+            rename(from, to) != 0) {
+            all_back = false;
+            ESP_LOGW(TAG, "Could not put %s back into %s: errno=%d", artifact->file_name, from_dir, errno);
+        }
+    }
+    return all_back;
+}
+
+/*
+ * Moves every artifact in `from_dir` into a new shared scan; returns the artifacts moved (0 and nothing created if none).
+ * The primary scan-v1.bin is the authority: a set without it, or one whose primary move failed, is never published (a derivative
+ * alone would give the session a scan-ref to a scan that does not exist). A failed primary move puts the derivatives back.
+ */
 static unsigned seismic_recorder_fs_promote_scan(
     const char *object_id, const char *from_dir, char scan_id[SCAN_ARTIFACT_ID_SIZE])
 {
-    if (seismic_recorder_fs_artifacts_present_mask(from_dir) == 0U) return 0U;
+    const unsigned present = seismic_recorder_fs_artifacts_present_mask(from_dir);
+    if (present == 0U) return 0U;
+    if ((present & SEISMIC_RECORDER_FS_PRIMARY_SCAN_MASK) == 0U) {
+        ESP_LOGW(TAG, "%s holds scan derivatives without scan-v1.bin; not promoting them", from_dir);
+        return 0U;
+    }
     char scans_dir[SEISMIC_RECORDER_PATH_SIZE], target[SEISMIC_RECORDER_PATH_SIZE];
     if (!seismic_recorder_fs_next_scan_id(object_id, scan_id) ||
         snprintf(scans_dir, sizeof(scans_dir), "%s/%s/scans", STORAGE_MANAGER_OBJECTS_PATH, object_id) >= (int)sizeof(scans_dir) ||
@@ -442,6 +471,12 @@ static unsigned seismic_recorder_fs_promote_scan(
         } else {
             ESP_LOGW(TAG, "Could not move %s into the shared scan %s: errno=%d", artifact->file_name, scan_id, errno);
         }
+    }
+    if ((moved & SEISMIC_RECORDER_FS_PRIMARY_SCAN_MASK) == 0U) {
+        ESP_LOGW(TAG, "scan-v1.bin did not move; leaving the whole scan in %s", from_dir);
+        (void)seismic_recorder_fs_move_back(target, from_dir, moved);
+        (void)storage_manager_remove_tree(target);
+        return 0U;
     }
     return moved;
 }
@@ -467,7 +502,14 @@ static unsigned seismic_recorder_fs_attach_staged_artifacts(
     const unsigned staged = seismic_recorder_fs_promote_scan(object_id, staging_dir, scan_id);
     if (staged != 0U) {
         if (!seismic_recorder_fs_write_scan_ref(session_path, scan_id)) {
-            ESP_LOGW(TAG, "Could not record which scan %s uses; recording continues", session_id);
+            /* A shared scan nobody refers to would be orphaned: put it back in staging so the next START can use it. */
+            ESP_LOGW(TAG, "Could not record which scan %s uses; returning the scan to staging, recording continues", session_id);
+            char shared_dir[SEISMIC_RECORDER_PATH_SIZE];
+            if (scan_artifact_shared_path(STORAGE_MANAGER_OBJECTS_PATH, object_id, scan_id, NULL, shared_dir, sizeof(shared_dir)) == 0 &&
+                seismic_recorder_fs_move_back(shared_dir, staging_dir, staged)) {
+                (void)storage_manager_remove_tree(shared_dir);
+                return 0U;
+            }
         }
         return staged;
     }

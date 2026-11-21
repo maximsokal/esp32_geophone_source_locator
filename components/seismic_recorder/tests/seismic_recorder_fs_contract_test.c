@@ -3370,6 +3370,56 @@ static void test_missing_staging_is_a_noop(void)
 }
 
 
+/* Issue #25: the primary scan is the authority. A failed scan-v1.bin move leaves the WHOLE scan in staging (derivatives that
+ * already moved go back) and the session gets no scan-ref; recording still starts. */
+static void test_failed_primary_scan_move_publishes_nothing(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+    (void)snprintf(injected_rename_source, sizeof(injected_rename_source),
+                   STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin");
+    removed_tree_path[0] = '\0';
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(file != NULL);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char staged_path[256], session_path[256], shared_path[256];
+        (void)snprintf(staged_path, sizeof(staged_path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s", staged_artifact_names[i]);
+        (void)snprintf(session_path, sizeof(session_path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
+        (void)snprintf(shared_path, sizeof(shared_path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/%s", staged_artifact_names[i]);
+        assert_file_contents(staged_path, staged_artifact_contents[i]);
+        assert(!path_exists(session_path));
+        assert(!path_exists(shared_path));
+    }
+    /* The fake remove_tree does not delete; the rollback must still have asked for the empty shared folder to go. */
+    assert(strstr(removed_tree_path, "/OBJ_0001/scans/SC000001") != NULL);
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref"));
+    assert(injected_rename_source[0] == '\0');
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    remove_layout();
+}
+
+/* Issue #25: staged derivatives without the primary scan are never promoted into a shared scan. */
+static void test_derivative_only_staging_is_not_promoted(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+    assert(remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin") == 0);
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/occupancy-v1.bin"));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001"));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref"));
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    remove_layout();
+}
+
 static void test_one_staged_move_failure_does_not_fail_recording(void)
 {
     remove_layout();
@@ -3726,6 +3776,8 @@ int main(void)
     test_a_session_without_any_earlier_scan_stays_without_one();
     test_missing_staging_is_a_noop();
     test_one_staged_move_failure_does_not_fail_recording();
+    test_failed_primary_scan_move_publishes_nothing();
+    test_derivative_only_staging_is_not_promoted();
     test_failed_start_restores_staged_artifacts();
     test_create_session_aborts_on_session_scan_error();
     test_listing_missing_and_malformed_metadata_is_safe();
