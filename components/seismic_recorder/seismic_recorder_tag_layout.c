@@ -48,7 +48,7 @@ esp_err_t seismic_recorder_tag_layout_parse(const char *json, seismic_recorder_t
     if (json == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
 
-    static const char *const root_keys[] = {"schema", "kind", "frame", "scan_frame_id", "created_at_ms", "main_scan_position_mm",
+    static const char *const root_keys[] = {"schema", "kind", "frame", "scan_frame_id", "created_at_ms", "geometry_computed_at_ms", "main_scan_position_mm",
         "weakest_main_triangle_height_mm", "nodes"};
     static const char *const node_keys[] = {"node_id", "tag_id", "x_mm", "y_mm", "z_mm", "uncertainty_mm", "confirmed", "observations", "views"};
 
@@ -80,6 +80,12 @@ esp_err_t seismic_recorder_tag_layout_parse(const char *json, seismic_recorder_t
         parsed.created_at_ms = (uint64_t)number;
     } else {
         ok = false;
+    }
+    /* Optional: absent or null means the placement epoch was not recorded; such a layout is never used for localization (issue #26). */
+    const cJSON *epoch = ok ? cJSON_GetObjectItemCaseSensitive(root, "geometry_computed_at_ms") : NULL;
+    if (ok && epoch != NULL && !cJSON_IsNull(epoch)) {
+        if (whole_in_range(epoch, 1.0, 9007199254740991.0, &number)) parsed.geometry_computed_at_ms = (uint64_t)number;
+        else ok = false;
     }
     const cJSON *main_position = ok ? cJSON_GetObjectItemCaseSensitive(root, "main_scan_position_mm") : NULL;
     ok = ok && cJSON_IsArray(main_position) && cJSON_GetArraySize(main_position) == 3;

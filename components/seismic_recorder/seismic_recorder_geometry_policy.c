@@ -495,6 +495,13 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
         if (cs_geometry->pods[i].computed_at_ms > identity_ms) identity_ms = cs_geometry->pods[i].computed_at_ms;
     }
 
+    /*
+     * Issue #26: the layout is only valid for the frozen geometry it was built against. A layout without that epoch (older file), or one built
+     * for another geometry generation (sensors moved or re-measured), is not placement evidence: Channel Sounding stays the answer. A shared
+     * scan-ref or a matching node count proves nothing about where the sensors stand now.
+     */
+    if (layout->geometry_computed_at_ms == 0U || layout->geometry_computed_at_ms != identity_ms) return ESP_ERR_INVALID_STATE;
+
     object_store_geometry_t candidate = *cs_geometry;
     size_t tagged = 0U;
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {

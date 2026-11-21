@@ -1347,7 +1347,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     if (!tagAnchorsOwned || objectId === null || scanDurability.durableId === null) return;
     const scanId = scanDurability.durableId;
     const built = buildTagLayout(scanFrameAnchors);
-    const artifact = built.layout === null ? null : tagPositionsFromLayout(built.layout, scanId, 0);
+    const artifact = built.layout === null ? null : tagPositionsFromLayout(built.layout, scanId, 0, geometryGenerationRef.current);
     /*
      * An accepted continuation is a new scan id with A's tags still true in frame A: when the extension found nothing better, A's saved layout
      * is carried over (re-stamped with the merged id) instead of being dropped or replaced by a weaker one (issues #37, #38).
@@ -1358,7 +1358,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       ? stored.artifact : null;
     const baselineQuality = baseline === null ? null : { nodes: baseline.nodes.length, confirmed: baseline.nodes.filter((node) => node.confirmed).length };
     const keepBaseline = baseline !== null && !tagLayoutReplaces(built.layout, baselineQuality);
-    const key = `${objectId}/${scanSessionId}/${scanId}/${keepBaseline ? 'inherit' : ''}${artifact === null ? `none:${built.reason}` : JSON.stringify(artifact.nodes)}`;
+    const key = `${objectId}/${scanSessionId}/${scanId}/${keepBaseline ? 'inherit' : ''}${artifact === null ? `none:${built.reason}` : `${JSON.stringify(artifact.nodes)}@${artifact.geometry_computed_at_ms ?? 'no-epoch'}`}`;
     if (tagUploadKeyRef.current === key) return;
     tagUploadKeyRef.current = key;
     const savedForScan = savedTagLayoutRef.current?.scanId === scanId ? savedTagLayoutRef.current : null;
@@ -1384,7 +1384,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           await deleteSessionTagPositions(objectId, scanSessionId);
           clientDiagnostics.info('TAG_POSITIONS_NONE', { objectId, sessionId: scanSessionId, reason: built.reason, anchors: scanFrameAnchors.length, excluded: built.excluded.map((item) => `${item.node}:${item.reason}`).join(',') });
         } else {
-          const toSave = tagPositionsFromLayout(built.layout, scanId, Date.now());
+          const toSave = tagPositionsFromLayout(built.layout, scanId, Date.now(), geometryGenerationRef.current);
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(toSave));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
           savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: toSave };
@@ -1410,7 +1410,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       }
       void clientDiagnostics.flush();
     })();
-  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors, tagRetryTick, tagOwner]);
+  }, [tagAnchorsOwned, objectId, scanSessionId, scanDurability.durableId, scanFrameAnchors, tagRetryTick, tagOwner, localizationGeometry]);
   useEffect(() => () => { if (tagRetryTimer.current !== null) clearTimeout(tagRetryTimer.current); }, []);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(

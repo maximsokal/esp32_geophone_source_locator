@@ -20,6 +20,8 @@ export interface TagPositionsArtifact {
   /** The scan these tags were seen in (scan-crc32:...), or null when the scan identity is not known yet. */
   scan_frame_id: string | null;
   created_at_ms: number;
+  /** The frozen Channel Sounding geometry generation (newest pod computed_at_ms) this layout was built against; null/absent = unknown (the ESP32 then does not use it). */
+  geometry_computed_at_ms?: number | null;
   /** MAIN in the scan's project frame (mm): layout + this = position in the 3D scan. */
   main_scan_position_mm: [number, number, number];
   weakest_main_triangle_height_mm: number;
@@ -29,12 +31,12 @@ export interface TagPositionsArtifact {
   }[];
 }
 
-const ROOT_KEYS = ['schema', 'kind', 'frame', 'scan_frame_id', 'created_at_ms', 'main_scan_position_mm', 'weakest_main_triangle_height_mm', 'nodes'];
+const ROOT_KEYS = ['schema', 'kind', 'frame', 'scan_frame_id', 'created_at_ms', 'geometry_computed_at_ms', 'main_scan_position_mm', 'weakest_main_triangle_height_mm', 'nodes'];
 const NODE_KEYS = ['node_id', 'tag_id', 'x_mm', 'y_mm', 'z_mm', 'uncertainty_mm', 'confirmed', 'observations', 'views'];
 
-export function tagPositionsFromLayout(layout: TagLayout, scanFrameId: string | null, createdAtMs: number): TagPositionsArtifact {
+export function tagPositionsFromLayout(layout: TagLayout, scanFrameId: string | null, createdAtMs: number, geometryComputedAtMs: number | null = null): TagPositionsArtifact {
   return {
-    schema: TAG_POSITIONS_SCHEMA, kind: TAG_POSITIONS_KIND, frame: TAG_LAYOUT_FRAME, scan_frame_id: scanFrameId, created_at_ms: Math.round(createdAtMs),
+    schema: TAG_POSITIONS_SCHEMA, kind: TAG_POSITIONS_KIND, frame: TAG_LAYOUT_FRAME, scan_frame_id: scanFrameId, created_at_ms: Math.round(createdAtMs), geometry_computed_at_ms: geometryComputedAtMs,
     main_scan_position_mm: [...layout.mainScanPositionMm],
     weakest_main_triangle_height_mm: layout.weakestMainTriangleHeightMm,
     nodes: layout.nodes.map((node: TagLayoutNode) => ({
@@ -58,6 +60,7 @@ export function validateTagPositions(value: unknown): TagPositionsArtifact {
   if (root.frame !== TAG_LAYOUT_FRAME) throw new Error('unsupported tag positions frame.');
   if (root.scan_frame_id !== null && (typeof root.scan_frame_id !== 'string' || !/^[A-Za-z0-9:_-]{1,80}$/.test(root.scan_frame_id))) throw new Error('invalid scan_frame_id.');
   if (!isInt(root.created_at_ms, 0, Number.MAX_SAFE_INTEGER)) throw new Error('invalid created_at_ms.');
+  if (root.geometry_computed_at_ms !== undefined && root.geometry_computed_at_ms !== null && !isInt(root.geometry_computed_at_ms, 1, Number.MAX_SAFE_INTEGER)) throw new Error('invalid geometry_computed_at_ms.');
   const main = root.main_scan_position_mm;
   if (!Array.isArray(main) || main.length !== 3 || !main.every((v) => isInt(v, -MAX_COORDINATE_MM, MAX_COORDINATE_MM))) throw new Error('invalid main_scan_position_mm.');
   if (!isInt(root.weakest_main_triangle_height_mm, 0, MAX_COORDINATE_MM * 2)) throw new Error('invalid weakest_main_triangle_height_mm.');

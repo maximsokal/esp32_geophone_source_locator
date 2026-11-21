@@ -34,7 +34,7 @@ static object_store_geometry_t cs_geometry(unsigned pods)
     for (unsigned i = 0U; i < pods; ++i) {
         geometry.pods[i] = (object_store_pod_geometry_t){
             .computed = true, .leveled = (i % 2U) == 0U, .x_mm = (int32_t)(7 * (i + 1U)), .y_mm = (int32_t)(9 * (i + 1U)), .z_mm = 300,
-            .residual_mm = 40, .uncertainty_mm = 150, .computed_at_ms = GEOMETRY_AT_MS + i,
+            .residual_mm = 40, .uncertainty_mm = 150, .computed_at_ms = GEOMETRY_AT_MS + (i + 1U == pods ? 3U : i),
         };
     }
     return geometry;
@@ -48,6 +48,7 @@ static seismic_recorder_tag_layout_t layout_of(const unsigned *nodes, size_t cou
     memset(&layout, 0, sizeof(layout));
     layout.available = true;
     layout.weakest_main_triangle_height_mm = 400;
+    layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 3U;   /* the newest computed_at_ms of cs_geometry() */
     layout.main_scan_mm[0] = 1000; layout.main_scan_mm[1] = 2000; layout.main_scan_mm[2] = 1000;
     layout.nodes[0] = (seismic_recorder_tag_node_t){.valid = true, .node_id = 0U, .tag_id = 0U, .confirmed = true, .observations = 9U, .views = 4U};
     layout.node_count = 1U;
@@ -97,6 +98,32 @@ static void a_preliminary_tag_is_used_like_a_confirmed_one(void)
     object_store_geometry_t out;
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
     assert(out.pods[1].computed && out.pods[1].x_mm == 0 && out.pods[1].y_mm == 800);
+}
+
+/* Issue #26: a layout is valid only for the frozen geometry generation it was built against. */
+static void a_layout_for_another_geometry_epoch_is_not_placement_evidence(void)
+{
+    const unsigned all[] = {1U, 2U, 3U, 4U};
+    const seismic_recorder_session_participation_t part = session(4U);
+    const object_store_geometry_t cs = cs_geometry(4U);
+    object_store_geometry_t out;
+    seismic_recorder_tag_layout_t layout = layout_of(all, 4U);
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
+    layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 2U;      /* sensors were re-measured: another geometry generation */
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
+    layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 4U;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
+    layout.geometry_computed_at_ms = 0U;                       /* an older file: no epoch recorded, no evidence */
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_ERR_INVALID_STATE);
+    layout.geometry_computed_at_ms = GEOMETRY_AT_MS + 3U;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &cs, &out, NULL) == ESP_OK);
+
+    /* The Channel Sounding layout recomputed later (new timestamps) invalidates the same layout again, and nothing was rewritten. */
+    object_store_geometry_t moved = cs_geometry(4U);
+    for (unsigned i = 0U; i < 4U; ++i) moved.pods[i].computed_at_ms += 100U;
+    const object_store_geometry_t moved_before = moved;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &layout, &moved, &out, NULL) == ESP_ERR_INVALID_STATE);
+    assert(equal(&moved, &moved_before));
 }
 
 /* Issue #35: zero-evidence, zero-uncertainty or flat layouts are not eligible geometry (a plain preliminary tag with real sightings still is). */
@@ -250,6 +277,7 @@ int main(int argc, char **argv)
         {"a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone", a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone},
         {"a_preliminary_tag_is_used_like_a_confirmed_one", a_preliminary_tag_is_used_like_a_confirmed_one},
         {"unobserved_or_degenerate_layouts_are_not_geometry", unobserved_or_degenerate_layouts_are_not_geometry},
+        {"a_layout_for_another_geometry_epoch_is_not_placement_evidence", a_layout_for_another_geometry_epoch_is_not_placement_evidence},
         {"only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position", only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position},
         {"a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used", a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used},
         {"a_layout_can_serve_when_channel_sounding_could_not_place_every_remote", a_layout_can_serve_when_channel_sounding_could_not_place_every_remote},

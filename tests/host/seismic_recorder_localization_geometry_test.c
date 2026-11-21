@@ -266,7 +266,7 @@ static void make_tag_json(char *out, size_t size, const char *root_extra, const 
                           const char *created, const char *main_position, const char *weakest, const char *nodes)
 {
     snprintf(out, size,
-        "{%s\"schema\":%s,\"kind\":%s,\"frame\":%s,\"scan_frame_id\":%s,\"created_at_ms\":%s,\"main_scan_position_mm\":%s,"
+        "{%s\"schema\":%s,\"kind\":%s,\"frame\":%s,\"scan_frame_id\":%s,\"created_at_ms\":%s,\"geometry_computed_at_ms\":%u,\"main_scan_position_mm\":%s,"
         "\"weakest_main_triangle_height_mm\":%s,\"nodes\":[%s]}",
         root_extra != NULL ? root_extra : "",
         schema != NULL ? schema : "1",
@@ -274,6 +274,7 @@ static void make_tag_json(char *out, size_t size, const char *root_extra, const 
         frame != NULL ? frame : "\"sensor_main_origin_z_up_mm\"",
         scan_id != NULL ? scan_id : "\"scan-crc32:732740d9\"",
         created != NULL ? created : "1700000000000",
+        (unsigned)GEOMETRY_AT_MS,
         main_position != NULL ? main_position : "[1000,2000,1000]",
         weakest != NULL ? weakest : "250",
         nodes != NULL ? nodes : k_tag_nodes_all);
@@ -290,6 +291,41 @@ static void set_good_tag_file(void)
     char json[2048];
     make_tag_json(json, sizeof(json), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     set_tag_file_text(json);
+}
+
+static void replace_once(char *text, size_t size, const char *from, const char *to)
+{
+    char *at = strstr(text, from);
+    assert(at != NULL);
+    char tail[2048];
+    snprintf(tail, sizeof(tail), "%s", at + strlen(from));
+    snprintf(at, size - (size_t)(at - text), "%s%s", to, tail);
+}
+
+/* Issue #26: the placement epoch is optional in the file, read when present, and refused when it is not a positive whole number. */
+static void tag_layout_parse_reads_the_geometry_epoch(void)
+{
+    char json[2048];
+    seismic_recorder_tag_layout_t layout;
+    make_tag_json(json, sizeof(json), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    assert(seismic_recorder_tag_layout_parse(json, &layout) == ESP_OK && layout.geometry_computed_at_ms == GEOMETRY_AT_MS);
+    char legacy[2048];
+    snprintf(legacy, sizeof(legacy), "%s", json);
+    replace_once(legacy, sizeof(legacy), "\"geometry_computed_at_ms\":4000,", "");
+    assert(seismic_recorder_tag_layout_parse(legacy, &layout) == ESP_OK && layout.geometry_computed_at_ms == 0U);   /* older file: parses, but no evidence */
+    char unknown[2048];
+    snprintf(unknown, sizeof(unknown), "%s", json);
+    replace_once(unknown, sizeof(unknown), "\"geometry_computed_at_ms\":4000", "\"geometry_computed_at_ms\":null");
+    assert(seismic_recorder_tag_layout_parse(unknown, &layout) == ESP_OK && layout.geometry_computed_at_ms == 0U);
+    static const char *const bad[] = {"0", "-5", "1.5", "\"4000\""};
+    for (size_t i = 0U; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        char variant[2048];
+        snprintf(variant, sizeof(variant), "%s", json);
+        char replacement[64];
+        snprintf(replacement, sizeof(replacement), "\"geometry_computed_at_ms\":%s", bad[i]);
+        replace_once(variant, sizeof(variant), "\"geometry_computed_at_ms\":4000", replacement);
+        assert(seismic_recorder_tag_layout_parse(variant, &layout) == ESP_ERR_INVALID_RESPONSE && !layout.available);
+    }
 }
 
 static void tag_layout_parse_accepts_the_artifact(void)
@@ -555,6 +591,7 @@ int main(int argc, char **argv)
         {"localization_geometry_keeps_channel_sounding_when_positions_do_not_apply",
          localization_geometry_keeps_channel_sounding_when_positions_do_not_apply},
         {"tag_layout_parse_accepts_the_artifact", tag_layout_parse_accepts_the_artifact},
+        {"tag_layout_parse_reads_the_geometry_epoch", tag_layout_parse_reads_the_geometry_epoch},
         {"tag_layout_parse_refuses_a_broken_contract", tag_layout_parse_refuses_a_broken_contract},
         {"the_tag_layout_is_read_from_the_session_directory", the_tag_layout_is_read_from_the_session_directory},
         {"localization_geometry_uses_the_tag_layout_beside_the_stored_one", localization_geometry_uses_the_tag_layout_beside_the_stored_one},

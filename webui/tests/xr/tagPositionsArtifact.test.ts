@@ -62,3 +62,23 @@ describe('tag-positions-v1.json', () => {
     expect(() => decodeTagPositions('{not json')).toThrow();
   });
 });
+
+describe('tag layout carries the geometry epoch it was built against (issue #26)', () => {
+  it('records the epoch, accepts null (unknown) and refuses nonsense; a legacy file without the key still decodes', () => {
+    const withEpoch = tagPositionsFromLayout(layout, 'scan-crc32:732740d9', 1_700_000_000_000, 123_456);
+    expect(withEpoch.geometry_computed_at_ms).toBe(123_456);
+    expect(decodeTagPositions(encodeTagPositions(withEpoch)).geometry_computed_at_ms).toBe(123_456);
+
+    const unknown = tagPositionsFromLayout(layout, 'scan-crc32:732740d9', 1_700_000_000_000);
+    expect(unknown.geometry_computed_at_ms).toBeNull();
+    expect(() => decodeTagPositions(encodeTagPositions(unknown))).not.toThrow();
+
+    const legacy = JSON.parse(JSON.stringify(withEpoch)) as Record<string, unknown>;
+    delete legacy.geometry_computed_at_ms;
+    expect(decodeTagPositions(JSON.stringify(legacy)).geometry_computed_at_ms).toBeUndefined();
+
+    for (const bad of [0, -1, 1.5, '1', Number.NaN]) {
+      expect(() => validateTagPositions({ ...withEpoch, geometry_computed_at_ms: bad })).toThrow(/geometry_computed_at_ms/);
+    }
+  });
+});

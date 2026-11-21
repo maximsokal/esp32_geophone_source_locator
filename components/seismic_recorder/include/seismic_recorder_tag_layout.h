@@ -44,6 +44,8 @@ typedef struct
     /* The scan these tags were seen in (scan-crc32:...), empty when the phone did not know it yet. */
     char scan_frame_id[SEISMIC_RECORDER_TAG_LAYOUT_SCAN_ID_MAX];
     uint64_t created_at_ms;
+    /* The frozen Channel Sounding geometry (its newest computed_at_ms) the phone knew when it built this layout; 0 = not recorded (older file). */
+    uint64_t geometry_computed_at_ms;
     int32_t main_scan_mm[3];
     int32_t weakest_main_triangle_height_mm;
     size_t node_count;
