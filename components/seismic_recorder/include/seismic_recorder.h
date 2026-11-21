@@ -540,6 +540,18 @@ esp_err_t seismic_recorder_read_session_tag_layout(
     seismic_recorder_tag_layout_t *layout
 );
 
+#define SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE 32U
+
+/*
+ * The scan a session's registration-v1.json was made for (issue #31/#34): the session's own file, else the shared scan's. `scan_frame_id` is
+ * empty for a legacy file without one (ESP_OK); ESP_ERR_NOT_FOUND when there is no registration; ESP_ERR_INVALID_RESPONSE for a malformed id.
+ */
+esp_err_t seismic_recorder_read_session_registration_scan_id(
+    const char *object_id,
+    const char *session_id,
+    char scan_frame_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE]
+);
+
 typedef enum
 {
     SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING = 0,

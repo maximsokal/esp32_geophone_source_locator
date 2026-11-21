@@ -2259,6 +2259,23 @@ esp_err_t localization_calculate_run(
             !(seismic_recorder_read_session_tag_layout(object_id, session_id, &tag_layout) == ESP_OK && tag_layout.available)) {
             registration_reason = "tag_layout_unavailable";
         }
+        /*
+         * A sidecar made for another scan describes another camera frame (issues #26, #31, #34): the tag layout's main_scan_position and the registered
+         * positions only mean something in the scan they were made for. An empty id is a legacy file without a binding and is used as before.
+         */
+        if (scan_identity_matches && registration_reason == NULL &&
+            geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT &&
+            tag_layout.scan_frame_id[0] != '\0' && strcmp(tag_layout.scan_frame_id, current_scan_frame_id) != 0) {
+            registration_reason = "tag_layout_scan_mismatch";
+        }
+        if (scan_identity_matches && registration_reason == NULL &&
+            geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED) {
+            char registration_scan_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE] = { 0 };
+            if (seismic_recorder_read_session_registration_scan_id(object_id, session_id, registration_scan_id) == ESP_OK &&
+                registration_scan_id[0] != '\0' && strcmp(registration_scan_id, current_scan_frame_id) != 0) {
+                registration_reason = "registration_scan_mismatch";
+            }
+        }
         const bool usable = scan_identity_matches && registration_reason == NULL;
         if (usable && geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT) {
             double translation[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
@@ -2285,7 +2302,11 @@ esp_err_t localization_calculate_run(
                     : (registration_reason != NULL &&
                         strcmp(registration_reason, "reflected_transform") == 0
                         ? LOCALIZATION_RUN_REJECTION_REASON_REFLECTED_TRANSFORM
-                        : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied")));
+                        : (registration_reason != NULL && strcmp(registration_reason, "tag_layout_scan_mismatch") == 0
+                            ? "tag layout was made for another scan (tag_layout_scan_mismatch): constraint not applied"
+                            : (registration_reason != NULL && strcmp(registration_reason, "registration_scan_mismatch") == 0
+                                ? "registration was made for another scan (registration_scan_mismatch): constraint not applied"
+                                : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied")))));
         const localization_failure_class_t not_applied_failure_class =
             occupancy_err != ESP_OK || scan_identity_err != ESP_OK || !scan_identity_matches
                 ? LOCALIZATION_FAILURE_CLASS_INTERNAL

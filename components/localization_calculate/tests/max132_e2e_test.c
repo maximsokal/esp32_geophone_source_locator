@@ -267,6 +267,15 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
 }
 
 /* The tag layout the localization may read beside the geometry: none in this fixture. */
+/* The recorder's registration scan binding (issue #31): this harness has no registration file. */
+esp_err_t seismic_recorder_read_session_registration_scan_id(const char *object_id, const char *session_id, char scan_frame_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE])
+{
+    (void)object_id;
+    (void)session_id;
+    if (scan_frame_id != NULL) scan_frame_id[0] = '\0';
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
 {
     (void)object_id;

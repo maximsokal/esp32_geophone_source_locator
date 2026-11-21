@@ -581,6 +581,39 @@ static void the_registration_is_read_from_the_shared_scan_through_the_scan_ref(v
     (void)test_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
 }
 
+/* Issues #31/#34: the registration may name its scan; legacy files do not; a malformed id is refused. */
+static void registration_scan_binding_is_parsed_and_read(void)
+{
+    char json[1536];
+    seismic_recorder_registered_positions_t registered;
+    snprintf(json, sizeof(json), "{\"schema\":1,\"scan_frame_id\":\"scan-crc32:732740d9\",\"geometry_computed_at_ms\":%u,%s}", GEOMETRY_AT_MS, k_good_block);
+    assert(seismic_recorder_registered_positions_parse(json, &registered) == ESP_OK);
+    assert(strcmp(registered.scan_frame_id, "scan-crc32:732740d9") == 0);
+    snprintf(json, sizeof(json), "{\"schema\":1,\"scan_frame_id\":null,\"geometry_computed_at_ms\":%u,%s}", GEOMETRY_AT_MS, k_good_block);
+    assert(seismic_recorder_registered_positions_parse(json, &registered) == ESP_OK && registered.scan_frame_id[0] == '\0');
+    snprintf(json, sizeof(json), "{\"schema\":1,\"geometry_computed_at_ms\":%u,%s}", GEOMETRY_AT_MS, k_good_block);
+    assert(seismic_recorder_registered_positions_parse(json, &registered) == ESP_OK && registered.scan_frame_id[0] == '\0');
+    static const char *const bad_ids[] = {"\"\"", "\"has space\"", "12", "true", "\"scan-crc32:0123456789012345678901234567890123\""};
+    for (size_t i = 0U; i < sizeof(bad_ids) / sizeof(bad_ids[0]); ++i) {
+        snprintf(json, sizeof(json), "{\"schema\":1,\"scan_frame_id\":%s,\"geometry_computed_at_ms\":%u,%s}", bad_ids[i], GEOMETRY_AT_MS, k_good_block);
+        assert(seismic_recorder_registered_positions_parse(json, &registered) == ESP_ERR_INVALID_RESPONSE);
+    }
+
+    /* The reader the localization uses at the point of use. */
+    char scan_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE];
+    reset_world(4U, true);
+    assert(seismic_recorder_read_session_registration_scan_id("OBJ_0001", "S000001", scan_id) == ESP_ERR_NOT_FOUND && scan_id[0] == '\0');
+    snprintf(s_file, sizeof(s_file), "{\"schema\":1,\"scan_frame_id\":\"scan-crc32:732740d9\",\"geometry_computed_at_ms\":%u}", GEOMETRY_AT_MS);
+    s_file_present = true;
+    assert(seismic_recorder_read_session_registration_scan_id("OBJ_0001", "S000001", scan_id) == ESP_OK);
+    assert(strcmp(scan_id, "scan-crc32:732740d9") == 0);
+    snprintf(s_file, sizeof(s_file), "{\"schema\":1,\"scan_frame_id\":null,\"geometry_computed_at_ms\":%u}", GEOMETRY_AT_MS);
+    assert(seismic_recorder_read_session_registration_scan_id("OBJ_0001", "S000001", scan_id) == ESP_OK && scan_id[0] == '\0');
+    snprintf(s_file, sizeof(s_file), "{\"schema\":1,\"scan_frame_id\":\"bad id\",\"geometry_computed_at_ms\":%u}", GEOMETRY_AT_MS);
+    assert(seismic_recorder_read_session_registration_scan_id("OBJ_0001", "S000001", scan_id) == ESP_ERR_INVALID_RESPONSE);
+    assert(seismic_recorder_read_session_registration_scan_id(NULL, "S1", scan_id) == ESP_ERR_INVALID_ARG);
+}
+
 int main(int argc, char **argv)
 {
     static const struct { const char *name; void (*run)(void); } cases[] = {
@@ -591,6 +624,7 @@ int main(int argc, char **argv)
         {"localization_geometry_keeps_channel_sounding_when_positions_do_not_apply",
          localization_geometry_keeps_channel_sounding_when_positions_do_not_apply},
         {"tag_layout_parse_accepts_the_artifact", tag_layout_parse_accepts_the_artifact},
+        {"registration_scan_binding_is_parsed_and_read", registration_scan_binding_is_parsed_and_read},
         {"tag_layout_parse_reads_the_geometry_epoch", tag_layout_parse_reads_the_geometry_epoch},
         {"tag_layout_parse_refuses_a_broken_contract", tag_layout_parse_refuses_a_broken_contract},
         {"the_tag_layout_is_read_from_the_session_directory", the_tag_layout_is_read_from_the_session_directory},

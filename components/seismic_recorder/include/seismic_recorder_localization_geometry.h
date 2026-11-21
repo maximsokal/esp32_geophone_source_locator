@@ -24,3 +24,5 @@
  * geometry_computed_at_ms to bind to). Nothing is partially accepted.
  */
 esp_err_t seismic_recorder_registered_positions_parse(const char *json, seismic_recorder_registered_positions_t *out);
+
+/* seismic_recorder_read_session_registration_scan_id() is declared in seismic_recorder.h, next to the tag layout reader. */

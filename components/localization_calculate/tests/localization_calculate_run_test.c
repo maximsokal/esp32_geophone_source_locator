@@ -120,6 +120,23 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
 /* The tag layout the fake hands the localization (available = false: none stored). */
 static seismic_recorder_tag_layout_t g_fixture_tag_layout;
 
+/* What the fake recorder reports as the scan of the stored registration (issue #31). Not present = no registration file. */
+static char g_fixture_registration_scan_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE];
+static bool g_fixture_registration_present;
+/* The scan id written in the stored tag layout (empty = a legacy layout without one). */
+static char g_fixture_layout_scan_id[SEISMIC_RECORDER_TAG_LAYOUT_SCAN_ID_MAX];
+
+esp_err_t seismic_recorder_read_session_registration_scan_id(const char *object_id, const char *session_id, char scan_frame_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE])
+{
+    (void)object_id;
+    (void)session_id;
+    if (scan_frame_id == NULL) return ESP_ERR_INVALID_ARG;
+    scan_frame_id[0] = '\0';
+    if (!g_fixture_registration_present) return ESP_ERR_NOT_FOUND;
+    (void)snprintf(scan_frame_id, SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE, "%s", g_fixture_registration_scan_id);
+    return ESP_OK;
+}
+
 esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const char *session_id, seismic_recorder_tag_layout_t *layout)
 {
     (void)object_id;
@@ -2247,6 +2264,7 @@ static void run_with_tag_layout(const char *session_id, bool layout_available, i
     memset(&g_fixture_tag_layout, 0, sizeof(g_fixture_tag_layout));
     g_fixture_tag_layout.available = layout_available;
     g_fixture_tag_layout.main_scan_mm[0] = main_x_mm;
+    (void)snprintf(g_fixture_tag_layout.scan_frame_id, sizeof(g_fixture_tag_layout.scan_frame_id), "%s", g_fixture_layout_scan_id);
     g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_LAYOUT;
     run_with_void_block_registered(session_id, 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
     g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
@@ -2277,6 +2295,70 @@ static void test_tag_layout_geometry_maps_onto_the_scan_by_main_translation(void
     scan_run = find_record("traveltime_scan_constrained");
     assert(scan_run != NULL && !scan_run->scan_constraint_applied);
     puts("  Tag layout geometry: scan transform is MAIN's translation only; no layout -> constraint not applied -- OK");
+}
+
+/* The scan id run_with_void_block_registered() gives its scan for x0 (same bytes, same CRC32). */
+static void void_block_scan_frame_id(int16_t x0, char frame_id[32])
+{
+    const size_t scan_length = 4096U;
+    uint8_t *scan = malloc(scan_length);
+    assert(scan != NULL);
+    for (size_t i = 0U; i < scan_length; ++i) scan[i] = (uint8_t)(i * 7U + (size_t)x0);
+    test_scan_frame_id(scan, scan_length, frame_id);
+    free(scan);
+}
+
+/*
+ * Issues #26/#31/#34: a tag layout or a registration made for another scan describes another camera frame, so the scan constraint is not
+ * applied with it; the scan's own id (and a legacy sidecar without one) keep working.
+ */
+static void test_sidecars_made_for_another_scan_do_not_constrain(void)
+{
+    char own_id[32];
+    void_block_scan_frame_id(0, own_id);
+
+    /* Tag layout. */
+    (void)snprintf(g_fixture_layout_scan_id, sizeof(g_fixture_layout_scan_id), "%s", "scan-crc32:deadbeef");
+    run_with_tag_layout("S098081", true, 0);
+    const localization_run_record_t *scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && !scan_run->scan_constraint_applied);
+    assert(strstr(scan_run->rejection_reason, "tag_layout_scan_mismatch") != NULL);
+    const localization_run_record_t *free_run = find_record("traveltime_inversion");
+    assert(free_run != NULL && strstr(free_run->rejection_reason, "tag_layout_scan_mismatch") == NULL);   /* the unconstrained result is untouched */
+
+    (void)snprintf(g_fixture_layout_scan_id, sizeof(g_fixture_layout_scan_id), "%s", own_id);
+    run_with_tag_layout("S098082", true, 0);
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && scan_run->scan_constraint_applied);
+
+    g_fixture_layout_scan_id[0] = '\0';                                  /* legacy layout without a scan id: used as before */
+    run_with_tag_layout("S098083", true, 0);
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && scan_run->scan_constraint_applied);
+
+    /* Registered positions (REMOTE_ONLY). */
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+    g_fixture_registration_present = true;
+    (void)snprintf(g_fixture_registration_scan_id, sizeof(g_fixture_registration_scan_id), "%s", "scan-crc32:deadbeef");
+    run_with_void_block_registered("S098084", 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && !scan_run->scan_constraint_applied);
+    assert(strstr(scan_run->rejection_reason, "registration_scan_mismatch") != NULL);
+
+    (void)snprintf(g_fixture_registration_scan_id, sizeof(g_fixture_registration_scan_id), "%s", own_id);
+    run_with_void_block_registered("S098085", 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && scan_run->scan_constraint_applied);
+
+    g_fixture_registration_scan_id[0] = '\0';                            /* legacy registration without a scan id */
+    run_with_void_block_registered("S098086", 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
+    scan_run = find_record("traveltime_scan_constrained");
+    assert(scan_run != NULL && scan_run->scan_constraint_applied);
+
+    g_fixture_registration_present = false;
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    memset(&g_fixture_tag_layout, 0, sizeof(g_fixture_tag_layout));
+    puts("  Tag layout / registration made for another scan -> constraint not applied; own or legacy id -> applied -- OK");
 }
 
 /*
@@ -2405,6 +2487,7 @@ int main(void)
     test_full_run_feeds_free_and_occupied_voxels_to_the_math();
     test_apriltag_geometry_reads_voxels_without_a_second_transform();
     test_tag_layout_geometry_maps_onto_the_scan_by_main_translation();
+    test_sidecars_made_for_another_scan_do_not_constrain();
 
     free_fixture_frames();
     puts("localization_calculate_run integration tests passed");

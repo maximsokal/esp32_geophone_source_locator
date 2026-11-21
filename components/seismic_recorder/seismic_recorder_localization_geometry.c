@@ -32,6 +32,17 @@ static bool small_id(const cJSON *value, unsigned *out)
     return true;
 }
 
+static bool registration_scan_id_valid(const char *text)
+{
+    const size_t length = strlen(text);
+    if (length == 0U || length >= SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE) return false;
+    for (size_t i = 0U; i < length; ++i) {
+        const char c = text[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ':' || c == '_' || c == '-')) return false;
+    }
+    return true;
+}
+
 esp_err_t seismic_recorder_registered_positions_parse(const char *json, seismic_recorder_registered_positions_t *out)
 {
     if (json == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
@@ -51,7 +62,11 @@ esp_err_t seismic_recorder_registered_positions_parse(const char *json, seismic_
     const cJSON *frame = cJSON_GetObjectItemCaseSensitive(block, "frame");
     const cJSON *positions = cJSON_GetObjectItemCaseSensitive(block, "positions");
     const cJSON *bound = cJSON_GetObjectItemCaseSensitive(root, "geometry_computed_at_ms");
-    bool ok = cJSON_IsObject(block) &&
+    /* Optional scan binding: absent or null = a legacy file; otherwise a plain scan id string. */
+    const cJSON *scan_id = cJSON_GetObjectItemCaseSensitive(root, "scan_frame_id");
+    bool scan_id_ok = scan_id == NULL || cJSON_IsNull(scan_id) ||
+        (cJSON_IsString(scan_id) && scan_id->valuestring != NULL && registration_scan_id_valid(scan_id->valuestring));
+    bool ok = scan_id_ok && cJSON_IsObject(block) &&
         cJSON_IsString(source) && source->valuestring != NULL && strcmp(source->valuestring, "APRILTAG_CENTER_APPROX") == 0 &&
         cJSON_IsString(frame) && frame->valuestring != NULL && strcmp(frame->valuestring, "project_z_up_mm") == 0 &&
         cJSON_IsArray(positions) && cJSON_GetArraySize(positions) >= 1 &&
@@ -59,6 +74,7 @@ esp_err_t seismic_recorder_registered_positions_parse(const char *json, seismic_
         cJSON_IsNumber(bound) && isfinite(bound->valuedouble) && bound->valuedouble >= 0.0 &&
         floor(bound->valuedouble) == bound->valuedouble && bound->valuedouble <= 9007199254740991.0;
     if (ok) {
+        if (cJSON_IsString(scan_id)) snprintf(parsed.scan_frame_id, sizeof(parsed.scan_frame_id), "%s", scan_id->valuestring);
         parsed.geometry_computed_at_ms = (uint64_t)bound->valuedouble;
         for (int index = 0; index < cJSON_GetArraySize(positions); ++index) {
             const cJSON *entry = cJSON_GetArrayItem(positions, index);
@@ -104,6 +120,42 @@ esp_err_t seismic_recorder_read_session_tag_layout(const char *object_id, const 
     if (err == ESP_OK) err = seismic_recorder_tag_layout_parse(text, layout);
     free(text);
     return err;
+}
+
+esp_err_t seismic_recorder_read_session_registration_scan_id(
+    const char *object_id,
+    const char *session_id,
+    char scan_frame_id[SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE]
+)
+{
+    if (object_id == NULL || session_id == NULL || scan_frame_id == NULL) return ESP_ERR_INVALID_ARG;
+    scan_frame_id[0] = '\0';
+    char session_path[256];
+    char path[288];
+    esp_err_t err = seismic_recorder_fs_build_session_path(object_id, session_id, session_path, sizeof(session_path));
+    if (err == ESP_OK &&
+        scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, SEISMIC_RECORDER_REGISTRATION_FILE, path, sizeof(path)) != 0) {
+        err = ESP_ERR_INVALID_SIZE;
+    }
+    char *text = err == ESP_OK ? malloc(SEISMIC_RECORDER_REGISTRATION_MAX_BYTES + 1U) : NULL;
+    if (err == ESP_OK && text == NULL) err = ESP_ERR_NO_MEM;
+    if (err == ESP_OK) err = storage_manager_read_text(path, text, SEISMIC_RECORDER_REGISTRATION_MAX_BYTES + 1U);
+    if (err != ESP_OK) {
+        free(text);
+        return err;
+    }
+    cJSON *root = cJSON_Parse(text);
+    free(text);
+    if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+    const cJSON *scan_id = cJSON_GetObjectItemCaseSensitive(root, "scan_frame_id");
+    if (cJSON_IsString(scan_id) && scan_id->valuestring != NULL && registration_scan_id_valid(scan_id->valuestring)) {
+        snprintf(scan_frame_id, SEISMIC_RECORDER_REGISTRATION_SCAN_ID_SIZE, "%s", scan_id->valuestring);
+    } else if (scan_id != NULL && !cJSON_IsNull(scan_id)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
 }
 
 static void note_status(esp_err_t *registered_status, esp_err_t value)

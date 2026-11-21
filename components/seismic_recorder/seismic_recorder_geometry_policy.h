@@ -181,6 +181,8 @@ typedef struct
 {
     bool available;
     uint64_t geometry_computed_at_ms;
+    /* The scan the registration was made for (scan-crc32:...); empty for a legacy file without one. */
+    char scan_frame_id[32];
     seismic_recorder_registered_position_t nodes[OBJECT_STORE_POD_COUNT];
 } seismic_recorder_registered_positions_t;
 
