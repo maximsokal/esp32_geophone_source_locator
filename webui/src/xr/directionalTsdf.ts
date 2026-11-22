@@ -1,4 +1,5 @@
 import { sanitizeMeshTopology } from './meshTopologySanity';
+import { refineScanMesh } from './meshRefine';
 import {
   buildSparseTsdfMesh,
   type Point3,
@@ -6,7 +7,11 @@ import {
   type SparseTsdfMesh,
 } from './sparseTsdf';
 
+export interface MeshRefineSummary { holesFilled: number; holeTrianglesAdded: number; openLoopsLeft: number; smoothedVertices: number; maxDisplacementMm: number }
+
 export interface DirectionalTsdfMesh extends SparseTsdfMesh {
+  /** What the final cosmetic pass did (small holes closed, a little smoothing); absent when it was not run. */
+  meshRefine?: MeshRefineSummary;
   directionalChannelCount: number;
   channelTriangleCounts: readonly number[];
 }
@@ -219,7 +224,12 @@ export function prepareDirectionalTsdfPlan(
     };
   }
 
-  const perChannelBudget = Math.max(32, Math.floor(totalTriangleBudget / active.length));
+  /*
+   * The triangle budget follows the points of each channel. An equal split gave the up-facing channel (the floor, most of a typical scan) the same 1/6
+   * as a channel with a few dozen wall points: on the 2026-11-22 scan the floor mesh stopped at its 3,000-triangle share after about a quarter of the
+   * floor, the rest of it simply missing. Every channel keeps a floor of 32 triangles.
+   */
+  const budgetFor = (points: number): number => Math.max(32, Math.floor(totalTriangleBudget * points / Math.max(1, activePointCount)));
   return {
     mode: 'multi',
     sourcePointCount: count,
@@ -230,7 +240,7 @@ export function prepareDirectionalTsdfPlan(
     directionalChannelCount: active.length,
     channelInputs: active.map((indices) => ({
       ...subsetInput(input, indices, normalsByIndex, !transferSafeChannels),
-      maxTriangles: perChannelBudget,
+      maxTriangles: budgetFor(indices.length),
     })),
   };
 }
@@ -241,6 +251,19 @@ export function prepareDirectionalTsdfPlan(
  * lets post-scan callers execute mature channels on multiple CPU Workers while
  * preserving the same final topology contract as the sequential fallback.
  */
+function summaryOf(refined: ReturnType<typeof refineScanMesh>): MeshRefineSummary {
+  return {
+    holesFilled: refined.holesFilled, holeTrianglesAdded: refined.holeTrianglesAdded, openLoopsLeft: refined.openLoopsLeft,
+    smoothedVertices: refined.smoothedVertices, maxDisplacementMm: Math.round(refined.maxDisplacementMeters * 10000) / 10,
+  };
+}
+
+/** The cosmetic pass for the scalar and single-channel results, which skip the cross-channel merge. */
+function refinedSparse(mesh: SparseTsdfMesh): DirectionalTsdfMesh {
+  const refined = refineScanMesh(mesh.trianglePositions, mesh.voxelSizeMeters);
+  return { ...mesh, trianglePositions: refined.trianglePositions, triangleCount: refined.triangleCount, meshRefine: summaryOf(refined), directionalChannelCount: 0, channelTriangleCounts: [refined.triangleCount] };
+}
+
 export function finalizeDirectionalTsdfPlan(
   plan: DirectionalTsdfPlanSummary,
   meshes: readonly SparseTsdfMesh[],
@@ -249,12 +272,12 @@ export function finalizeDirectionalTsdfPlan(
   if (meshes.length === 0) throw new Error('Directional TSDF finalization requires at least one channel mesh.');
 
   if (plan.mode === 'scalar') {
-    const scalar = meshes[0];
+    const scalar = refinedSparse(meshes[0]);
     return { ...scalar, directionalChannelCount: 0, channelTriangleCounts: [scalar.triangleCount] };
   }
 
   if (plan.mode === 'single') {
-    const scalar = meshes[0];
+    const scalar = refinedSparse(meshes[0]);
     return {
       ...scalar,
       sourcePointCount: plan.sourcePointCount,
@@ -286,9 +309,11 @@ export function finalizeDirectionalTsdfPlan(
   const finalTopology = sanitizeMeshTopology(Float32Array.from(combined), voxelSizeMeters);
   const channelHotspotCount = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotCount, 0);
   const channelHotspotTriangles = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotTriangleCount, 0);
+  const refined = refineScanMesh(finalTopology.trianglePositions, voxelSizeMeters);
   return {
-    trianglePositions: finalTopology.trianglePositions,
-    triangleCount: finalTopology.triangleCount,
+    meshRefine: summaryOf(refined),
+    trianglePositions: refined.trianglePositions,
+    triangleCount: refined.triangleCount,
     rawTriangleCount: finalTopology.sourceTriangleCount,
     quarantinedTriangleCount:
       finalTopology.quarantinedTriangleCount +

@@ -23,6 +23,17 @@ export interface MeshNormalIntrusionDiagnostic {
 export const MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS = 40_000;
 export const MAX_NORMAL_INTRUSION_EXACT_TESTS = 8_000;
 export const MAX_NORMAL_INTRUSION_CELLS_PER_TRIANGLE = 64;
+/** Budgets grow with the mesh, for the same reason as the self-intersection ones: a fixed budget ran out on a large clean mesh and withheld all of it. */
+const CANDIDATE_PAIRS_PER_TRIANGLE = 8;
+const EXACT_TESTS_PER_TRIANGLE = 2;
+export const MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS_CEILING = 400_000;
+export const MAX_NORMAL_INTRUSION_EXACT_TESTS_CEILING = 100_000;
+export function normalIntrusionBudgets(triangleCount: number): { candidatePairs: number; exactTests: number } {
+  return {
+    candidatePairs: Math.min(MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS_CEILING, Math.max(MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS, triangleCount * CANDIDATE_PAIRS_PER_TRIANGLE)),
+    exactTests: Math.min(MAX_NORMAL_INTRUSION_EXACT_TESTS_CEILING, Math.max(MAX_NORMAL_INTRUSION_EXACT_TESTS, triangleCount * EXACT_TESTS_PER_TRIANGLE)),
+  };
+}
 const MAX_OVERSIZED_TARGETS = 128;
 const BARYCENTRIC_EPSILON = 1e-6;
 
@@ -270,6 +281,7 @@ export function diagnoseMeshNormalIntrusions(
   const order = prepared
     .map((triangle, index) => ({ index, priority: triangle.priority }))
     .sort((left, right) => left.priority - right.priority || left.index - right.index);
+  const budgets = normalIntrusionBudgets(triangles.length);
   let candidatePairs = 0;
   let exactTestedPairs = 0;
   let truncated = false;
@@ -306,11 +318,11 @@ export function diagnoseMeshNormalIntrusions(
         if (sharedVertex(preparedSource.triangle, preparedTarget.triangle)) continue;
         if (!segmentIntersectsAabb(start, end, preparedTarget.aabb, metricEpsilon)) continue;
         candidatePairs += 1;
-        if (candidatePairs > MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS) {
+        if (candidatePairs > budgets.candidatePairs) {
           truncated = true;
           break outer;
         }
-        if (exactTestedPairs >= MAX_NORMAL_INTRUSION_EXACT_TESTS) {
+        if (exactTestedPairs >= budgets.exactTests) {
           truncated = true;
           break outer;
         }
@@ -345,7 +357,7 @@ export function diagnoseMeshNormalIntrusions(
   );
 
   return {
-    candidatePairs: Math.min(candidatePairs, MAX_NORMAL_INTRUSION_CANDIDATE_PAIRS),
+    candidatePairs: Math.min(candidatePairs, budgets.candidatePairs),
     exactTestedPairs,
     intrudingTriangleCount,
     truncated,

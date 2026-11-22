@@ -25,6 +25,21 @@ export interface MeshSelfIntersectionDiagnostic {
 export const MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS = 60_000;
 export const MAX_SELF_INTERSECTION_EXACT_TESTS = 12_000;
 export const MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE = 64;
+/**
+ * The pair budgets grow with the mesh: a fixed 60k/12k budget was spent after about 7,000 triangles, the diagnostic then reported itself incomplete and
+ * every component of a LARGER, cleaner mesh was withheld (phone run 2026-11-22: a full floor was dropped for exactly that reason). Per triangle the work
+ * stays bounded, and the hard ceilings keep a pathological soup from monopolising the worker.
+ */
+const BROAD_PHASE_PAIRS_PER_TRIANGLE = 12;
+const EXACT_TESTS_PER_TRIANGLE = 3;
+export const MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS_CEILING = 600_000;
+export const MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING = 150_000;
+export function selfIntersectionBudgets(triangleCount: number): { broadPhasePairs: number; exactTests: number } {
+  return {
+    broadPhasePairs: Math.min(MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS_CEILING, Math.max(MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS, triangleCount * BROAD_PHASE_PAIRS_PER_TRIANGLE)),
+    exactTests: Math.min(MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING, Math.max(MAX_SELF_INTERSECTION_EXACT_TESTS, triangleCount * EXACT_TESTS_PER_TRIANGLE)),
+  };
+}
 const BARYCENTRIC_EPSILON = 1e-6;
 
 interface Aabb {
@@ -282,6 +297,7 @@ export function diagnoseMeshSelfIntersections(
   const order = Array.from({ length: triangleCount }, (_, index) => index).sort((left, right) =>
     priorities[left] - priorities[right] || left - right
   );
+  const budgets = selfIntersectionBudgets(triangleCount);
   let broadPhaseCandidatePairs = 0;
   let exactTestedPairs = 0;
   let intersectingPairCount = 0;
@@ -317,13 +333,13 @@ export function diagnoseMeshSelfIntersections(
               if (sharedVertex(triangle, other) || !aabbOverlap(bounds, aabbs[otherIndex], epsilonMeters)) continue;
               const encoded = pairKey(triangleIndex, otherIndex, triangleCount);
               if (seenPairs.has(encoded)) continue;
-              if (broadPhaseCandidatePairs >= MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS) {
+              if (broadPhaseCandidatePairs >= budgets.broadPhasePairs) {
                 truncated = true;
                 break outer;
               }
               seenPairs.add(encoded);
               broadPhaseCandidatePairs += 1;
-              if (exactTestedPairs >= MAX_SELF_INTERSECTION_EXACT_TESTS) {
+              if (exactTestedPairs >= budgets.exactTests) {
                 truncated = true;
                 break outer;
               }
