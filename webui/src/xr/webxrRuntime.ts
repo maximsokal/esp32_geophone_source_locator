@@ -24,6 +24,7 @@ import {
   type CoverageRenderView,
   type CoverageRenderViewport,
 } from './liveCoverageRenderer';
+import type { ReferenceOverlay } from './fiducial/referenceOverlay';
 import {
   ManualControlPointStore,
   ManualPlacementRejectedError,
@@ -332,7 +333,7 @@ export class WebXrRuntime{
   private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
   private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
   private rafHandle:number|null=null;
-  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;
+  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private tagGeometryLogged=false;private tagCaptureWidth=0;private tagCaptureHeight=0;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
@@ -621,6 +622,7 @@ export class WebXrRuntime{
     if(this.session!==null&&this.rafHandle!==null){try{this.session.cancelAnimationFrame?.(this.rafHandle);}catch{/* session ended */}}this.rafHandle=null;
     this.detachWebGlContextHandlers();try{document.documentElement.classList.remove('xr-session-active','xr-passthrough-active');}catch{/* document is already tearing down */}
     try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
+    try{this.referenceRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceRenderer=null;this.referenceOverlay=null;this.referenceOverlayDirty=false;
     try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
     try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;
     this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
@@ -842,6 +844,15 @@ export class WebXrRuntime{
    */
   setDepthGate(blocked:boolean):void{this.depthGateBlocked=blocked;}
 
+  /**
+   * Issue #45 gate 2: the saved scan's measured points, already in this session's WebXR frame, drawn over the camera after the live coverage. Null removes it.
+   * It is a view only: nothing is added to the scan. It is not drawn while an origin reset is pending (it would be in the wrong frame).
+   */
+  setReferenceOverlay(overlay:ReferenceOverlay|null):void{
+    this.referenceOverlay=overlay;this.referenceOverlayDirty=overlay!==null;
+    if(overlay===null)this.referenceRenderer?.clear();
+  }
+
   private captureDepth(time:number,frame:XrFrameLike,pose:XrViewerPoseLike):void{
     if(this.depthGateBlocked||this.scanPaused||this.originResetPaused||!this.depthEnabled||pose.views.length===0)return;
     if(typeof frame.getDepthInformation!=='function'){if(!this.depthFailureReported){this.depthFailureReported=true;this.publish({depthError:'XRFrame.getDepthInformation() is unavailable.'});}return;}
@@ -886,7 +897,16 @@ export class WebXrRuntime{
       faultClass='xr-frame-body';
       if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
       this.frameCount+=1;this.updateLightEstimate(time,frame);
-      if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}}
+      if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}
+        const overlay=this.referenceOverlay;
+        if(overlay!==null&&!this.originResetPaused&&this.gl!==null){
+          try{
+            if(this.referenceRenderer===null)this.referenceRenderer=new LiveCoveragePointRenderer(this.gl);
+            if(this.referenceOverlayDirty){this.referenceRenderer.update(overlay);this.referenceOverlayDirty=false;}
+            this.referenceRenderer.render(layer,pose.views);
+          }catch(error){this.referenceOverlay=null;try{this.referenceRenderer?.dispose();}catch{/* already unusable */}this.referenceRenderer=null;clientDiagnostics.warn('XR_REFERENCE_OVERLAY_FAILED',error);}
+        }
+      }
       this.performanceProfiler.record('frameWork',performance.now()-frameWorkStarted);this.reportClientTelemetry(time);
       if(time-this.lastUiUpdateMs>=100||this.frameCount<=1){
         this.lastUiUpdateMs=time;

@@ -1607,6 +1607,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         onRegistrationChange={onRegistrationChange}
         scanIntent={scanIntentState}
         baseScanFrameId={scanDurability.durableId}
+        getReferencePoints={() => scanDurability.durableSnapshot?.positions ?? null}
         getRelockBase={() => {
           const stored = savedTagArtifactRef.current;
           return stored !== null && stored.objectId === objectId && stored.sessionId === scanSessionId ? stored.artifact : null;

@@ -27,6 +27,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
     setPhase=(phase:string,patch:Record<string,unknown>={})=>{if(['ended','interrupted','error'].includes(phase)&&this.state.phase!==phase)this.generation+=1;this.publish(phase,patch);};
     depthGate:boolean|null=null;depthGateCalls:boolean[]=[];setDepthGate=(blocked:boolean)=>{this.depthGate=blocked;this.depthGateCalls.push(blocked);};
+    referenceOverlay:any=null;overlayCalls:any[]=[];setReferenceOverlay=(overlay:any)=>{this.referenceOverlay=overlay;this.overlayCalls.push(overlay);};
     start=async()=>{this.generation+=1;this.publish('starting');};
     stop=async()=>{this.publish('stopping');this.generation+=1;this.publish('ended',{pointCount:1});};
     dispose=async()=>{this.disposed+=1;};
@@ -885,6 +886,68 @@ describe('tag-locked Continue (issue #45)',()=>{
     expect(lockedReady.mock.calls[1][0]).not.toBeNull();
     expect(hint(started.renderer,'never-locked')).toHaveLength(0);
     unmount(started.renderer);
+  });
+
+  describe('the saved scan drawn over the camera once locked (gate 2)',()=>{
+    /* A's measured points (project metres). With B = A the lock is the identity, so project (x, y, z) must be drawn at WebXR (x, z, -y). */
+    const REFERENCE=Float32Array.from([1,-3,2, 2.5,-3.4,2, 1.6,-1.9,2.5]);
+    const lockedPanel=async(extra:Record<string,unknown>={})=>{
+      const started=await startContinue({getReferencePoints:()=>REFERENCE,...extra});
+      for(let k=0;k<3;k+=1)await observe(started.runtime,started.worker,TAGS[k],4,1+k*10);
+      return started;
+    };
+
+    it('shows nothing before the lock, then hands the runtime A\'s points in this session\'s frame',async()=>{
+      const{renderer,runtime,worker}=await startContinue({getReferencePoints:()=>REFERENCE});
+      expect(runtime.referenceOverlay).toBeNull();
+      await observe(runtime,worker,TAGS[0],4,1);await observe(runtime,worker,TAGS[1],4,20);
+      expect(runtime.referenceOverlay).toBeNull();                                  /* two tags: still searching */
+      await observe(runtime,worker,TAGS[2],4,30);
+      const overlay=runtime.referenceOverlay;
+      expect(overlay).not.toBeNull();
+      expect(overlay.pointCount).toBe(3);
+      const expected=[1,2,3, 2.5,2,3.4, 1.6,2.5,1.9];
+      for(let i=0;i<expected.length;i+=1)expect(overlay.positions[i]).toBeCloseTo(expected[i],3);
+      expect(Array.from(overlay.confidence)).toHaveLength(3);
+      unmount(renderer);
+    });
+
+    it('removes it when the lock goes: a reset of the reference space, a jumped tag, the end of the session, the panel going away',async()=>{
+      let started=await lockedPanel();
+      await act(async()=>{started.runtime.setPhase('running',{originReset:true});await settleReact();});
+      expect(started.runtime.referenceOverlay).toBeNull();
+      unmount(started.renderer);
+
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await lockedPanel();
+      expect(started.runtime.referenceOverlay).not.toBeNull();
+      await observe(started.runtime,started.worker,TAGS[2],5,200,{x:9,z:2});
+      expect(started.runtime.referenceOverlay).toBeNull();
+      unmount(started.renderer);
+
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await lockedPanel();
+      await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
+      expect(started.runtime.referenceOverlay).toBeNull();
+      unmount(started.renderer);
+
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await lockedPanel();
+      expect(started.runtime.referenceOverlay).not.toBeNull();
+      unmount(started.renderer);
+      expect(started.runtime.referenceOverlay).toBeNull();
+    });
+
+    it('draws nothing when the parent has no points to give, and nothing for a Fresh scan',async()=>{
+      let started=await lockedPanel({getReferencePoints:()=>null});
+      expect(started.runtime.referenceOverlay).toBeNull();
+      unmount(started.renderer);
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await startContinue({scanIntent:'fresh',getReferencePoints:()=>REFERENCE});
+      for(let k=0;k<3;k+=1)await observe(started.runtime,started.worker,TAGS[k],4,1+k*10);
+      expect(started.runtime.overlayCalls.some((overlay:any)=>overlay!==null)).toBe(false);
+      unmount(started.renderer);
+    });
   });
 
   it('opens the gate again when the panel goes away',async()=>{
