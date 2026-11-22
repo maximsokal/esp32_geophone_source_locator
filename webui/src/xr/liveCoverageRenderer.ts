@@ -32,11 +32,11 @@ export interface CoverageRenderSnapshot {
 
 type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
 
-function isWebGl2(gl: GlContext): gl is WebGL2RenderingContext {
+export function isWebGl2(gl: GlContext): gl is WebGL2RenderingContext {
   return typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
 }
 
-function compileShader(gl: GlContext, type: number, source: string): WebGLShader {
+export function compileShader(gl: GlContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
   if (shader === null) throw new Error('Unable to allocate coverage-guide shader.');
   gl.shaderSource(shader, source);
@@ -135,7 +135,7 @@ function createProgram(gl: GlContext): WebGLProgram {
   return program;
 }
 
-function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
+export function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
   if (matrix.length < 16) return false;
   const m0 = Number(matrix[0]);
   const m1 = Number(matrix[1]);
@@ -161,7 +161,7 @@ function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
   return true;
 }
 
-function multiplyMat4(left: ArrayLike<number>, right: ArrayLike<number>, out: Float32Array): boolean {
+export function multiplyMat4(left: ArrayLike<number>, right: ArrayLike<number>, out: Float32Array): boolean {
   if (left.length < 16 || right.length < 16) return false;
   for (let column = 0; column < 4; column += 1) {
     const r0 = Number(right[column * 4]);

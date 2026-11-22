@@ -954,6 +954,38 @@ export class DepthPointCloudAccumulator {
     };
   }
 
+  /**
+   * The live surface for the translucent AR mesh: the representatives whose orientation was measured, in the PROJECT frame (the frame the surfel
+   * triangulation works in), at most `maxPoints`, evenly thinned. Fresh arrays: the caller transfers them to a worker. Null while nothing usable exists.
+   */
+  liveMeshInput(maxPoints: number): { positions: Float32Array; normals: Float32Array; confidence: Float32Array; voxelSizeMeters: number } | null {
+    const limit = clamp(Number.isFinite(maxPoints) ? Math.floor(maxPoints) : 0, 0, LIVE_GUIDE_POINT_BUDGET);
+    if (limit < 16) return null;
+    let eligible = 0;
+    for (const cell of this.coverageCells.values()) for (const point of cell.representatives.values()) if (point.normalKnown) eligible += 1;
+    if (eligible < 16) return null;
+    const stride = Math.max(1, eligible / limit);
+    const count = Math.min(limit, eligible);
+    const positions = new Float32Array(count * 3);
+    const normals = new Float32Array(count * 3);
+    const confidence = new Float32Array(count);
+    let seen = 0; let taken = 0; let nextPick = 0;
+    for (const cell of this.coverageCells.values()) {
+      for (const point of cell.representatives.values()) {
+        if (!point.normalKnown) continue;
+        if (seen >= Math.floor(nextPick) && taken < count) {
+          const o = taken * 3;
+          positions[o] = point.x; positions[o + 1] = point.y; positions[o + 2] = point.z;
+          normals[o] = point.normalX; normals[o + 1] = point.normalY; normals[o + 2] = point.normalZ;
+          confidence[taken] = representativeQuality(point);
+          taken += 1; nextPick += stride;
+        }
+        seen += 1;
+      }
+    }
+    return { positions: positions.subarray(0, taken * 3), normals: normals.subarray(0, taken * 3), confidence: confidence.subarray(0, taken), voxelSizeMeters: this.voxelSizeMeters };
+  }
+
   private ensureLiveCoverageCapacity(pointCount: number): void {
     const currentPointCapacity = Math.floor(this.liveCoveragePositions.length / 3);
     if (currentPointCapacity >= pointCount) return;

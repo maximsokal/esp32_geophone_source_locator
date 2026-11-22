@@ -36,6 +36,8 @@ import { LiveTagOverlay } from './LiveTagOverlay';
 import { defaultRegistrationTagSizes, decodeRegistrationArtifact, encodeRegistrationArtifact, type RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { estimateTagPose } from '../xr/fiducial/tagPose';
 import { fuseTagObservations, type TagObservation, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
+import { LIVE_MESH_MODES, readLiveMeshMode, writeLiveMeshMode } from '../xr/liveMeshSetting';
+import type { LiveMeshMode } from '../xr/webxrRuntime';
 import { evaluateRelock, INITIAL_RELOCK_STATE, relockBaseTags, relockLostByJump, relockStillHolds, RELOCK_MIN_OBSERVATIONS, RELOCK_MIN_TAGS, RELOCK_MIN_VIEWS, type RelockBaseTag, type RelockState, type RelockTransform } from '../xr/fiducial/continuationRelocalization';
 import type { TagPositionsArtifact } from '../xr/fiducial/tagPositionsArtifact';
 import { buildReferenceOverlay } from '../xr/fiducial/referenceOverlay';
@@ -158,6 +160,8 @@ export function XrRuntimePanel({
   /* Issue #45, gate 1: a Continue scan is tied to the saved scan by known tags before any depth of the new session is used. The gate on the runtime keeps
      depth out while the lock is open; it opens on a lock and closes again when the frame moves. A saved scan with fewer than three confirmed tags cannot
      be re-located this way, and then the Continue works as before (overlap registration after the capture). */
+  const[liveMeshMode,setLiveMeshModeState]=useState<LiveMeshMode>(()=>readLiveMeshMode());
+  useEffect(()=>{runtime.setLiveMeshMode(liveMeshMode);},[runtime,liveMeshMode]);
   const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);
   const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
   const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;const getReferencePointsRef=useRef(getReferencePoints);getReferencePointsRef.current=getReferencePoints;
@@ -498,6 +502,11 @@ export function XrRuntimePanel({
         </> : <>
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>{computePreparing?t('xr.starting_ar'):runtimeState.phase==='interrupted'?t('xr.discard_partial_start'):t('xr.start_scan')}</button>
         </>}
+        <label className="xr-live-mesh-setting">{t('xr.live_mesh.label')}
+          <select value={liveMeshMode} onChange={(event)=>{const next=event.target.value as LiveMeshMode;if(!LIVE_MESH_MODES.includes(next))return;setLiveMeshModeState(next);writeLiveMeshMode(next);clientDiagnostics.info('XR_LIVE_MESH_MODE',{mode:next});}}>
+            {LIVE_MESH_MODES.map((mode)=><option key={mode} value={mode}>{t(`xr.live_mesh.${mode}` as 'xr.live_mesh.auto')}</option>)}
+          </select>
+        </label>
         {bleSupport==='supported'?<button type="button" className={bleActive?'xr-undo-button active':'xr-undo-button'} aria-pressed={bleActive} disabled={runtimeState.phase!=='running'} onClick={()=>void toggleBle()} title={t('xr.ble_hints_title')}>{bleActive?t('xr.ble_hints_on'):t('xr.ble_hints_off')}</button>:<div className="xr-finish-explainer">{describeBleRssiSupport(bleSupport,locale)}</div>}
       </div>
       {runtimeState.phase==='interrupted'&&<div className="xr-runtime-warning" role="status">{t('xr.session_interrupted')}</div>}

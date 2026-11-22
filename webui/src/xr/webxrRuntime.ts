@@ -25,6 +25,10 @@ import {
   type CoverageRenderViewport,
 } from './liveCoverageRenderer';
 import type { ReferenceOverlay } from './fiducial/referenceOverlay';
+import { LiveMeshRenderer } from './liveMeshRenderer';
+import { LiveMeshClient } from './liveMeshClient';
+import { LIVE_MESH_MAX_POINTS } from './liveMeshCore';
+import { activeXrPerformancePressure } from './xrPerformanceProfiler';
 import {
   ManualControlPointStore,
   ManualPlacementRejectedError,
@@ -325,6 +329,8 @@ export async function probeWebXrCapabilities():Promise<WebXrCapabilities>{
   };
 }
 
+export type LiveMeshMode='auto'|'on'|'off';
+
 export class WebXrRuntime{
   private state:WebXrRuntimeState=initialRuntimeState;
   private listeners=new Set<RuntimeListener>();
@@ -333,7 +339,7 @@ export class WebXrRuntime{
   private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
   private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
   private rafHandle:number|null=null;
-  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;
+  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;private liveMeshMode:LiveMeshMode='auto';private liveMeshRenderer:LiveMeshRenderer|null=null;private liveMeshClient:LiveMeshClient|null=null;private liveMeshPending:{trianglesXr:Float32Array;triangleCount:number}|null=null;private liveMeshOff=false;private liveMeshLoggedActive=false;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private tagGeometryLogged=false;private tagCaptureWidth=0;private tagCaptureHeight=0;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
@@ -623,6 +629,7 @@ export class WebXrRuntime{
     this.detachWebGlContextHandlers();try{document.documentElement.classList.remove('xr-session-active','xr-passthrough-active');}catch{/* document is already tearing down */}
     try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
     try{this.referenceRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceRenderer=null;this.referenceOverlay=null;this.referenceOverlayDirty=false;
+    this.disposeLiveMesh();this.liveMeshOff=false;
     try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
     try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;
     this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
@@ -845,6 +852,47 @@ export class WebXrRuntime{
   setDepthGate(blocked:boolean):void{this.depthGateBlocked=blocked;}
 
   /**
+   * The translucent mesh over the camera while scanning. 'auto' runs it only while the phone has headroom (low performance pressure); 'on' runs it whatever
+   * the pressure; 'off' never. The worker build is throttled and never queued, so a busy phone gets a slower preview, not a slower scan.
+   */
+  setLiveMeshMode(mode:LiveMeshMode):void{
+    this.liveMeshMode=mode;
+    if(mode==='off')this.stopLiveMesh();
+  }
+  private liveMeshWanted():boolean{
+    if(this.liveMeshOff||this.liveMeshMode==='off'||this.scanPaused||this.originResetPaused||this.gl===null)return false;
+    return this.liveMeshMode==='on'||this.livePerformancePressure()==='low';
+  }
+  private livePerformancePressure():'low'|'medium'|'high'{return activeXrPerformancePressure();}
+  private stopLiveMesh():void{
+    this.liveMeshPending=null;this.liveMeshRenderer?.clear();this.liveMeshLoggedActive=false;
+  }
+  private disposeLiveMesh():void{
+    try{this.liveMeshClient?.dispose();}catch{/* already gone */}this.liveMeshClient=null;
+    try{this.liveMeshRenderer?.dispose();}catch{/* already unusable */}this.liveMeshRenderer=null;this.liveMeshPending=null;this.liveMeshLoggedActive=false;
+  }
+  private tickLiveMesh(layer:XrWebGlLayerLike,views:readonly CoverageRenderView[]):void{
+    if(!this.liveMeshWanted()){if(this.liveMeshRenderer!==null&&this.liveMeshRenderer.triangleCount>0)this.liveMeshRenderer.clear();return;}
+    try{
+      if(this.liveMeshClient===null){
+        this.liveMeshClient=new LiveMeshClient({
+          onResult:(result,elapsedMs)=>{this.liveMeshPending={trianglesXr:result.trianglesXr,triangleCount:result.triangleCount};if(!this.liveMeshLoggedActive){this.liveMeshLoggedActive=true;clientDiagnostics.info('XR_LIVE_MESH_ACTIVE',{triangles:result.triangleCount,points:result.acceptedPointCount,buildMs:Math.round(elapsedMs),mode:this.liveMeshMode});}},
+          onDisabled:(reason)=>{this.liveMeshOff=true;this.stopLiveMesh();clientDiagnostics.warn('XR_LIVE_MESH_DISABLED',{reason});},
+        });
+      }
+      this.liveMeshClient.request(()=>this.pointCloud.liveMeshInput(LIVE_MESH_MAX_POINTS));
+      if(this.liveMeshRenderer===null&&this.gl!==null)this.liveMeshRenderer=new LiveMeshRenderer(this.gl);
+      const renderer=this.liveMeshRenderer;
+      if(renderer===null)return;
+      const pending=this.liveMeshPending;
+      if(pending!==null){this.liveMeshPending=null;renderer.update(pending.trianglesXr,pending.triangleCount);}
+      renderer.render(layer as never,views);
+    }catch(error){
+      this.liveMeshOff=true;this.disposeLiveMesh();clientDiagnostics.warn('XR_LIVE_MESH_FAILED',error);
+    }
+  }
+
+  /**
    * Issue #45 gate 2: the saved scan's measured points, already in this session's WebXR frame, drawn over the camera after the live coverage. Null removes it.
    * It is a view only: nothing is added to the scan. It is not drawn while an origin reset is pending (it would be in the wrong frame).
    */
@@ -898,6 +946,7 @@ export class WebXrRuntime{
       if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
       this.frameCount+=1;this.updateLightEstimate(time,frame);
       if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}
+        this.tickLiveMesh(layer,pose.views);
         const overlay=this.referenceOverlay;
         if(overlay!==null&&!this.originResetPaused&&this.gl!==null){
           try{

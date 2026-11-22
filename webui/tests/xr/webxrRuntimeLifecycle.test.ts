@@ -221,6 +221,94 @@ describe('WebXrRuntime lifecycle ownership',()=>{
     expect(failingRenderer.render).toHaveBeenCalledTimes(1);expect(captureDepth).toHaveBeenCalledTimes(2);expect(session.liveFrameCallbacks).toBe(1);
   });
 
+  describe('the translucent live mesh over the camera',()=>{
+    interface MeshInternals{
+      liveMeshRenderer:unknown;liveMeshClient:unknown;liveMeshPending:unknown;liveMeshOff:boolean;livePerformancePressure:()=>string;
+    }
+    /** A started runtime whose mesh client/renderer are replaced by recorders; `result` is what the next worker reply would be. */
+    async function meshRuntime(mode:'auto'|'on'|'off',pressure='low'){
+      const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+      const internals=runtime as unknown as MeshInternals;
+      const requests:number[]=[];
+      const client={request:vi.fn((build:()=>unknown)=>{requests.push(1);return build!==undefined;}),dispose:vi.fn(),busy:false,isDisabled:false};
+      const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
+      internals.liveMeshClient=client;internals.liveMeshRenderer=renderer;
+      vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockReturnValue(pressure);
+      runtime.setLiveMeshMode(mode);
+      return{session,runtime,internals,client,renderer};
+    }
+    const frame=async(session:FakeXrSession,time:number)=>{session.driveNextFrame(time,fakeFrame(session,()=>emptyPose()));await flushMicrotasks();};
+
+    it("'off' neither builds nor draws, whatever the pressure",async()=>{
+      const{session,client,renderer}=await meshRuntime('off','low');
+      await frame(session,16);await frame(session,32);
+      expect(client.request).not.toHaveBeenCalled();expect(renderer.render).not.toHaveBeenCalled();
+    });
+
+    it("'auto' runs only while the phone has headroom (low pressure) and stops again when it does not",async()=>{
+      const quiet=await meshRuntime('auto','low');
+      await frame(quiet.session,16);
+      expect(quiet.client.request).toHaveBeenCalledTimes(1);expect(quiet.renderer.render).toHaveBeenCalledTimes(1);
+      const busy=await meshRuntime('auto','high');
+      await frame(busy.session,16);
+      expect(busy.client.request).not.toHaveBeenCalled();expect(busy.renderer.render).not.toHaveBeenCalled();
+      const medium=await meshRuntime('auto','medium');
+      await frame(medium.session,16);
+      expect(medium.client.request).not.toHaveBeenCalled();
+    });
+
+    it("'on' runs under high pressure too, because the operator asked for it",async()=>{
+      const{session,client,renderer}=await meshRuntime('on','high');
+      await frame(session,16);
+      expect(client.request).toHaveBeenCalledTimes(1);expect(renderer.render).toHaveBeenCalledTimes(1);
+    });
+
+    it('uploads a finished mesh to the renderer once, and draws it every frame',async()=>{
+      const{session,internals,renderer}=await meshRuntime('on');
+      const triangles=new Float32Array(18);
+      internals.liveMeshPending={trianglesXr:triangles,triangleCount:2};
+      await frame(session,16);await frame(session,32);
+      expect(renderer.update).toHaveBeenCalledTimes(1);expect(renderer.update).toHaveBeenCalledWith(triangles,2);
+      expect(renderer.render).toHaveBeenCalledTimes(2);
+    });
+
+    it('switching to Off removes the mesh from the camera at once',async()=>{
+      const{session,runtime,internals,renderer}=await meshRuntime('on');
+      internals.liveMeshPending={trianglesXr:new Float32Array(9),triangleCount:1};
+      runtime.setLiveMeshMode('off');
+      expect(renderer.clear).toHaveBeenCalled();expect(internals.liveMeshPending).toBeNull();
+      await frame(session,16);
+      expect(renderer.render).not.toHaveBeenCalled();
+    });
+
+    it('draws nothing while the reference space has been reset: the mesh would be in the old frame',async()=>{
+      const{session,runtime,internals,renderer}=await meshRuntime('on');
+      internals.liveMeshPending={trianglesXr:new Float32Array(9),triangleCount:1};
+      (runtime as unknown as {originResetPaused:boolean}).originResetPaused=true;
+      renderer.triangleCount=1;
+      await frame(session,16);
+      expect(renderer.render).not.toHaveBeenCalled();
+      expect(renderer.clear).toHaveBeenCalled();
+    });
+
+    it('a draw fault drops the live mesh for the session but keeps depth capture and the frame loop alive',async()=>{
+      const{session,runtime,internals,client,renderer}=await meshRuntime('on');
+      renderer.render.mockImplementation(()=>{throw new Error('mesh draw failed');});
+      const captureDepth=vi.spyOn(runtime as unknown as {captureDepth:(time:number,frame:unknown,pose:unknown)=>void},'captureDepth');
+      await frame(session,16);
+      expect(internals.liveMeshOff).toBe(true);expect(renderer.dispose).toHaveBeenCalled();expect(client.dispose).toHaveBeenCalled();
+      expect(runtime.getState().phase).toBe('running');expect(session.endCalls).toBe(0);
+      await frame(session,32);
+      expect(captureDepth).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases the worker and the GPU buffers when the runtime is disposed',async()=>{
+      const{runtime,client,renderer}=await meshRuntime('on');
+      await runtime.dispose();
+      expect(client.dispose).toHaveBeenCalledTimes(1);expect(renderer.dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('treats context loss as fatal and ignores restoration after teardown',async()=>{
     const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
     const lost=new Event('webglcontextlost',{cancelable:true});browserCanvas.dispatchEvent(lost);

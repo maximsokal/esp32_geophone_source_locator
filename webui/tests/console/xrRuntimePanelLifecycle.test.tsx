@@ -27,6 +27,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
     setPhase=(phase:string,patch:Record<string,unknown>={})=>{if(['ended','interrupted','error'].includes(phase)&&this.state.phase!==phase)this.generation+=1;this.publish(phase,patch);};
     depthGate:boolean|null=null;depthGateCalls:boolean[]=[];setDepthGate=(blocked:boolean)=>{this.depthGate=blocked;this.depthGateCalls.push(blocked);};
+    liveMeshModes:string[]=[];setLiveMeshMode=(mode:string)=>{this.liveMeshModes.push(mode);};
     referenceOverlay:any=null;overlayCalls:any[]=[];setReferenceOverlay=(overlay:any)=>{this.referenceOverlay=overlay;this.overlayCalls.push(overlay);};
     start=async()=>{this.generation+=1;this.publish('starting');};
     stop=async()=>{this.publish('stopping');this.generation+=1;this.publish('ended',{pointCount:1});};
@@ -800,6 +801,35 @@ describe('tag-locked Continue (issue #45)',()=>{
     const renderer=await mountPanel(props(extra));const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];return{renderer,runtime,worker};
   }
+
+  describe('the live mesh setting',()=>{
+    const selectOf=(renderer:ReactTestRenderer)=>renderer.root.findAll((node)=>node.type==='select'&&node.parent?.props.className==='xr-live-mesh-setting')[0];
+    it('offers Auto, Always on and Off, defaults to Auto and tells the runtime',async()=>{
+      const{renderer,runtime}=await startContinue();
+      const select=selectOf(renderer);
+      expect(select.props.value).toBe('auto');
+      expect(select.findAllByType('option').map((option)=>[option.props.value,textOf(option)])).toEqual([
+        ['auto',translate('en','xr.live_mesh.auto')],['on',translate('en','xr.live_mesh.on')],['off',translate('en','xr.live_mesh.off')]]);
+      expect(runtime.liveMeshModes.at(-1)).toBe('auto');
+      unmount(renderer);
+    });
+    it('a choice reaches the runtime and is remembered; an unknown value is refused',async()=>{
+      const stored:Record<string,string>={};
+      browserWindow.localStorage={getItem:(key)=>stored[key]??null,setItem:(key,value)=>{stored[key]=value;}};
+      const{renderer,runtime}=await startContinue();
+      await act(async()=>{selectOf(renderer).props.onChange({target:{value:'off'}});await settleReact();});
+      expect(runtime.liveMeshModes.at(-1)).toBe('off');
+      expect(stored['geolocator.liveMesh']).toBe('off');
+      await act(async()=>{selectOf(renderer).props.onChange({target:{value:'bogus'}});await settleReact();});
+      expect(runtime.liveMeshModes.at(-1)).toBe('off');
+      expect(stored['geolocator.liveMesh']).toBe('off');
+      unmount(renderer);
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      const again=await startContinue();                                              /* a later visit starts from the stored choice */
+      expect(selectOf(again.renderer).props.value).toBe('off');
+      unmount(again.renderer);
+    });
+  });
 
   it('never holds depth back: points are gathered from the first frame; the hint asks for 3 known tags and turns into the aligned status when the third is found (phone run 2026-11-22: a closed gate meant no points at all)',async()=>{
     const{renderer,runtime,worker}=await startContinue();
