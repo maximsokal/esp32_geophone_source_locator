@@ -34,6 +34,8 @@ import {
 import { bindRegistrationToScan, decideContinuationRegistration, type RegistrationAgreement } from './xr/registrationCompose';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type PreparedDerivatives, type ScanPersistenceState } from './xr/scanPersistence';
 import { esp32SolverState, esp32VoxelPreviewState } from './xr/esp32VoxelStatus';
+import { useSavedEsp32Voxels } from './xr/esp32SavedVoxels';
+import { Esp32VoxelLoadStatus } from './components/Esp32VoxelLoadStatus';
 import type { Esp32VoxelView } from './components/ScanPointCloudViewport';
 import { ScanRepresentationSelect, type ScanRepresentation } from './components/ScanRepresentationSelect';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
@@ -458,11 +460,20 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* The voxels shown when the operator picks them: the exact prepared bytes, decoded, with a status that never claims more than is verified. */
   const esp32VoxelState = useMemo(() => esp32VoxelPreviewState(esp32Prepared, scanPersistence), [esp32Prepared, scanPersistence]);
   const esp32SolverView = useMemo(() => esp32SolverState(esp32Prepared, scanPersistence), [esp32Prepared, scanPersistence]);
+  /* A scan this phone did not just save (a restored session) has no local bytes: the voxels are read back from the device, for the scan on screen only. */
+  const savedScanOnDevice = scanPersistence?.scan === 'saved' && scanPersistence.scanId !== null && scanPersistence.scanId === scanDurability.durableId;
+  const localBytes = representation === 'esp32-preview' ? esp32Prepared?.preview != null : representation === 'esp32-solver' ? esp32Prepared?.occupancy != null : true;
+  const deviceKind = representation === 'esp32-preview' ? 'preview' : 'solver';
+  const deviceVoxels = useSavedEsp32Voxels(
+    representation !== 'mesh' && !localBytes && savedScanOnDevice && objectId !== null && scanDurability.durableId !== null
+      ? { objectId, sessionId: scanSessionId, kind: deviceKind, scanId: scanDurability.durableId }
+      : null,
+  );
   const esp32VoxelView = useMemo<Esp32VoxelView | null>(() => {
     if (representation === 'esp32-preview' && esp32VoxelState?.artifact != null) return { kind: 'preview', artifact: esp32VoxelState.artifact, status: esp32VoxelState.status };
     if (representation === 'esp32-solver' && esp32SolverView?.occupancy != null) return { kind: 'solver', occupancy: esp32SolverView.occupancy, status: esp32SolverView.status };
-    return null;
-  }, [representation, esp32VoxelState, esp32SolverView]);
+    return representation !== 'mesh' ? deviceVoxels.view : null;
+  }, [representation, esp32VoxelState, esp32SolverView, deviceVoxels.view]);
 
   useEffect(() => () => {
     scanDecodeClient.current?.dispose();
@@ -1545,8 +1556,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             <ScanRepresentationSelect
               representation={representation}
               meshActive={scanMode === 'mesh'}
-              preview={esp32Prepared?.preview != null ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
-              solver={esp32Prepared?.occupancy != null ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
+              preview={esp32Prepared?.preview != null || (savedScanOnDevice && scanPersistence?.preview === 'ready') ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
+              solver={esp32Prepared?.occupancy != null || (savedScanOnDevice && scanPersistence?.occupancy === 'ready') ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
               onChoose={(choice) => {
                 if (choice === 'esp32-preview' || choice === 'esp32-solver') {
                   setRepresentation(choice);
@@ -1578,6 +1589,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           </details>
         </section>
       )}
+
+      {!xrSessionActive && representation !== 'mesh' && <Esp32VoxelLoadStatus state={deviceVoxels} />}
 
       <XrRuntimePanel
         objectId={objectId}

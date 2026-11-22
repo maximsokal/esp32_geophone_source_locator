@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 const h = vi.hoisted(() => ({
   viewport: null as any,
-  loadScan: vi.fn(), loadTags: vi.fn(), loadReg: vi.fn(), fetchRuns: vi.fn(),
+  loadScan: vi.fn(), loadTags: vi.fn(), loadReg: vi.fn(), fetchRuns: vi.fn(), loadPreview: vi.fn(), loadOccupancy: vi.fn(),
   decodeResult: null as any,
 }));
 
@@ -16,6 +16,8 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
     loadSessionTagPositions: h.loadTags,
     loadSessionRegistration: h.loadReg,
     fetchLocalizationRuns: h.fetchRuns,
+    loadSessionPreviewArtifact: h.loadPreview,
+    loadSessionOccupancyArtifact: h.loadOccupancy,
   };
 });
 vi.mock('../../src/xr/scanDecodeClient', async (importOriginal) => {
@@ -40,6 +42,8 @@ vi.mock('../../src/i18n', async (importOriginal) => {
 });
 
 import WorkflowScanView from '../../src/features/workflow/WorkflowScanView';
+import { encodeVoxelPreviewArtifact } from '../../src/xr/voxelPreview';
+import { encodeOccupancySolverArtifact } from '../../src/xr/occupancySolverArtifact';
 import type { TagSensorAnchor } from '../../src/xr/fiducial/liveTagTracker';
 import { buildTagLayout } from '../../src/xr/fiducial/tagLayout';
 import { encodeTagPositions, tagPositionsFromLayout } from '../../src/xr/fiducial/tagPositionsArtifact';
@@ -74,6 +78,8 @@ beforeEach(() => {
   h.loadTags.mockReset().mockResolvedValue(tagsJson());
   h.loadReg.mockReset().mockResolvedValue(null);
   h.fetchRuns.mockReset().mockResolvedValue(listing('apriltag_layout'));
+  h.loadPreview.mockReset().mockResolvedValue(null);
+  h.loadOccupancy.mockReset().mockResolvedValue(null);
   h.decodeResult = { snapshot: { pointCount: 5 }, identity: { frameId: SCAN_ID } };
 });
 afterEach(() => { act(() => { renderer?.unmount(); }); renderer = null; });
@@ -124,5 +130,62 @@ describe('3D scan on the recording page', () => {
     h.loadScan.mockRejectedValue(new Error('boom'));
     await mount({ sessionId: null, finished: false });
     expect(text()).toContain('The 3D scan could not be shown.');
+  });
+});
+
+describe('ESP32 voxels in the embedded scan view (issue #44)', () => {
+  const crc = Number.parseInt(SCAN_ID.slice('scan-crc32:'.length), 16);
+  const preview = (sourceScanCrc32: number) => encodeVoxelPreviewArtifact({
+    sourceScanCrc32, geometryComputedAtMs: 0n, registration: null, origin: [0, 0, 0], voxelSizeMeters: 0.25, dimensions: [2, 1, 1],
+    voxelCount: 2, indexWidth: 2, indices: new Uint32Array([0, 1]), faceMasks: new Uint8Array([63, 63]), coarseningSteps: 0,
+  });
+  const occupancy = (frameId: string) => encodeOccupancySolverArtifact({
+    freeAirPositions: new Float32Array([1.1, 0.1, 0.1]), occupiedSurfacePositions: new Float32Array([0.1, 0.1, 0.1]),
+    occupancyEnvelopeBounds: null, occupancySolverCandidateBelowSurfaceMeters: 0, occupancyCellsSaturated: false,
+    occupancyFineVoxelSizeMeters: 0.25, occupancyVoxelSizeMeters: 0.25,
+  }, { frameId, createdAtMs: 1 });
+  const choose = async (value: string) => {
+    const select = renderer!.root.findByType('select');
+    await act(async () => { select.props.onChange({ target: { value } }); });
+    await flush();
+  };
+
+  it('offers the same representation select, shows the mesh first, and reads nothing from the device until a representation is chosen', async () => {
+    await mount({ sessionId: null, finished: false });
+    expect(renderer!.root.findAllByType('select')).toHaveLength(1);
+    expect(h.viewport.esp32Voxels).toBeNull();
+    expect(h.loadPreview).not.toHaveBeenCalled();
+    expect(h.loadOccupancy).not.toHaveBeenCalled();
+  });
+
+  it('reads the TFT preview of the staged scan back from the ESP32, shows it as saved, and Mesh brings the scan back', async () => {
+    h.loadPreview.mockResolvedValue(preview(crc));
+    await mount({ sessionId: null, finished: false });
+    await choose('esp32-preview');
+    expect(h.loadPreview).toHaveBeenCalledWith('OBJ_0001', 'staging');
+    expect(h.viewport.esp32Voxels).toMatchObject({ kind: 'preview', status: 'saved' });
+    expect(h.viewport.esp32Voxels.artifact.voxelCount).toBe(2);
+    await choose('mesh');
+    expect(h.viewport.esp32Voxels).toBeNull();
+  });
+
+  it('reads the solver occupancy of a recording and shows it as saved', async () => {
+    h.loadOccupancy.mockResolvedValue(occupancy(SCAN_ID));
+    await mount({ sessionId: 'S000001', finished: true });
+    await choose('esp32-solver');
+    expect(h.loadOccupancy).toHaveBeenCalledWith('OBJ_0001', 'S000001');
+    expect(h.viewport.esp32Voxels).toMatchObject({ kind: 'solver', status: 'saved' });
+  });
+
+  it("draws nothing and says why when the device holds none, or holds another scan's", async () => {
+    await mount({ sessionId: null, finished: false });
+    await choose('esp32-preview');
+    expect(h.viewport.esp32Voxels).toBeNull();
+    expect(text()).toContain('holds no voxels for this scan');
+    h.loadPreview.mockResolvedValue(preview(crc + 1));
+    await choose('mesh');
+    await choose('esp32-preview');
+    expect(h.viewport.esp32Voxels).toBeNull();
+    expect(text()).toContain('belong to another scan');
   });
 });

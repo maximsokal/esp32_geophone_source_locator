@@ -26,6 +26,9 @@ import { tagLayoutMarkers, tagLayoutRegistration } from '../../xr/fiducial/tagLa
 import { decodeTagPositions, type TagPositionsArtifact } from '../../xr/fiducial/tagPositionsArtifact';
 import { displayForScanMode } from '../../xr/scanDisplayModes';
 import { registrationApplicability } from '../../xr/registrationApplicability';
+import { useSavedEsp32Voxels } from '../../xr/esp32SavedVoxels';
+import { ScanRepresentationSelect, type ScanRepresentation } from '../../components/ScanRepresentationSelect';
+import { Esp32VoxelLoadStatus } from '../../components/Esp32VoxelLoadStatus';
 
 const ScanPointCloudViewport = lazy(() =>
   import('../../components/ScanPointCloudViewport').then((module) => ({ default: module.ScanPointCloudViewport })));
@@ -120,12 +123,14 @@ async function loadCompanions(
 export default function WorkflowScanView({ objectId, sessionId, finished }: Props) {
   const t = useT();
   const [state, setState] = useState<State>({ phase: 'loading' });
+  const [representation, setRepresentation] = useState<ScanRepresentation>('mesh');
   const effectiveSession = sessionId !== null && sessionId !== '' ? sessionId : STAGING_SESSION_ID;
 
   useEffect(() => {
     let cancelled = false;
     const decoder = new ScanDecodeClient();
     setState({ phase: 'loading' });
+    setRepresentation('mesh');
     void (async () => {
       try {
         const artifact = await loadObjectScanArtifact(objectId, effectiveSession);
@@ -154,6 +159,12 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
   }, [objectId, effectiveSession, finished]);
 
   const data = state.phase === 'ready' ? state.data : null;
+  /* The same representation choice as the scanner result: the voxels are read back from the ESP32 for THIS scan only. */
+  const voxels = useSavedEsp32Voxels(
+    data !== null && representation !== 'mesh'
+      ? { objectId, sessionId: effectiveSession, kind: representation === 'esp32-preview' ? 'preview' : 'solver', scanId: data.scanId }
+      : null,
+  );
   const markers = useMemo(() => data?.tags === null || data === null ? [] : tagLayoutMarkers(data.tags), [data]);
 
   if (state.phase === 'none') return null;
@@ -167,6 +178,8 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
   return (
     <section className="workflow-scan3d" aria-label={t('workflow.scan3d.title')}>
       <h3>{t('workflow.scan3d.title')}</h3>
+      <ScanRepresentationSelect representation={representation} meshActive={representation === 'mesh'} preview="ready" solver="ready" onChoose={setRepresentation} />
+      <Esp32VoxelLoadStatus state={voxels} />
       <ViewportFailureBoundary
         key={loaded.scanId}
         diagnosticEvent="WORKFLOW_SCAN_VIEW_RENDERER_FAILED"
@@ -178,6 +191,7 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
             viewCommand={VIEW}
             display={DISPLAY}
             mode="mesh"
+            esp32Voxels={representation === 'mesh' ? null : voxels.view}
             sensorMarkers={markers}
             registrationArtifact={loaded.registration}
             localizationRuns={loaded.runs}

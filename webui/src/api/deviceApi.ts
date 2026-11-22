@@ -950,6 +950,10 @@ export function loadSessionPreviewArtifact(objectId: string, sessionId: string):
   return queuedApiRequest((context) => performScanLoad(objectId, sessionId, context, 'preview'), 'bulk');
 }
 
+export function loadSessionOccupancyArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
+  return queuedApiRequest((context) => performScanLoad(objectId, sessionId, context, 'occupancy'), 'bulk');
+}
+
 export interface ScanArtifactInfo {
   present: boolean;
   bytes: number;
