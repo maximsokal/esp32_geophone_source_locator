@@ -199,8 +199,19 @@ interface PendingPreview {
 
 /**
  * Derivative builders may be asynchronous (MAX-403): a registered derivative can wait for the
- * bounded tag-finalization window. They always run AFTER the scan commit, never before the upload.
+ * bounded tag-finalization window. The scan upload NEVER waits for a builder. Since issue #44 the builders start together with the save (so the
+ * operator can inspect the exact bytes that will be sent while the upload is still pending); the commit reuses what they produced and only
+ * rebuilds a derivative whose early attempt failed.
  */
+/** The derivative bytes prepared for one scan; the very arrays that are uploaded, not copies. `null` = not (yet) prepared. */
+export interface PreparedDerivatives {
+  objectId: string;
+  sessionId: string;
+  scanId: string;
+  scanSha256?: string;
+  occupancy: Uint8Array | null;
+  preview: Uint8Array | null;
+}
 export type DerivativeBytes = Uint8Array | Promise<Uint8Array>;
 
 function abandonedDerivativeBuilder(): never {
@@ -222,6 +233,8 @@ interface PendingScan {
   previousPersistence: ScanPersistenceState | null;
   buildOccupancy: () => DerivativeBytes;
   buildPreview: (occupancyBytes: Uint8Array | null) => DerivativeBytes;
+  /** Settles when the early derivative preparation (issue #44) is over, whatever its outcome. */
+  early?: Promise<void>;
 }
 
 function errorText(reason: unknown): string {
@@ -270,11 +283,21 @@ export class ScanPersistenceController {
   private pendingScan: PendingScan | null = null;
   private knownScan: { key: string; identity: KnownScanIdentity } | null = null;
   private epoch = 0;
+  private prepared: PreparedDerivatives | null = null;
 
   constructor(
     private readonly ports: ScanPersistencePorts,
     private readonly onState: (state: ScanPersistenceState | null) => void = () => undefined,
+    private readonly onPrepared: (prepared: PreparedDerivatives | null) => void = () => undefined,
   ) {}
+
+  /** The derivatives prepared for the scan being saved, available before anything is sent. */
+  get preparedDerivatives(): PreparedDerivatives | null { return this.prepared; }
+
+  private publishPrepared(next: PreparedDerivatives | null): void {
+    this.prepared = next;
+    this.onPrepared(next);
+  }
 
   get currentState(): ScanPersistenceState | null { return this.state; }
 
@@ -298,6 +321,7 @@ export class ScanPersistenceController {
     this.epoch += 1;
     this.pendingOccupancy = null;
     this.pendingPreview = null;
+    if (this.prepared !== null) this.publishPrepared(null);
     if (this.pendingScan !== null) {
       this.pendingScan.bytes = null;
       this.pendingScan.buildOccupancy = abandonedDerivativeBuilder;
@@ -324,6 +348,7 @@ export class ScanPersistenceController {
     const epoch = ++this.epoch;
     this.pendingOccupancy = null;
     this.pendingPreview = null;
+    if (this.prepared !== null) this.publishPrepared(null);
     const copiedByteLength = scanBytes.byteLength;
     const key = `${objectId}/${sessionId}`;
     const pending: PendingScan = {
@@ -343,9 +368,38 @@ export class ScanPersistenceController {
     this.dispatch(epoch, { type: 'scan-saving', scanId: pending.scanId });
     if (blockedByRecording) {
       this.dispatch(epoch, { type: 'scan-blocked-recording', scanId: pending.scanId });
+      this.startEarlyPreparation(epoch, pending);
       return this.state;
     }
-    return this.prepareAndUploadScan(epoch, pending);
+    /* The upload starts first and parks on its identity lookup; the builders run in that window and never delay it (MAX-403). */
+    const uploading = this.prepareAndUploadScan(epoch, pending);
+    this.startEarlyPreparation(epoch, pending);
+    return uploading;
+  }
+
+  /**
+   * Issue #44: build the derivatives as soon as the scan is handed over, so the exact bytes that will be uploaded can be inspected before any of them is
+   * sent. A failed early attempt is not an error yet: the commit repeats it exactly as it did before, and reports a failure then.
+   */
+  private startEarlyPreparation(epoch: number, pending: PendingScan): void {
+    const run = async (): Promise<void> => {
+      const occupancyWait = this.prepareOccupancy(epoch, pending);
+      if (occupancyWait !== undefined) await occupancyWait;
+      if (epoch !== this.epoch) return;
+      const occupancy = this.pendingOccupancy as PendingOccupancy | null;
+      this.publishPreparedFor(pending, occupancy?.bytes ?? null, null);
+      const previewWait = this.preparePreview(epoch, pending, occupancy?.bytes ?? null);
+      if (previewWait !== undefined) await previewWait;
+      if (epoch !== this.epoch) return;
+      const preview = this.pendingPreview as PendingPreview | null;
+      this.publishPreparedFor(pending, occupancy?.bytes ?? null, preview?.bytes ?? null);
+    };
+    pending.early = run().catch(() => undefined);
+  }
+
+  private publishPreparedFor(pending: PendingScan, occupancy: Uint8Array | null, preview: Uint8Array | null): void {
+    if (occupancy === null && preview === null) return;
+    this.publishPrepared({ objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, scanSha256: pending.identity.sha256, occupancy, preview });
   }
 
   private async prepareAndUploadScan(epoch: number, pending: PendingScan): Promise<ScanPersistenceState | null> {
@@ -438,21 +492,33 @@ export class ScanPersistenceController {
     if (epoch !== this.epoch) return this.state;
     pending.bytes = null;
     this.knownScan = { key: `${pending.objectId}/${pending.sessionId}`, identity: { known: true, present: true, id: pending.scanId } };
-    this.pendingOccupancy = null;
-    this.pendingPreview = null;
+    /* The early attempt (issue #44) may still be running or may have produced the bytes the operator is already looking at: use them, do not rebuild. */
+    if (pending.early === undefined) {
+      this.pendingOccupancy = null;
+      this.pendingPreview = null;
+    }
     this.dispatch(epoch, { type: 'scan-saved', scanId: pending.scanId });
-    const occupancyWait = this.prepareOccupancy(epoch, pending);
-    if (occupancyWait !== undefined) {
-      await occupancyWait;
+    if (pending.early !== undefined) {
+      await pending.early;
       if (epoch !== this.epoch) return this.state;
+    }
+    if (this.pendingOccupancy === null) {
+      const occupancyWait = this.prepareOccupancy(epoch, pending);
+      if (occupancyWait !== undefined) {
+        await occupancyWait;
+        if (epoch !== this.epoch) return this.state;
+      }
     }
     // The builders above may have assigned these fields while awaited; read them through the declared type.
     const preparedOccupancy = this.pendingOccupancy as PendingOccupancy | null;
-    const previewWait = this.preparePreview(epoch, pending, preparedOccupancy?.bytes ?? null);
-    if (previewWait !== undefined) {
-      await previewWait;
-      if (epoch !== this.epoch) return this.state;
+    if (this.pendingPreview === null) {
+      const previewWait = this.preparePreview(epoch, pending, preparedOccupancy?.bytes ?? null);
+      if (previewWait !== undefined) {
+        await previewWait;
+        if (epoch !== this.epoch) return this.state;
+      }
     }
+    this.publishPreparedFor(pending, preparedOccupancy?.bytes ?? null, (this.pendingPreview as PendingPreview | null)?.bytes ?? null);
     if (this.pendingOccupancy === null && this.pendingPreview === null) return this.state;
     if (this.pendingScan === pending && this.pendingOccupancy !== null && this.pendingPreview !== null) this.pendingScan = null;
     return this.pendingOccupancy === null ? this.uploadPreview(epoch) : this.uploadOccupancy(epoch);

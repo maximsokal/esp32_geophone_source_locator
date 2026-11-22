@@ -783,6 +783,88 @@ describe('asynchronous derivative builders (MAX-403)', () => {
   });
 });
 
+describe('derivatives are prepared with the save, before anything is sent (issue #44)', () => {
+  function harness() {
+    const calls: string[] = [];
+    const uploaded: { occupancy: Uint8Array | null; preview: Uint8Array | null } = { occupancy: null, preview: null };
+    const ports: ScanPersistencePorts = {
+      saveScan: async () => { calls.push('upload:scan'); return { ok: true, action: 'scan', id: occupancyFrameIdForScan(scanBytes) }; },
+      saveOccupancy: async (_o, _s, bytes) => { calls.push('upload:occupancy'); uploaded.occupancy = bytes; return { ok: true, action: 'occupancy' }; },
+      savePreview: async (_o, _s, bytes) => { calls.push('upload:preview'); uploaded.preview = bytes; return { ok: true, action: 'preview' }; },
+      fetchInfo: async () => ({ present: false, bytes: 0 } as ScanArtifactInfo),
+    };
+    return { ports, calls, uploaded };
+  }
+
+  it('hands the viewer the exact derivative arrays before the scan upload starts, and uploads those same arrays', async () => {
+    const { ports, calls, uploaded } = harness();
+    const seen: Array<{ occupancy: Uint8Array | null; preview: Uint8Array | null } | null> = [];
+    const controller = new ScanPersistenceController(ports, undefined, (prepared) => {
+      calls.push(prepared === null ? 'prepared:null' : `prepared:${prepared.occupancy !== null ? 'occ' : '-'}${prepared.preview !== null ? '+prev' : ''}`);
+      seen.push(prepared);
+    });
+    const buildOccupancy = vi.fn(() => occupancyBytes);
+    const buildPreview = vi.fn((_occupancy: Uint8Array | null) => previewBytes);
+    await controller.save('OBJ', 'SESSION', scanBytes, buildOccupancy, buildPreview);
+    expect(calls.indexOf('prepared:occ+prev'), 'the finished derivatives are announced before the first upload').toBeLessThan(calls.indexOf('upload:scan'));
+    const announced = seen.filter((entry) => entry !== null && entry.preview !== null).at(-1)!;
+    expect(announced.occupancy).toBe(uploaded.occupancy);       /* the very arrays, not copies */
+    expect(announced.preview).toBe(uploaded.preview);
+    expect(controller.preparedDerivatives).toMatchObject({ scanId: occupancyFrameIdForScan(scanBytes) });
+  });
+
+  it('builds each derivative once: the commit reuses the early bytes instead of rebuilding them', async () => {
+    const { ports } = harness();
+    const controller = new ScanPersistenceController(ports);
+    const buildOccupancy = vi.fn(() => occupancyBytes);
+    const buildPreview = vi.fn((_occupancy: Uint8Array | null) => previewBytes);
+    const state = await controller.save('OBJ', 'SESSION', scanBytes, buildOccupancy, buildPreview);
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+    expect(buildOccupancy).toHaveBeenCalledTimes(1);
+    expect(buildPreview).toHaveBeenCalledTimes(1);
+    expect(buildPreview).toHaveBeenCalledWith(occupancyBytes);
+  });
+
+  it('never delays the scan upload for a slow builder, and announces the bytes only once they exist', async () => {
+    const { ports, calls } = harness();
+    const announcements: string[] = [];
+    const controller = new ScanPersistenceController(ports, undefined, (prepared) => announcements.push(prepared === null ? 'null' : 'prepared'));
+    let release!: (bytes: Uint8Array) => void;
+    const held = new Promise<Uint8Array>((resolve) => { release = resolve; });
+    const pending = controller.save('OBJ', 'SESSION', scanBytes, () => held, () => previewBytes);
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    expect(calls).toEqual(['upload:scan']);
+    expect(announcements.filter((entry) => entry === 'prepared')).toEqual([]);
+    release(occupancyBytes);
+    await pending;
+    expect(announcements).toContain('prepared');
+  });
+
+  it('repeats a failed early build at the commit, as before, and reports the failure then', async () => {
+    const { ports } = harness();
+    const controller = new ScanPersistenceController(ports);
+    let attempts = 0;
+    const flaky = vi.fn(() => { attempts += 1; if (attempts === 1) throw new Error('first attempt fails'); return occupancyBytes; });
+    const state = await controller.save('OBJ', 'SESSION', scanBytes, flaky, () => previewBytes);
+    expect(flaky).toHaveBeenCalledTimes(2);
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+  });
+
+  it('forgets the prepared bytes when the owner is abandoned or a new scan is saved, and never announces a late build', async () => {
+    const { ports } = harness();
+    const announcements: Array<string> = [];
+    const controller = new ScanPersistenceController(ports, undefined, (prepared) => announcements.push(prepared === null ? 'null' : 'prepared'));
+    let release!: (bytes: Uint8Array) => void;
+    const held = new Promise<Uint8Array>((resolve) => { release = resolve; });
+    void controller.save('OBJ', 'SESSION', scanBytes, () => held, () => previewBytes);
+    controller.abandon();
+    release(occupancyBytes);
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    expect(announcements.filter((entry) => entry === 'prepared')).toEqual([]);
+    expect(controller.preparedDerivatives).toBeNull();
+  });
+});
+
 describe('scan persistence ownership and owner invalidation (MAX-392/MAX-415)', () => {
   it('releases owned scan bytes and prevents late info from reviving an abandoned owner', async () => {
     const sourceBytes = new Uint8Array([7, 8, 9]);
@@ -928,7 +1010,8 @@ describe('scan persistence ownership and owner invalidation (MAX-392/MAX-415)', 
       }, () => new Uint8Array([1]));
 
       await builderStarted;
-      expect(server.files.get('OBJ_ABANDON/S000001/scan')).toEqual(bytesA);
+      /* The builders start with the save since issue #44, so the primary commit of A is awaited explicitly before B replaces it. */
+      await vi.waitFor(() => expect(server.files.get('OBJ_ABANDON/S000001/scan')).toEqual(bytesA));
       controllerA.abandon();
       const identityB = createScanIdentity(bytesB);
       const savedB = await controllerB.save(
@@ -980,7 +1063,7 @@ describe('scan persistence ownership and owner invalidation (MAX-392/MAX-415)', 
       );
 
       await builderStarted;
-      expect(server.files.get(`${objectId}/${sessionId}/scan`)).toEqual(bytesA);
+      await vi.waitFor(() => expect(server.files.get(`${objectId}/${sessionId}/scan`)).toEqual(bytesA));
       const savedB = await controllerB.save(
         objectId,
         sessionId,
