@@ -35,7 +35,9 @@ import { tagNodeForId } from '../xr/fiducial/tagBindings.gen';
 import { LiveTagOverlay } from './LiveTagOverlay';
 import { defaultRegistrationTagSizes, decodeRegistrationArtifact, encodeRegistrationArtifact, type RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { estimateTagPose } from '../xr/fiducial/tagPose';
-import { fuseTagObservations, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
+import { fuseTagObservations, type TagObservation, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
+import { evaluateRelock, INITIAL_RELOCK_STATE, relockBaseTags, relockLostByJump, relockStillHolds, RELOCK_MIN_OBSERVATIONS, RELOCK_MIN_TAGS, RELOCK_MIN_VIEWS, type RelockBaseTag, type RelockState, type RelockTransform } from '../xr/fiducial/continuationRelocalization';
+import type { TagPositionsArtifact } from '../xr/fiducial/tagPositionsArtifact';
 import { TagObservationStore } from '../xr/fiducial/tagObservationStore';
 import { registerSensorToScan } from '../xr/fiducial/rigidRegistration';
 import { geophonePositionsFromTags, geophonePositionsRegistrationBlock } from '../xr/fiducial/geophonePositions';
@@ -88,6 +90,8 @@ interface XrRuntimePanelProps {
   scanIntent?: ScanStartIntent;
   /** Identity of the durable base scan a Continue extends; the saved registration must be bound to it. */
   baseScanFrameId?: string|null;
+  /** The tags saved with the base scan (project frame): a Continue is tied to them before any depth of the new session is used (issue #45). */
+  getRelockBase?: ()=>TagPositionsArtifact|null;
   /**
    * Provisional tag result of this AR session (unbound to any scan). final=true is sent exactly once
    * after Finish, always after onPointCloudReady, and is the signal that tag finalization is done.
@@ -139,12 +143,51 @@ export function XrRuntimePanel({
   onRegistrationChange,
   scanIntent='fresh',
   baseScanFrameId=null,
+  getRelockBase,
   onTagRegistrationResult,
   onTagAnchors,
   onScanLaunchAborted,
 }:XrRuntimePanelProps){
   const {locale}=useLocale();const t=useT();
   const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiStagingAllowed,setAiStagingAllowed]=useState(true);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
+  /* Issue #45, gate 1: a Continue scan is tied to the saved scan by known tags before any depth of the new session is used. The gate on the runtime keeps
+     depth out while the lock is open; it opens on a lock and closes again when the frame moves. A saved scan with fewer than three confirmed tags cannot
+     be re-located this way, and then the Continue works as before (overlap registration after the capture). */
+  const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);const[relockWithheld,setRelockWithheld]=useState(false);
+  const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
+  const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;
+  const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(false);setRelock(null);setRelockAligned(false);};
+  const armRelock=():void=>{
+    disarmRelock();setRelockWithheld(false);
+    if(scanIntentRef.current!=='continue')return;
+    const base=relockBaseTags(getRelockBaseRef.current?.()??null,baseScanFrameIdRef.current);
+    if(base.length<RELOCK_MIN_TAGS){clientDiagnostics.info('XR_RELOCK_UNAVAILABLE',{baseTags:base.length});return;}
+    relockBaseRef.current=base;relockArmedRef.current=true;runtime.setDepthGate(true);setRelock({...INITIAL_RELOCK_STATE});
+    clientDiagnostics.info('XR_RELOCK_START',{baseTags:base.map((tag)=>tag.tagId).join(',')});
+  };
+  const dropRelockLock=(event:string):void=>{relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(true);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn(event,{});};
+  const updateRelock=(observations:readonly TagObservation[]):void=>{
+    if(!relockArmedRef.current)return;
+    const fusion=fuseTagObservations(observations,{minObservations:RELOCK_MIN_OBSERVATIONS,minIndependentViews:RELOCK_MIN_VIEWS});
+    const next=evaluateRelock(relockBaseRef.current,fusion);const held=relockTransformRef.current;
+    if(held!==null){
+      if(relockLostByJump(relockUsedRef.current,fusion)||!relockStillHolds(held,next))dropRelockLock('XR_RELOCK_LOST');
+      return;
+    }
+    if(next.phase==='locked'&&next.transform!==null){
+      relockTransformRef.current=next.transform;relockUsedRef.current=next.usedTagIds;runtime.setDepthGate(false);setRelockAligned(true);
+      clientDiagnostics.info('XR_RELOCK_LOCKED',{tags:next.usedTagIds.join(','),rmsMm:Math.round((next.rmsMm??0)*10)/10,yawDeg:Math.round(next.transform.yaw*5729.578)/100,txM:Math.round(next.transform.tx*1000)/1000,tyM:Math.round(next.transform.ty*1000)/1000,tzM:Math.round(next.transform.tz*1000)/1000});
+    }
+    setRelock((previous)=>previous!==null&&previous.phase===next.phase&&previous.found===next.found&&previous.reason===next.reason?previous:next);
+  };
+  useEffect(()=>{
+    /* A reset moves the origin: tags seen before it are in another frame, so the lock and what led to it are void (issue #36 / #45). */
+    if(!runtimeState.originReset||!relockArmedRef.current)return;
+    tagObservationsRef.current.clear();relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(true);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn('XR_RELOCK_RESET',{});
+  },[runtimeState.originReset]);
+  useEffect(()=>{if((runtimeState.phase==='idle'||runtimeState.phase==='error')&&relockArmedRef.current)disarmRelock();},[runtimeState.phase]);
+  useEffect(()=>{if(!relockAligned)return;const timer=window.setTimeout(()=>setRelockAligned(false),5000);return()=>window.clearTimeout(timer);},[relockAligned]);
+  useEffect(()=>()=>{runtime.setDepthGate(false);},[runtime]);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagNotices,setTagNotices]=useState<TagScanNotice[]>([]);const tagConfirmedRef=useRef<number[]>([]);const tagJumpedRef=useRef<number[]>([]);const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
@@ -173,7 +216,7 @@ export function XrRuntimePanel({
     const bootstrapping=runtimeState.phase==='starting'&&previous!=='starting';
     const retargeting=targetChanged&&(runtimeState.phase==='starting'||runtimeState.phase==='running');
     if(bootstrapping||retargeting){
-      if(bootstrapping)onPointCloudReadyRef.current?.(null);
+      if(bootstrapping){onPointCloudReadyRef.current?.(null);armRelock();}
       const epoch=++tagGeometryEpoch.current;const runtimeGeneration=runtime.getLifecycleGeneration();tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(true);setTagModeError(null);setTagRegistrationLabel(null);setStaleRegistrationReason(null);if(bootstrapping)sessionTagResultRef.current=null;
       const ownsRequest=():boolean=>tagMountedRef.current&&epoch===tagGeometryEpoch.current&&tagTargetRef.current.objectId===objectId&&tagTargetRef.current.sessionId===sessionId&&runtime.getLifecycleGeneration()===runtimeGeneration&&['starting','running'].includes(runtime.getState().phase);
       if(objectId===null||sessionId===null){setTagGeometryLoading(false);setTagModeError('Open a recording before using tag registration.');return;}
@@ -195,7 +238,12 @@ export function XrRuntimePanel({
       })();
     }else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&previous!==runtimeState.phase){
       tagGeometryEpoch.current+=1;
-      const finished=runtimeState.phase==='ended'&&runtimeState.pointCount>0;
+      const finishedRaw=runtimeState.phase==='ended'&&runtimeState.pointCount>0;
+      /* A Continue that never found its tags has tied nothing to the saved scan: nothing is handed over, so the saved scan stays as it was. */
+      const neverLocked=relockArmedRef.current&&relockTransformRef.current===null;
+      const finished=finishedRaw&&!neverLocked;
+      if(runtimeState.phase==='ended'&&neverLocked){clientDiagnostics.warn('XR_RELOCK_NEVER_LOCKED',{pointCount:runtimeState.pointCount});setRelockWithheld(true);}
+      disarmRelock();
       /* MAX-403: the Finished scan is primary evidence and is handed over at once; tag finalization is a separate bounded stage. */
       if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());
       void (async()=>{
@@ -290,6 +338,7 @@ export function XrRuntimePanel({
         }
         if(detected.detections.length===0)return;
         const fusion=fuseTagObservations(tagObservationsRef.current.getObservations(),{minObservations:5,minIndependentViews:3});
+        if(relockArmedRef.current)updateRelock(tagObservationsRef.current.getObservations());    /* a Fresh scan pays nothing for the lock */
         const confirmedNow=confirmedTagIds(fusion);tagLiveRef.current.setConfirmed(confirmedNow);
         const confirmedKey=`${confirmedNow.join(',')}|${frameJumpTagIds(fusion).join(',')}`;if(confirmedKey!==tagConfirmedKeyRef.current){tagConfirmedKeyRef.current=confirmedKey;setTagFusion(fusion);}
       }).catch((reason)=>{if(tagModeActiveRef.current)setTagModeError(`AprilTag detection failed: ${reason instanceof Error?reason.message:String(reason)}`);});
@@ -431,6 +480,7 @@ export function XrRuntimePanel({
     <section className="xr-runtime-card xr-runtime-card-compact" aria-label={t('xr.title')}>
       <div className="xr-runtime-heading"><div><div className="panel-title">{t('xr.heading')}</div><strong>{t('xr.subtitle')}</strong></div><span className={`xr-phase ${qualityClass(runtimeState)}`}>{phaseLabel(runtimeState,locale)}</span></div>
       <div className="xr-compact-status"><span className={capabilities?.immersiveAr?'good-text':'bad-text'}>WebXR {capabilities?.immersiveAr?'✓':capabilities===null?t('xr.value.checking'):'—'}</span><span className={runtimeState.depthAvailable?'good-text':''}>{t('xr.label.depth')} {runtimeState.depthAvailable?'✓':runtimeState.phase==='idle'?t('xr.value.on_start'):'—'}</span><span className={runtimeState.rgbGuidanceAvailable?'good-text':''}>{t('xr.label.rgb')} {runtimeState.rgbGuidanceAvailable?'✓':capabilities?.rawXrRgbApi?t('xr.value.on_start'):'—'}</span><span className={runtimeState.wakeLockActive?'good-text':''}>{t('xr.label.screen')} {runtimeState.wakeLockActive?t('xr.value.awake'):capabilities?.wakeLockApi?t('xr.value.wake_ready'):t('xr.value.wake_lock_off')}</span></div>
+      {relockWithheld&&<div className="xr-runtime-warning" role="status" data-relock="never-locked">{t('xr.relock.never_locked')}</div>}
       <div className="xr-runtime-controls xr-runtime-controls-compact">
         {savedScanAvailable ? <>
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('continue')}>{computePreparing?t('xr.starting_ar'):t('xr.continue_scan')}</button>
@@ -461,6 +511,8 @@ export function XrRuntimePanel({
       {running&&bleActive&&<BleRoughPlacementHud estimates={bleEstimates} pose={runtimeState.pose}/>}
       <div className="xr-overlay-card xr-overlay-card-compact">{/* developer figures (counts, motion, CPU) are in the log, not over the camera */}
         {running&&activeScanIntent==='continue'&&<div className="xr-overlay-hint">{t('xr.overlay.continue_hint',{sample:continuationSampleReady?t('xr.overlay.continue_enough'):t('xr.overlay.registration_sample',{count:formatNumber(locale,runtimeState.pointCount)})})}</div>}
+        {relock!==null&&relock.phase==='relocalizing'&&<div className="xr-overlay-hint" role="status" data-relock="searching" data-relock-found={relock.found}>{t('xr.relock.find',{found:Math.min(relock.found,relock.needed),needed:relock.needed})}{relock.found>=relock.needed&&relock.reason!==null&&relock.reason!=='need_more_tags'?` · ${t(`xr.relock.reason.${relock.reason}` as 'xr.relock.reason.collinear')}`:''}</div>}
+        {relockAligned&&<div className="xr-overlay-hint" role="status" data-relock="aligned">{t('xr.relock.aligned')}</div>}
         {runtimeState.originReset&&<div className="xr-overlay-warning" role="alert" data-origin-reset="true">{t('xr.origin_reset')}</div>}{runtimeState.scanPaused&&!runtimeState.originReset&&<div className="xr-overlay-warning">{t('xr.manual.paused')}</div>}{runtimeState.motionState==='too-fast'&&<div className="xr-overlay-warning">{t('xr.manual.move_slower')}</div>}{(runtimeState.motionState==='stationary'||runtimeState.motionState==='redundant')&&<div className="xr-overlay-hint">{t('xr.manual.move_viewpoint')}</div>}{runtimeState.manualPointErrorKey!==null&&<div className="xr-overlay-warning" role="status">{t(runtimeState.manualPointErrorKey)}</div>}{runtimeState.manualPointErrorKey===null&&runtimeState.manualPointError!==null&&<div className="xr-overlay-warning">{manualPlacementErrorLabel(runtimeState.manualPointError,locale)}</div>}
         {running&&!tagModeEnabled&&tagUnavailableReason!==null&&<div className="xr-overlay-hint">{t('xr.tag.unavailable',{reason:tagUnavailableReason})}</div>}
         {tagModeEnabled&&tagNotices.length>0&&<div className="xr-tag-notices" role="status" aria-live="polite">{tagNotices.map((notice)=><div key={`${notice.kind??'ok'}-${notice.tagId}`} className={notice.kind==='jump'?'xr-overlay-warning xr-tag-notice':'xr-overlay-hint xr-tag-notice'} data-node={notice.node} data-frame-jump={notice.kind==='jump'?'true':undefined}>{tagScanNoticeText(notice,locale)}</div>)}</div>}

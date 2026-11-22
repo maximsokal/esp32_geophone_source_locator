@@ -1607,6 +1607,10 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         onRegistrationChange={onRegistrationChange}
         scanIntent={scanIntentState}
         baseScanFrameId={scanDurability.durableId}
+        getRelockBase={() => {
+          const stored = savedTagArtifactRef.current;
+          return stored !== null && stored.objectId === objectId && stored.sessionId === scanSessionId ? stored.artifact : null;
+        }}
         onTagRegistrationResult={onTagRegistrationResult}
         onTagAnchors={(anchors) => { setLiveTagAnchors(anchors); setTagAnchorsDelivered(true); }}
       />

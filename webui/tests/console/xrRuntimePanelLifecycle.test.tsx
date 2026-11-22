@@ -26,6 +26,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     projectProjectPointToNormalized=()=>null;addSuggestedManualPoint=()=>null;queueManualPointAtNormalized=()=>undefined;undoLastManualPoint=()=>undefined;
     private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
     setPhase=(phase:string,patch:Record<string,unknown>={})=>{if(['ended','interrupted','error'].includes(phase)&&this.state.phase!==phase)this.generation+=1;this.publish(phase,patch);};
+    depthGate:boolean|null=null;depthGateCalls:boolean[]=[];setDepthGate=(blocked:boolean)=>{this.depthGate=blocked;this.depthGateCalls.push(blocked);};
     start=async()=>{this.generation+=1;this.publish('starting');};
     stop=async()=>{this.publish('stopping');this.generation+=1;this.publish('ended',{pointCount:1});};
     dispose=async()=>{this.disposed+=1;};
@@ -50,7 +51,7 @@ vi.mock('../../src/xr/fiducial/tagDetector.worker.ts?worker&inline',()=>({defaul
 }}));
 vi.mock('../../src/xr/fiducial/tagPose',async(importOriginal)=>{
   const original=await importOriginal<typeof import('../../src/xr/fiducial/tagPose')>();
-  return{...original,estimateTagPose:(input:any)=>({ok:true,positionScan:[Number(input.corners[0][0]),2,3],capturedAtMs:input.capturedAtMs,cameraPosition:input.cameraPosition,cameraForward:input.cameraForward})};
+  return{...original,estimateTagPose:(input:any)=>({ok:true,positionScan:[Number(input.corners[0][0]),2,3+Number(input.corners[0][1])],capturedAtMs:input.capturedAtMs,cameraPosition:input.cameraPosition,cameraForward:input.cameraForward})};
 });
 vi.mock('../../src/xr/fiducial/registrationArtifact',async(importOriginal)=>{
   const original=await importOriginal<typeof import('../../src/xr/fiducial/registrationArtifact')>();
@@ -116,9 +117,9 @@ function textOf(node:ReactTestInstance|string):string{return typeof node==='stri
 function tagButton(renderer:ReactTestRenderer):ReactTestInstance{
   /* The title changes with the state: capture_title while off, tags_on once recognition runs (it now starts with the scan). */const titles=[translate('en','xr.tag.capture_title'),translate('en','xr.tag.tags_on')];const result=renderer.root.findAllByType('button').find((button)=>titles.includes(button.props.title));if(result===undefined)throw new Error('Missing AprilTag button.');return result;
 }
-function emitTagDetection(worker:any,options:{tagId?:number;positionX?:number}={}):void{
+function emitTagDetection(worker:any,options:{tagId?:number;positionX?:number;positionZ?:number}={}):void{
   const request=worker.messages.filter((item:any)=>item.type==='detect').at(-1);if(request===undefined)throw new Error('Expected an in-flight tag detection.');
-  const x=options.positionX??1;worker.emit('message',{type:'result',requestId:request.requestId,epoch:request.epoch,detections:[{tagId:options.tagId??0,corners:[[x,0],[x+1,0],[x+1,1],[x,1]],hammingDistance:0}]});
+  const x=options.positionX??1;const z=options.positionZ??0;worker.emit('message',{type:'result',requestId:request.requestId,epoch:request.epoch,detections:[{tagId:options.tagId??0,corners:[[x,z],[x+1,z],[x+1,z+1],[x,z+1]],hammingDistance:0}]});
 }
 function tagFrame(capturedAtMs=1,cameraPosition:readonly[number,number,number]=[0,0,0],cameraForward:readonly[number,number,number]=[0,0,-1]){
   return{width:1,height:1,rgba:new Uint8Array(4),capturedAtMs,cameraPosition,cameraForward,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)};
@@ -778,5 +779,118 @@ describe('one-tap scan launch (issue #21)',()=>{
     await act(async()=>{await settleReact();(globalThis as any).__runPanelTimeouts();await settleReact();});
     expect(starts()).toBe(0);
     unmount(renderer);
+  });
+});
+
+/* Issue #45, gate 1: a Continue scan is tied to the saved scan by known tags before any depth of the new session is used. */
+describe('tag-locked Continue (issue #45)',()=>{
+  /* The mocked pose puts a tag at WebXR (x, 2, 3 + z), i.e. project (x, -(3 + z), 2) metres; the saved layout below is that same placement, so B = A. */
+  const TAGS=[{tagId:0,x:1,z:0},{tagId:1,x:2.5,z:0.4},{tagId:2,x:1.6,z:-1.1}];
+  const projectMm=(tag:{x:number;z:number}):[number,number,number]=>[tag.x*1000,-(3+tag.z)*1000,2000];
+  const node=(tag:typeof TAGS[number],confirmed=true)=>{const [x,y,z]=projectMm(tag);const [mx,my,mz]=projectMm(TAGS[0]);return{node_id:tag.tagId,tag_id:tag.tagId,x_mm:x-mx,y_mm:y-my,z_mm:z-mz,uncertainty_mm:3,confirmed,observations:9,views:4};};
+  const artifact=(confirmedCount=3)=>({schema:1,kind:'tag-positions',frame:'sensor_z_up',scan_frame_id:BASE_ID,created_at_ms:1,geometry_computed_at_ms:null,
+    main_scan_position_mm:projectMm(TAGS[0]),weakest_main_triangle_height_mm:400,nodes:TAGS.map((tag,index)=>node(tag,index<confirmedCount))} as any);
+  const props=(extra:Record<string,unknown>={})=>({objectId:'OBJ_A',sessionId:'SESSION_A',scanIntent:'continue' as const,baseScanFrameId:BASE_ID,getRelockBase:()=>artifact(),...extra});
+  const hint=(renderer:ReactTestRenderer,kind:string)=>renderer.root.findAll((n)=>n.props['data-relock']===kind);
+  const observe=async(runtime:any,worker:any,tag:typeof TAGS[number],count:number,firstIndex:number,at?:{x:number;z:number})=>{
+    for(let i=0;i<count;i+=1){runtime.emitTagFrame(tagFrame(firstIndex+i,[(firstIndex+i)*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId:tag.tagId,positionX:(at??tag).x,positionZ:(at??tag).z});await settleReact();});}
+  };
+  async function startContinue(extra:Record<string,unknown>={}){
+    const renderer=await mountPanel(props(extra));const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];return{renderer,runtime,worker};
+  }
+
+  it('closes the depth gate when a Continue starts, asks for 3 known tags, and opens it only when the third is found',async()=>{
+    const{renderer,runtime,worker}=await startContinue();
+    expect(runtime.depthGate).toBe(true);
+    expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:0}));
+    await observe(runtime,worker,TAGS[0],4,1);
+    expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:1}));
+    expect(runtime.depthGate).toBe(true);
+    await observe(runtime,worker,TAGS[0],6,10);                                    /* the same tag again is still one tag */
+    expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:1}));
+    await observe(runtime,worker,TAGS[1],4,20);
+    expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:2}));
+    expect(runtime.depthGate).toBe(true);
+    await observe(runtime,worker,TAGS[2],4,30);
+    expect(runtime.depthGate).toBe(false);
+    expect(hint(renderer,'searching')).toHaveLength(0);
+    expect(textOf(hint(renderer,'aligned')[0])).toBe(translate('en','xr.relock.aligned'));
+    unmount(renderer);
+  });
+
+  it('keeps the camera view free of new buttons: the lock is a hint line and a status, nothing to press',async()=>{
+    const{renderer}=await startContinue();
+    const labels=renderer.root.findAllByType('button').map((button)=>textOf(button));
+    expect(labels.some((label)=>/relock|lock|find tags|guided/i.test(label))).toBe(false);
+    unmount(renderer);
+  });
+
+  it('does nothing for a Fresh scan, and for a saved scan with fewer than 3 confirmed tags (the Continue then works as before)',async()=>{
+    let started=await startContinue({scanIntent:'fresh'});
+    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    expect(hint(started.renderer,'searching')).toHaveLength(0);
+    unmount(started.renderer);
+    panelHarness.runtimes=[];panelHarness.workers=[];
+    started=await startContinue({getRelockBase:()=>artifact(2)});
+    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    expect(hint(started.renderer,'searching')).toHaveLength(0);
+    unmount(started.renderer);
+    panelHarness.runtimes=[];panelHarness.workers=[];
+    started=await startContinue({getRelockBase:()=>({...artifact(),scan_frame_id:'scan-crc32:bbbbbbbb'})});   /* tags of another scan anchor nothing */
+    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    unmount(started.renderer);
+  });
+
+  it('voids the lock on a reference-space reset, drops what was seen before it, and needs the tags again',async()=>{
+    const{renderer,runtime,worker}=await startContinue();
+    for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,1+k*10);
+    expect(runtime.depthGate).toBe(false);
+    await act(async()=>{runtime.setPhase('running',{originReset:true});await settleReact();});
+    expect(runtime.depthGate).toBe(true);
+    expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:0}));
+    await act(async()=>{runtime.setPhase('running',{originReset:false});await settleReact();});
+    for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,100+k*10);
+    expect(runtime.depthGate).toBe(false);
+    unmount(renderer);
+  });
+
+  it('ends the lock when a tag it relied on jumps (the frame shifted without a reset event)',async()=>{
+    const{renderer,runtime,worker}=await startContinue();
+    for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,1+k*10);
+    expect(runtime.depthGate).toBe(false);
+    await observe(runtime,worker,TAGS[2],5,200,{x:9,z:2});                          /* the same tag, 8 m away */
+    expect(runtime.depthGate).toBe(true);
+    expect(hint(renderer,'searching').length).toBeGreaterThan(0);
+    unmount(renderer);
+  });
+
+  it('hands nothing over when the tags were never found, says so, and leaves the saved scan alone; a locked Continue hands its scan over',async()=>{
+    const ready=vi.fn();
+    let started=await startContinue({onPointCloudReady:ready});
+    expect(ready.mock.calls).toEqual([[null]]);                                     /* only the startup notice */
+    await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
+    expect(ready.mock.calls).toEqual([[null]]);
+    expect(hint(started.renderer,'never-locked')).toHaveLength(1);
+    expect(textOf(hint(started.renderer,'never-locked')[0])).toBe(translate('en','xr.relock.never_locked'));
+    expect(started.runtime.depthGate).toBe(false);                                  /* the gate never outlives the session */
+    unmount(started.renderer);
+
+    panelHarness.runtimes=[];panelHarness.workers=[];
+    const lockedReady=vi.fn();
+    started=await startContinue({onPointCloudReady:lockedReady});
+    for(let k=0;k<3;k+=1)await observe(started.runtime,started.worker,TAGS[k],4,1+k*10);
+    await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
+    expect(lockedReady).toHaveBeenCalledTimes(2);
+    expect(lockedReady.mock.calls[1][0]).not.toBeNull();
+    expect(hint(started.renderer,'never-locked')).toHaveLength(0);
+    unmount(started.renderer);
+  });
+
+  it('opens the gate again when the panel goes away',async()=>{
+    const{renderer,runtime}=await startContinue();
+    expect(runtime.depthGate).toBe(true);
+    unmount(renderer);
+    expect(runtime.depthGate).toBe(false);
   });
 });

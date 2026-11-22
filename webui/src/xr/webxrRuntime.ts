@@ -342,7 +342,7 @@ export class WebXrRuntime{
   private readonly frameFaultCounts=new Map<string,number>();private readonly loggedFrameFaults=new Set<string>();private frameFaultedGeneration:number|null=null;private fatalFrameTeardown=false;
   private contextCanvas:EventTarget|null=null;private contextLostListener:((event:Event)=>void)|null=null;private contextRestoredListener:(()=>void)|null=null;
   private finalSnapshot:ScanPointCloudSnapshot|null=null;
-  private explicitStopRequested=false;private evidenceFrozen=false;private evidenceEpoch=0;private frozenVisualEvidenceFrames=0;private scanPaused=false;private originResetPaused=false;private referenceSpaceResetCleanup:(()=>void)|null=null;private frameCount=0;private lastUiUpdateMs=0;
+  private depthGateBlocked=false;private explicitStopRequested=false;private evidenceFrozen=false;private evidenceEpoch=0;private frozenVisualEvidenceFrames=0;private scanPaused=false;private originResetPaused=false;private referenceSpaceResetCleanup:(()=>void)|null=null;private frameCount=0;private lastUiUpdateMs=0;
   private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
   private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;private lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;
@@ -836,8 +836,14 @@ export class WebXrRuntime{
       worldFromView:guidance.worldFromView??Float32Array.from(view.transform.matrix)});
   }
 
+  /**
+   * Issue #45: a Continue scan must not feed depth into the saved scan before the new session is tied to it by known tags. While the gate is closed
+   * depth frames are dropped (tag detection, tracking and the camera keep running, so the tags can still be found). The owner opens it on a lock.
+   */
+  setDepthGate(blocked:boolean):void{this.depthGateBlocked=blocked;}
+
   private captureDepth(time:number,frame:XrFrameLike,pose:XrViewerPoseLike):void{
-    if(this.scanPaused||this.originResetPaused||!this.depthEnabled||pose.views.length===0)return;
+    if(this.depthGateBlocked||this.scanPaused||this.originResetPaused||!this.depthEnabled||pose.views.length===0)return;
     if(typeof frame.getDepthInformation!=='function'){if(!this.depthFailureReported){this.depthFailureReported=true;this.publish({depthError:'XRFrame.getDepthInformation() is unavailable.'});}return;}
     const view=pose.views[0];
     try{
