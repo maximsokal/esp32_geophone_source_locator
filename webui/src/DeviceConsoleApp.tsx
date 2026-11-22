@@ -626,7 +626,9 @@ export default function DeviceConsoleApp() {
       if (requestOwnerRef.current !== owner) return;
       setStatus(latest);
       if (latest.workflow?.step === 'SCANNING' && Number.isSafeInteger(latest.workflow.generation)) {
-        const result = await sendWorkflowCommand('BACK', latest.workflow.generation);
+        /* A scan already saved is accepted, not thrown away: BACK would land on "start a 3D scan?" again (phone run 2026-11-22). Only an empty scanner goes back. */
+        const command = latest.workflow.has_scan === true ? 'SCAN_COMPLETE' : 'BACK';
+        const result = await sendWorkflowCommand(command, latest.workflow.generation);
         if (requestOwnerRef.current !== owner) return;
         if (result.ok) setStatus({ ...latest, workflow: result.workflow });
         else {

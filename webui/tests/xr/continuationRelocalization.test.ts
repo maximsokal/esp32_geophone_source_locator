@@ -204,6 +204,28 @@ describe('saved tags as the anchors of a re-lock', () => {
     expect(tags[1].uncertaintyMm).toBe(3);
   });
 
+  it('also takes the tags that were seen often enough from enough views but never reached confirmation (the 2026-11-22 scan had one confirmed of four)', () => {
+    const weakConfirmation = (overrides: Record<string, unknown>) => artifact({
+      nodes: [
+        { node_id: 0, tag_id: 0, x_mm: 0, y_mm: 0, z_mm: 0, uncertainty_mm: 0, confirmed: false, observations: 4, views: 3 },
+        { node_id: 1, tag_id: 1, x_mm: 1500, y_mm: -200, z_mm: 20, uncertainty_mm: 7, confirmed: false, observations: 3, views: 2 },
+        { node_id: 2, tag_id: 2, x_mm: 300, y_mm: 900, z_mm: -10, uncertainty_mm: 8, confirmed: false, observations: 4, views: 2 },
+        { node_id: 3, tag_id: 3, x_mm: -500, y_mm: 600, z_mm: 0, uncertainty_mm: 6, confirmed: false, observations: 2, views: 1 },     /* too little */
+        { node_id: 4, tag_id: 4, x_mm: 800, y_mm: -900, z_mm: 10, uncertainty_mm: 9, confirmed: true, observations: 6, views: 4 },
+      ],
+      ...overrides,
+    } as Partial<TagPositionsArtifact>);
+    expect(relockBaseTags(weakConfirmation({}), 'scan-crc32:aaaaaaaa').map((tag) => tag.tagId)).toEqual([0, 1, 2, 4]);
+    /* many sightings from one view, or many views with too few sightings: neither is reliable */
+    const lopsided = artifact({
+      nodes: [
+        { node_id: 0, tag_id: 0, x_mm: 0, y_mm: 0, z_mm: 0, uncertainty_mm: 0, confirmed: false, observations: 40, views: 1 },
+        { node_id: 1, tag_id: 1, x_mm: 1500, y_mm: -200, z_mm: 20, uncertainty_mm: 7, confirmed: false, observations: 2, views: 9 },
+      ],
+    } as Partial<TagPositionsArtifact>);
+    expect(relockBaseTags(lopsided, 'scan-crc32:aaaaaaaa')).toEqual([]);
+  });
+
   it('gives no anchors for a layout saved for another scan, with no scan id, or without a usable MAIN position', () => {
     expect(relockBaseTags(artifact(), 'scan-crc32:bbbbbbbb')).toEqual([]);
     expect(relockBaseTags(artifact({ scan_frame_id: null }), null)).toEqual([]);

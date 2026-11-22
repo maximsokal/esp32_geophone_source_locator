@@ -974,8 +974,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     }
   }, [objectId, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode, cancelScanDecode]);
 
-  const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null): void => {
+  /* The B -> A transform the tags of the finished Continue gave (issue #45); it is the registration of the merge. */
+  const relockSeed = useRef<{ yaw: number; tx: number; ty: number; tz: number } | null>(null);
+  const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null, meta?: { relockTransform: { yaw: number; tx: number; ty: number; tz: number } | null }): void => {
     setScanStorageError(null);
+    relockSeed.current = incoming === null ? null : meta?.relockTransform ?? null;
 
     if (incoming === null) {
       setLiveTagAnchors([]); // a new scanner generation: anchors of the previous scan do not carry over
@@ -1019,8 +1022,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       setContinuationPhase('registration');
       setScanStoragePhase('continuing');
       const client = continuationClient.current ?? (continuationClient.current = new ContinuationClient());
+      const seed = relockSeed.current;
+      if (seed !== null) clientDiagnostics.info('SCAN_CONTINUATION_SEEDED', { yawDeg: Math.round(seed.yaw * 5729.578) / 100, tx: Math.round(seed.tx * 1000) / 1000, ty: Math.round(seed.ty * 1000) / 1000, tz: Math.round(seed.tz * 1000) / 1000 });
       void client.continue(base, incoming, {
         generation,
+        seed,
         budgetLimitBytes: computeProfile === null
           ? CONTINUATION_TRANSIENT_BUDGET_BYTES
           : Math.min(CONTINUATION_TRANSIENT_BUDGET_BYTES, computeProfile.postScanMemoryBudgetBytes),

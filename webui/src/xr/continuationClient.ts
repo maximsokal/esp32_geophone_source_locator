@@ -14,6 +14,8 @@ export interface ContinuationClientOptions {
   /** Lowered to the device post-scan budget when the capability profile is known. */
   budgetLimitBytes?: number;
   onPhase?: (phase: ScanContinuationPhase) => void;
+  /** The B -> A transform found from known tags (issue #45): used as the registration. */
+  seed?: { yaw: number; tx: number; ty: number; tz: number } | null;
 }
 
 export class ContinuationBudgetExceededError extends Error {
@@ -140,7 +142,7 @@ export class ContinuationClient {
         worker.addEventListener('messageerror', this.handleMessageError);
         const transfer = [...snapshotBuffers(baseCopy), ...snapshotBuffers(extensionCopy)];
         const request: ContinuationWorkerRequest = {
-          type: 'continue', requestId, generation, base: baseCopy, extension: extensionCopy, options: { budget },
+          type: 'continue', requestId, generation, base: baseCopy, extension: extensionCopy, options: { budget, ...(options.seed === undefined || options.seed === null ? {} : { seed: options.seed }) },
         };
         try { worker.postMessage(request, transfer); }
         catch (reason) { this.finishWithError(pending, reason); }

@@ -620,6 +620,63 @@ describe('saved 3D scan continuation', () => {
     }
   });
 
+  describe('a transform found from known tags registers the merge (issue #45)', () => {
+    it('merges a periodic overlap that the search must refuse as ambiguous, because the tags already say where B is', () => {
+      const grid = periodicGridPoints();
+      const searched = registerAndMergeScanContinuation(snapshot(grid), snapshot(grid));
+      expect(searched.ok).toBe(false);                                           /* the phone run of 2026-11-22 failed exactly like this */
+      const seeded = registerAndMergeScanContinuation(snapshot(grid), snapshot(grid), undefined, { yaw: 0, tx: 0, ty: 0, tz: 0 });
+      expect(seeded.ok, seeded.ok ? '' : seeded.reason).toBe(true);
+      if (!seeded.ok) return;
+      expect(seeded.extensionToBase.yaw).toBeCloseTo(0, 6);
+      expect(seeded.extensionToBase.tx).toBeCloseTo(0, 6);
+      expect(seeded.diagnostics.secondBestMargin).toBeNull();
+      expect(seeded.diagnostics.runtimeOperations?.yawHypotheses).toBe(0);         /* no search at all */
+      expect(seeded.diagnostics.inliers).toBe(grid.length / 3);
+    });
+
+    it('uses the tag alignment for an ordinary partial overlap too, and stays at it', () => {
+      const fixture = partialOverlapPair(0);
+      const truth = { yaw: fixture.yaw, tx: fixture.translation[0], ty: fixture.translation[1], tz: fixture.translation[2] };
+      const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, truth);
+      expect(result.ok, result.ok ? '' : result.reason).toBe(true);
+      if (!result.ok) return;
+      expect(Math.abs(result.extensionToBase.yaw - truth.yaw)).toBeLessThan(0.01);
+      expect(Math.hypot(result.extensionToBase.tx - truth.tx, result.extensionToBase.ty - truth.ty, result.extensionToBase.tz - truth.tz)).toBeLessThan(0.02);
+      expect(result.diagnostics.runtimeOperations?.yawHypotheses).toBe(0);
+    });
+
+    it('polishes a tag alignment that is a few centimetres off, towards the truth', () => {
+      const fixture = partialOverlapPair(0);
+      const truth = { yaw: fixture.yaw, tx: fixture.translation[0], ty: fixture.translation[1], tz: fixture.translation[2] };
+      const seed = { ...truth, tx: truth.tx + 0.05, ty: truth.ty - 0.04 };
+      const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, seed);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const errorOf = (t: { tx: number; ty: number; tz: number }): number => Math.hypot(t.tx - truth.tx, t.ty - truth.ty, t.tz - truth.tz);
+      expect(errorOf(result.extensionToBase)).toBeLessThan(errorOf(seed));
+    });
+
+    it('refuses a tag alignment the saved geometry contradicts: 1.5 m off is not merged, and no search silently replaces it', () => {
+      const fixture = partialOverlapPair(0);
+      const wrong = { yaw: fixture.yaw, tx: fixture.translation[0] + 1.5, ty: fixture.translation[1], tz: fixture.translation[2] };
+      const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, wrong);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain('alignment rejected');
+        expect(result.diagnostics?.runtimeOperations?.yawHypotheses).toBe(0);
+      }
+    });
+
+    it('a null seed is the old behaviour exactly', () => {
+      const fixture = partialOverlapPair(0);
+      const without = registerAndMergeScanContinuation(fixture.base, fixture.extension);
+      const withNull = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, null);
+      expect(withNull.ok).toBe(without.ok);
+      if (without.ok && withNull.ok) expect(withNull.extensionToBase).toEqual(without.extensionToBase);
+    });
+  });
+
   it('rejects a narrow horizontal strip before arbitrary yaw can be accepted', () => {
     const strip = new Float32Array(144 * 3);
     for (let index = 0; index < 144; index += 1) {

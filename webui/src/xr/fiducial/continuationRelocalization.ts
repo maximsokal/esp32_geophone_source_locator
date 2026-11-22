@@ -68,7 +68,7 @@ export const INITIAL_RELOCK_STATE: RelockState = Object.freeze({
 }) as RelockState;
 
 /**
- * The tags saved with scan A that may anchor a re-lock: the CONFIRMED ones, in A's project frame. The artifact's layout is relative to MAIN and
+ * The tags saved with scan A that may anchor a re-lock: the RELIABLE ones (confirmed, or seen often enough from enough views), in A's project frame. The artifact's layout is relative to MAIN and
  * axis-aligned with the scan, so a tag's position in A is MAIN's scan position plus its layout offset.
  */
 export function relockBaseTags(artifact: TagPositionsArtifact | null, expectedScanId: string | null): RelockBaseTag[] {
@@ -78,7 +78,10 @@ export function relockBaseTags(artifact: TagPositionsArtifact | null, expectedSc
   const seen = new Set<number>();
   const tags: RelockBaseTag[] = [];
   for (const node of artifact.nodes) {
-    if (!node.confirmed || seen.has(node.tag_id)) continue;
+    /* Reliable in A by the same measure as in B: confirmed, or at least seen several times from several views. Real scans seldom confirm more than one
+       tag (the phone run of 2026-11-22 saved 4 usable tags, only one of them 'confirmed'), and refusing the rest left a Continue with no lock at all. */
+    const reliable = node.confirmed || (node.observations >= RELOCK_MIN_OBSERVATIONS && node.views >= RELOCK_MIN_VIEWS);
+    if (!reliable || seen.has(node.tag_id)) continue;
     if (![node.x_mm, node.y_mm, node.z_mm].every(Number.isFinite)) continue;
     seen.add(node.tag_id);
     tags.push({ tagId: node.tag_id, positionMm: [mx + node.x_mm, my + node.y_mm, mz + node.z_mm], uncertaintyMm: Math.max(0, node.uncertainty_mm) });

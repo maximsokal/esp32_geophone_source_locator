@@ -646,6 +646,75 @@ function registerExtension(
   return { transform: best.transform, diagnostics };
 }
 
+/** With a lock from known tags the overlap only has to CONFIRM the alignment, so the bars are lower than for a search over every pose. */
+const SEEDED_MIN_INLIERS = 30;
+const SEEDED_MIN_OVERLAP = 0.05;
+/** The refinement may polish the tag alignment, not replace it: further than this from the seed, the seed is kept. */
+const SEEDED_MAX_REFINE_SHIFT_METERS = 0.1;
+const SEEDED_MAX_REFINE_YAW_RADIANS = 0.05;
+
+/**
+ * Registration for a continuation that is already tied to the saved scan by known tags (issue #45): no search, no ambiguity between candidates.
+ * The seed is polished by the same point-to-point refinement the search uses, but only within a small distance of the tag alignment, and the result is
+ * scored against the saved points so that the merge reports honest overlap numbers.
+ */
+function registerExtensionWithSeed(
+  base: ScanPointCloudSnapshot,
+  extension: ScanPointCloudSnapshot,
+  seed: RigidTransform,
+): { transform: RigidTransform; diagnostics: ScanContinuationDiagnostics } | null {
+  const basePoints = samplePositions(base.positions);
+  const extensionPoints = samplePositions(extension.positions);
+  if (basePoints.length < 120 || extensionPoints.length < 120) return null;
+  const targetHash = buildContinuationSpatialHash(basePoints, REGISTRATION_HASH_CELL_METERS);
+  const denominator = Math.min(basePoints.length, extensionPoints.length);
+  const operations: RegistrationWorkCounters = {
+    yawHypotheses: 0, translationVotes: 0, scoredHypotheses: 0, refinedHypotheses: 0, localDescriptorDistanceChecks: 0, featureDescriptorComparisons: 0,
+    featureCandidatePairs: 0, icpIterations: 0, localYawCandidates: 0, localYawIterations: 0, bucketLookups: 0, candidateDistanceChecks: 0,
+  };
+  const features = featureCorrespondences(basePoints, extensionPoints, operations);
+  let refined: RigidTransform = seed;
+  operations.refinedHypotheses += 1;
+  for (let iteration = 0; iteration < REFINEMENT_ITERATIONS; iteration += 1) {
+    operations.icpIterations += 1;
+    const solved = solveYawTranslation(collectMatches(extensionPoints, targetHash, refined, operations, features));
+    if (solved === null) break;
+    refined = solved;
+  }
+  const shift = Math.hypot(refined.tx - seed.tx, refined.ty - seed.ty, refined.tz - seed.tz);
+  const turn = yawSeparation(refined.yaw, seed.yaw);
+  const transform = shift <= SEEDED_MAX_REFINE_SHIFT_METERS && turn <= SEEDED_MAX_REFINE_YAW_RADIANS ? refined : seed;
+  const scored = scoreTransform(extensionPoints, targetHash, transform, denominator, operations, features);
+  const diagnostics: ScanContinuationDiagnostics = {
+    yawRadians: transform.yaw,
+    translation: [transform.tx, transform.ty, transform.tz],
+    inliers: scored.matches.length,
+    overlapRatio: scored.overlapRatio,
+    rmsMeters: scored.rmsMeters,
+    baseSampleCount: basePoints.length,
+    extensionSampleCount: extensionPoints.length,
+    conditioning: horizontalConditioning(scored.matches),
+    secondBestMargin: null,
+    runtimeOperations: {
+      yawHypotheses: operations.yawHypotheses,
+      translationVotes: operations.translationVotes,
+      scoredHypotheses: operations.scoredHypotheses,
+      refinedHypotheses: operations.refinedHypotheses,
+      localDescriptorDistanceChecks: operations.localDescriptorDistanceChecks,
+      featureDescriptorComparisons: operations.featureDescriptorComparisons,
+      featureCandidatePairs: operations.featureCandidatePairs,
+      icpIterations: operations.icpIterations,
+      localYawCandidates: operations.localYawCandidates,
+      localYawIterations: operations.localYawIterations,
+      spatialBucketLookups: operations.bucketLookups,
+      candidateDistanceChecks: operations.candidateDistanceChecks,
+      coarseScratchBytes: COARSE_SCRATCH_BYTES,
+      descriptorScratchBytes: FEATURE_DESCRIPTOR_SCRATCH_BYTES,
+    },
+  };
+  return { transform, diagnostics };
+}
+
 function transformPositions(values: Float32Array, transform: RigidTransform): Float32Array {
   const result = new Float32Array(values.length);
   const c = Math.cos(transform.yaw);
@@ -1431,6 +1500,8 @@ export function registerAndMergeScanContinuation(
   base: ScanPointCloudSnapshot,
   extension: ScanPointCloudSnapshot,
   hooks?: ScanContinuationHooks,
+  /** The B -> A transform found from known tags (issue #45): used as the registration instead of a search over the overlap. */
+  seed?: RigidTransform | null,
 ): ScanContinuationResult {
   if (base.pointCount < 120 || extension.pointCount < 120) {
     return { ok: false, reason: 'Need at least 120 stable points in both the saved scan and the continuation.', diagnostics: null };
@@ -1451,7 +1522,8 @@ export function registerAndMergeScanContinuation(
   }
 
   reportContinuationPhase(hooks, 'registration');
-  const registration = registerExtension(base, extension);
+  const seeded = seed !== undefined && seed !== null;
+  const registration = seeded ? registerExtensionWithSeed(base, extension, seed) : registerExtension(base, extension);
   if (registration === null) {
     return { ok: false, reason: 'Could not align the continuation. Start by scanning an overlapping part of the saved scene.', diagnostics: null };
   }
@@ -1471,8 +1543,8 @@ export function registerAndMergeScanContinuation(
     };
   }
   if (
-    diagnostics.inliers < REGISTRATION_MIN_INLIERS ||
-    diagnostics.overlapRatio < REGISTRATION_MIN_OVERLAP ||
+    diagnostics.inliers < (seeded ? SEEDED_MIN_INLIERS : REGISTRATION_MIN_INLIERS) ||
+    diagnostics.overlapRatio < (seeded ? SEEDED_MIN_OVERLAP : REGISTRATION_MIN_OVERLAP) ||
     diagnostics.rmsMeters > REGISTRATION_MAX_RMS_METERS
   ) {
     return {

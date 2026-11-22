@@ -205,6 +205,26 @@ afterEach(() => {
 });
 
 describe('App off-thread continuation lifecycle (MAX-393)', () => {
+  it('hands the tag-derived transform of a locked Continue to the worker as its registration seed, and none without a lock (issue #45)', async () => {
+    const T = { yaw: 0.31, tx: 1.25, ty: -0.5, tz: 0.02 };
+    await openSavedBase();
+    await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+    await flush();
+    await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: T }); });
+    await flush();
+    const locked = h.workers[h.workers.length - 1];
+    expect(locked.request.options.seed).toEqual(T);
+
+    await act(async () => { h.props.onScanIntent('fresh'); });
+    h.workers = [];
+    await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+    await flush();
+    await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot()); });
+    await flush();
+    const unlocked = h.workers[h.workers.length - 1];
+    expect(unlocked.request.options).not.toHaveProperty('seed');
+  });
+
   it('keeps durable A visible while registration is pending, then preserves A after a worker error', async () => {
     const { renderer, baseSnapshot, baseBytes, baseId } = await openSavedBase();
     const worker = await startContinue();

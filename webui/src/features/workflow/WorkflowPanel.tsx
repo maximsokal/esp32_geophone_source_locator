@@ -661,6 +661,11 @@ export default function WorkflowPanel({
       return;
     }
     if (workflow === undefined || !Number.isSafeInteger(workflow.generation)) return;
+    /* Back from "ready to record" with a scan saved goes to the scan (its result and Continue), not to the question "start a 3D scan?" (phone run 2026-11-22). */
+    if (action.command.toUpperCase() === 'BACK' && workflow.step === 'RECORD_READY' && workflow.has_scan === true && workflow.object_id) {
+      onOpenScanner(workflow.object_id, null);
+      return;
+    }
 
     setPendingCommand(action.command);
     setError(null);

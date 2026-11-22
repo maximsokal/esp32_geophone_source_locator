@@ -248,6 +248,46 @@ describe('DeviceConsoleApp scanner chunk boundary', () => {
     expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(52);
   });
 
+  it('Back from a scanner that already holds a saved scan accepts the scan (SCAN_COMPLETE) instead of landing on "start a 3D scan?" again', async () => {
+    stubBrowser();
+    const scanning = deviceStatus(false);
+    scanning.workflow = {
+      step: 'SCANNING',
+      generation: 71,
+      allowed_actions: ['SCAN_COMPLETE', 'BACK'],
+      object_id: 'OBJ_0001',
+      session_id: null,
+      has_scan: true,
+    } as DeviceStatus['workflow'];
+    api.fetchDeviceStatus.mockResolvedValue(scanning);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      workflow: {
+        step: 'RECORD_READY',
+        generation: 72,
+        progress: null,
+        allowed_actions: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
+        object_id: 'OBJ_0001',
+        has_scan: true,
+      },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const renderer = await mountConsole();
+    await act(async () => {
+      renderer.root.findByProps({ className: 'console-floating-back' }).props.onClick();
+      await settleReact();
+      await settleReact();
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toMatchObject({
+      action: 'workflow_command',
+      command: 'SCAN_COMPLETE',
+      generation: 71,
+    });
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('RECORD_READY');
+  });
+
   it('marks the staged scan complete and returns to RECORD_READY after upload', async () => {
     stubBrowser();
     const scanning = deviceStatus(false);

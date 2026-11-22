@@ -327,6 +327,36 @@ describe('workflow view model (MAX-296)', () => {
     expect(visible).toContain(translate('en', 'workflow.open_3d'));
   });
 
+  describe('Back from "ready to record" (phone run 2026-11-22)', () => {
+    const pressBack = async (status: DeviceStatus, sendCommand: ReturnType<typeof vi.fn>, onOpenScanner: ReturnType<typeof vi.fn>) => {
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(createElement(WorkflowPanel, {
+          status, objectName: 'Quarry', sendCommand, onRefreshStatus: async () => true, onWorkflowUpdate: () => undefined, onOpenScanner,
+        }));
+      });
+      const back = renderer.root.findAllByType('button').find((node) => node.props['data-command'] === 'BACK')!;
+      await act(async () => { back.props.onClick(); });
+      act(() => renderer.unmount());
+    };
+
+    it('with a scan saved, opens that scan (its result and Continue) and sends no command, so the question never reappears', async () => {
+      const sendCommand = vi.fn();
+      const onOpenScanner = vi.fn();
+      await pressBack(statusFor('RECORD_READY', ['START_RECORDING', 'BACK'], 4, { has_scan: true }), sendCommand, onOpenScanner);
+      expect(onOpenScanner).toHaveBeenCalledWith('OBJ_0001', null);
+      expect(sendCommand).not.toHaveBeenCalled();
+    });
+
+    it('without a scan, Back is the device command as before', async () => {
+      const sendCommand = vi.fn().mockResolvedValue({ ok: true, workflow: workflow('SCAN_CHOICE') });
+      const onOpenScanner = vi.fn();
+      await pressBack(statusFor('RECORD_READY', ['START_RECORDING', 'BACK'], 4, { has_scan: false }), sendCommand, onOpenScanner);
+      expect(sendCommand).toHaveBeenCalledWith('BACK', expect.any(Number));
+      expect(onOpenScanner).not.toHaveBeenCalled();
+    });
+  });
+
   describe('a scan that was taken is never hidden behind the scan question (phone run 2026-11-21 23:05)', () => {
     const open3d = translate('en', 'workflow.open_3d');
     const sections = (html: string) => ({

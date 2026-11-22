@@ -243,6 +243,25 @@ describe('ContinuationClient', () => {
     expect(worker.terminate).toHaveBeenCalledTimes(1);
   });
 
+  it('carries the tag-derived seed to the worker, and nothing when there is none', async () => {
+    const worker = new DeferredWorker();
+    const client = clientFor(worker);
+    const base = makeValidScanSnapshot();
+    const extension = makeValidScanSnapshot();
+    const seed = { yaw: 0.7, tx: 2.5, ty: -1.2, tz: 0.04 };
+    void client.continue(base, extension, { seed }).catch(() => undefined);
+    await Promise.resolve();
+    expect(worker.request?.options.seed).toEqual(seed);
+    client.cancel('test');
+
+    const second = new DeferredWorker();
+    const other = clientFor(second);
+    void other.continue(makeValidScanSnapshot(), makeValidScanSnapshot()).catch(() => undefined);
+    await Promise.resolve();
+    expect(second.request?.options).not.toHaveProperty('seed');
+    other.cancel('test');
+  });
+
   it('estimates each array family and rejects an over-budget request before creating or posting to a worker', async () => {
     const base = sizedSnapshot(117_305);
     const extension = sizedSnapshot(117_305);

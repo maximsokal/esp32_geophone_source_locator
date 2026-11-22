@@ -16,6 +16,8 @@ export interface ContinuationWorkerRequest {
   extension: ScanPointCloudSnapshot;
   options: {
     budget: ContinuationBudgetEstimate;
+    /** B -> A found from known tags (issue #45); the registration for this merge. */
+    seed?: { yaw: number; tx: number; ty: number; tz: number } | null;
   };
 }
 
@@ -53,7 +55,7 @@ export function processContinuationWorkerMessage(
       onPhase: (phase) => port.postMessage({
         type: 'phase', requestId: message.requestId, generation: message.generation, phase,
       }),
-    });
+    }, message.options?.seed ?? null);
     port.postMessage({ type: 'result', requestId: message.requestId, generation: message.generation, result },
       continuationResultTransferables(result));
   } catch (reason) {

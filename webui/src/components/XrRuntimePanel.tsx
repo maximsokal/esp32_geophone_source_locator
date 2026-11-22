@@ -83,7 +83,8 @@ interface XrRuntimePanelProps {
   onScanIntent?: (intent: ScanStartIntent) => boolean;
   onDeleteSavedScan?: () => void;
   onSessionActiveChange?: (active:boolean)=>void;
-  onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null)=>void;
+  /** `meta.relockTransform` is the B -> A transform found from known tags (issue #45) for a Continue that locked, else null. */
+  onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null,meta?:{relockTransform:RelockTransform|null})=>void;
   onCapabilitiesChange?: (capabilities:WebXrCapabilities)=>void;
   /** Restores (Continue, only when applicable) or clears the authoritative registration held by the parent. */
   onRegistrationChange?: (artifact:RegistrationArtifact|null)=>void;
@@ -247,11 +248,12 @@ export function XrRuntimePanel({
       const finishedRaw=runtimeState.phase==='ended'&&runtimeState.pointCount>0;
       /* A Continue that never found its tags has tied nothing to the saved scan: nothing is handed over, so the saved scan stays as it was. */
       const neverLocked=relockArmedRef.current&&relockTransformRef.current===null;
+      const lockedForMerge=relockTransformRef.current;       /* read before disarming: the merge of this Continue is registered by it */
       const finished=finishedRaw&&!neverLocked;
       if(runtimeState.phase==='ended'&&neverLocked){clientDiagnostics.warn('XR_RELOCK_NEVER_LOCKED',{pointCount:runtimeState.pointCount});setRelockWithheld(true);}
       disarmRelock();
       /* MAX-403: the Finished scan is primary evidence and is handed over at once; tag finalization is a separate bounded stage. */
-      if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());
+      if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot(),{relockTransform:lockedForMerge});
       void (async()=>{
         let artifact:RegistrationArtifact|null=null;
         try{artifact=await tagStopRef.current({discard:!finished});}catch{artifact=null;}

@@ -238,7 +238,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
-    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});
     expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][0]).toBeNull();expect(tagResult.mock.calls[0][1]).toBe(true);
     const warnings=renderer.root.findAll((node)=>node.props.className==='xr-overlay-warning').map(textOf).join(' ');
     expect(warnings).not.toContain(translate('en','xr.tag.error.geometry_unavailable'));
@@ -456,7 +456,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     registration.mockClear();ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
-    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});
     expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);expect(tagResult.mock.calls[0][0]).toMatchObject({schema:1,scan_frame_id:null});
     expect(ready.mock.invocationCallOrder[0]).toBeLessThan(tagResult.mock.invocationCallOrder[0]);
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();expect(registration).not.toHaveBeenCalled();unmount(renderer);
@@ -536,7 +536,7 @@ describe('XrRuntimePanel lifecycle',()=>{
       await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
       runtime.emitTagFrame(tagFrame());
       await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
-      expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
+      expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
       await act(async()=>{await vi.advanceTimersByTimeAsync(2999);await settleReact();});expect(tagResult).not.toHaveBeenCalled();
       await act(async()=>{await vi.advanceTimersByTimeAsync(2);await settleReact();});
       expect(worker.terminated).toBe(1);expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);
@@ -788,7 +788,7 @@ describe('tag-locked Continue (issue #45)',()=>{
   /* The mocked pose puts a tag at WebXR (x, 2, 3 + z), i.e. project (x, -(3 + z), 2) metres; the saved layout below is that same placement, so B = A. */
   const TAGS=[{tagId:0,x:1,z:0},{tagId:1,x:2.5,z:0.4},{tagId:2,x:1.6,z:-1.1}];
   const projectMm=(tag:{x:number;z:number}):[number,number,number]=>[tag.x*1000,-(3+tag.z)*1000,2000];
-  const node=(tag:typeof TAGS[number],confirmed=true)=>{const [x,y,z]=projectMm(tag);const [mx,my,mz]=projectMm(TAGS[0]);return{node_id:tag.tagId,tag_id:tag.tagId,x_mm:x-mx,y_mm:y-my,z_mm:z-mz,uncertainty_mm:3,confirmed,observations:9,views:4};};
+  const node=(tag:typeof TAGS[number],confirmed=true)=>{const [x,y,z]=projectMm(tag);const [mx,my,mz]=projectMm(TAGS[0]);return{node_id:tag.tagId,tag_id:tag.tagId,x_mm:x-mx,y_mm:y-my,z_mm:z-mz,uncertainty_mm:3,confirmed,observations:confirmed?9:1,views:confirmed?4:1};};
   const artifact=(confirmedCount=3)=>({schema:1,kind:'tag-positions',frame:'sensor_z_up',scan_frame_id:BASE_ID,created_at_ms:1,geometry_computed_at_ms:null,
     main_scan_position_mm:projectMm(TAGS[0]),weakest_main_triangle_height_mm:400,nodes:TAGS.map((tag,index)=>node(tag,index<confirmedCount))} as any);
   const props=(extra:Record<string,unknown>={})=>({objectId:'OBJ_A',sessionId:'SESSION_A',scanIntent:'continue' as const,baseScanFrameId:BASE_ID,getRelockBase:()=>artifact(),...extra});
