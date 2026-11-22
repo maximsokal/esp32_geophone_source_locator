@@ -254,9 +254,10 @@ describe('does a granted lock still hold', () => {
     expect(relockStillHolds(locked, evaluateRelock(A, seen([0, 1])))).toBe(true);
   });
 
-  it('ends for a transform that moved: a 100 mm shift or a 3 degree turn', () => {
-    expect(relockStillHolds(locked, state({ ...locked, tx: locked.tx + 0.1 }))).toBe(false);
-    expect(relockStillHolds(locked, state({ ...locked, yaw: locked.yaw + 0.05 }))).toBe(false);
+  it('ends for a transform that moved far: a 150 mm shift or a 4 degree turn; a re-fit inside 100 mm / 2.8 degrees is the same lock, better informed', () => {
+    expect(relockStillHolds(locked, state({ ...locked, tx: locked.tx + 0.15 }))).toBe(false);
+    expect(relockStillHolds(locked, state({ ...locked, yaw: locked.yaw + 0.07 }))).toBe(false);
     expect(relockStillHolds(locked, state({ ...locked, tx: locked.tx + 0.01 }))).toBe(true);     /* 10 mm: noise */
+    expect(relockStillHolds(locked, state({ ...locked, tx: locked.tx + 0.06, yaw: locked.yaw + 0.03 }))).toBe(true);     /* the drift that cost the lock in the 2026-11-22 run */
   });
 });

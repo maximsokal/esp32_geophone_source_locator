@@ -10,9 +10,15 @@ type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
 /** Fill of the translucent live mesh; low enough that the camera image and the point guide stay readable through it. */
 export const LIVE_MESH_ALPHA = 0.30;
 
-function createProgram(gl: GlContext): WebGLProgram {
+export interface LiveMeshStyle { color: readonly [number, number, number]; alpha: number }
+/** The mesh being built now: cool blue. */
+export const LIVE_MESH_STYLE: LiveMeshStyle = { color: [0.30, 0.78, 1.0], alpha: LIVE_MESH_ALPHA };
+/** The mesh of the saved scan drawn over a Continue: warm amber, fainter, so it reads as "already there" next to the blue one being built. */
+export const REFERENCE_MESH_STYLE: LiveMeshStyle = { color: [1.0, 0.72, 0.28], alpha: 0.22 };
+
+function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
   const webGl2 = isWebGl2(gl);
-  const body = `vec3 color = vec3(0.30, 0.78, 1.0); float alpha = ${LIVE_MESH_ALPHA.toFixed(2)};`;
+  const body = `vec3 color = vec3(${style.color.map((v) => v.toFixed(3)).join(', ')}); float alpha = ${style.alpha.toFixed(3)};`;
   const vertexSource = webGl2
     ? `#version 300 es
       precision highp float; in vec3 a_position; uniform mat4 u_view_projection;
@@ -53,8 +59,8 @@ export class LiveMeshRenderer {
   private vertexCount = 0;
   private lastDrawMs = Number.NEGATIVE_INFINITY;
 
-  constructor(private readonly gl: GlContext) {
-    this.program = createProgram(gl);
+  constructor(private readonly gl: GlContext, readonly style: LiveMeshStyle = LIVE_MESH_STYLE) {
+    this.program = createProgram(gl, style);
     const buffer = gl.createBuffer();
     const matrix = gl.getUniformLocation(this.program, 'u_view_projection');
     this.positionLocation = gl.getAttribLocation(this.program, 'a_position');

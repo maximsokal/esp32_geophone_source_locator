@@ -15,7 +15,7 @@
  * Pure: no WebXR, no React, no I/O. The caller owns the reference-space epoch and calls `evaluateRelock` with the observations of ONE epoch.
  */
 
-import type { FusedTagObservation, TagObservationFusion } from './tagObservationFusion';
+import type { FusedTagObservation, TagObservation, TagObservationFusion } from './tagObservationFusion';
 import { triangleHeightMm } from './tagLayout';
 import type { TagPositionsArtifact } from './tagPositionsArtifact';
 import { xrToProject } from './liveTagTracker';
@@ -44,6 +44,26 @@ export interface RelockBaseTag {
   positionMm: readonly [number, number, number];
   /** 1-sigma position uncertainty in A, millimetres. */
   uncertaintyMm: number;
+}
+
+/**
+ * How far back, per tag, a sighting still counts for the lock. Tracking drifts (phone run 2026-11-22: one tag seen 80 s apart was 19 cm apart in the session's
+ * own frame, which pushed the RMS of an otherwise exact lock from 10 mm to over 20 mm and cost the lock two seconds after it was found). Each tag is judged by
+ * its latest sightings only.
+ */
+export const RELOCK_TAG_RECENCY_MS = 15000;
+
+/** Keeps, for each tag, the sightings within {@link RELOCK_TAG_RECENCY_MS} of that tag's newest one. */
+export function recentTagObservations(observations: readonly TagObservation[], recencyMs = RELOCK_TAG_RECENCY_MS): TagObservation[] {
+  const newest = new Map<number, number>();
+  for (const observation of observations) {
+    if (observation.capturedAtMs === undefined || !Number.isFinite(observation.capturedAtMs)) continue;
+    newest.set(observation.tagId, Math.max(newest.get(observation.tagId) ?? Number.NEGATIVE_INFINITY, observation.capturedAtMs));
+  }
+  return observations.filter((observation) => {
+    const latest = newest.get(observation.tagId);
+    return latest === undefined || observation.capturedAtMs === undefined || !Number.isFinite(observation.capturedAtMs) || observation.capturedAtMs >= latest - recencyMs;
+  });
 }
 
 /** The yaw + translation that maps B into A in the project frame (Z up): metres, the convention of the continuation transform. */
@@ -216,16 +236,22 @@ export function evaluateRelock(base: readonly RelockBaseTag[], fusion: TagObserv
 
 /**
  * Whether a lock that was granted still holds for the tags seen now. A tag that has jumped (the frame shifted), or a re-fit that moves the transform
- * by more than a tolerance, ends the lock: B must not keep feeding A through a frame that has changed under it.
+ * by more than a tolerance, ends the lock: B must not keep feeding A through a frame that has changed under it. A re-fit inside the tolerance is NOT a loss:
+ * more sightings of the same tags refine the fit (phone run 2026-11-22: the lock was dropped two seconds after it was found, because tags 0.3 m apart move
+ * the yaw by a degree with a 9 mm change of one tag, and the merge then fell back to the ambiguous overlap search).
  */
-export function relockStillHolds(locked: RelockTransform, current: RelockState, toleranceMm = 2 * RELOCK_MAX_RMS_MM): boolean {
+/** A new fit within this of the held lock is the same lock, better informed: it replaces it. Further away the frame moved and the lock is void. */
+export const RELOCK_ADOPT_MAX_SHIFT_MM = 100;
+export const RELOCK_ADOPT_MAX_TURN_RAD = 0.05;
+
+export function relockStillHolds(locked: RelockTransform, current: RelockState, toleranceMm = RELOCK_ADOPT_MAX_SHIFT_MM, maxTurnRad = RELOCK_ADOPT_MAX_TURN_RAD): boolean {
   /* Fewer tags in view, or too few reliable ones, contradicts nothing. Three or more tags that disagree with each other or with A do: the frame under B has changed. */
   if (current.phase !== 'locked' || current.transform === null) {
     return !(current.found >= RELOCK_MIN_TAGS && (current.reason === 'distance_mismatch' || current.reason === 'residual_too_high'));
   }
   const shiftMm = Math.hypot(current.transform.tx - locked.tx, current.transform.ty - locked.ty, current.transform.tz - locked.tz) * 1000;
   const turn = Math.abs(Math.atan2(Math.sin(current.transform.yaw - locked.yaw), Math.cos(current.transform.yaw - locked.yaw)));
-  return shiftMm <= toleranceMm && turn <= 0.02;            /* about 1.1 degrees of yaw */
+  return shiftMm <= toleranceMm && turn <= maxTurnRad;
 }
 
 /** A tag the lock was fitted to has since jumped: the frame shifted under it, so the lock is void whatever the other tags say. */

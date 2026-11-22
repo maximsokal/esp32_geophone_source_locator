@@ -72,6 +72,8 @@ interface ScanPointCloudViewportProps {
   display: ScanDisplayOptions;
   mode: ScanMode | null;
   sensorMarkers?: readonly SensorPlacementMarker[];
+  /** The finished mesh of `snapshot` (project frame triangle soup), reported when it is computed or served from the cache; a Continue draws it over the camera. */
+  onMeshReady?: (snapshot: ScanPointCloudSnapshot, trianglePositions: Float32Array) => void;
   selectedSensorNode?: SensorPlacementNode | null;
   onSensorMarkerSelect?: (node: SensorPlacementNode) => void;
   sensorGeometry?: LocalizationSessionGeometry | null;
@@ -122,7 +124,7 @@ export function buildTsdfRequestArgs(snapshot: TsdfRequestSnapshot) {
     freeSpacePositions: snapshot.freeAirPositions.slice(),
     freeSpaceVoxelSizeMeters: fineOccupancyVoxelSizeMeters(snapshot),
     maxInputPoints: Math.min(9000, Math.max(1000, snapshot.tsdfPointCount)),
-    maxTriangles: Math.max(3000, Math.min(18000, snapshot.tsdfPointCount * 14)),
+    maxTriangles: Math.max(3000, Math.min(40000, snapshot.tsdfPointCount * 14)),
   };
 }
 
@@ -365,6 +367,7 @@ export function ScanPointCloudViewport({
   mode,
   esp32Voxels = null,
   sensorMarkers = NO_SENSOR_MARKERS,
+  onMeshReady,
   selectedSensorNode,
   onSensorMarkerSelect,
   sensorGeometry = null,
@@ -500,6 +503,8 @@ export function ScanPointCloudViewport({
   ), [candidateVolume, display.freeAir, display.unknownSpace, prepared, sourceHighlights]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
   const tsdfCache = useMemo(() => new TsdfMeshCache<ScanPointCloudSnapshot, SparseTsdfMesh>(), []);
+  const onMeshReadyRef = useRef(onMeshReady);
+  onMeshReadyRef.current = onMeshReady;
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
   const [tsdfError, setTsdfError] = useState<string | null>(null);
   const [interactionRevision,setInteractionRevision] = useState(0);
@@ -562,6 +567,7 @@ export function ScanPointCloudViewport({
       tsdfClient.cancel('TSDF result already held for this scan.', true);
       setTsdfMesh(cachedMesh);
       setTsdfError(null);
+      onMeshReadyRef.current?.(snapshot, cachedMesh.trianglePositions);
       clientDiagnostics.info('SCAN_TSDF_CACHE_HIT', { triangles: cachedMesh.triangleCount, components: cachedMesh.meshTopologyComponentCount, settings: settingsKey });
       return () => { cancelled = true; };
     }
@@ -591,6 +597,7 @@ export function ScanPointCloudViewport({
       if (cancelled) return;
       tsdfCache.set(snapshot, settingsKey, result);
       setTsdfMesh(result);
+      onMeshReadyRef.current?.(snapshot, result.trianglePositions);
       clientDiagnostics.info('SCAN_TSDF_READY', {
         sourcePoints: result.sourcePointCount,
         certifiedPoints: snapshot.tsdfPointCount,

@@ -27,6 +27,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
     setPhase=(phase:string,patch:Record<string,unknown>={})=>{if(['ended','interrupted','error'].includes(phase)&&this.state.phase!==phase)this.generation+=1;this.publish(phase,patch);};
     depthGate:boolean|null=null;depthGateCalls:boolean[]=[];setDepthGate=(blocked:boolean)=>{this.depthGate=blocked;this.depthGateCalls.push(blocked);};
+    referenceMesh:any=null;meshCalls:any[]=[];setReferenceMesh=(mesh:any)=>{this.referenceMesh=mesh;this.meshCalls.push(mesh);};
     liveMeshModes:string[]=[];setLiveMeshMode=(mode:string)=>{this.liveMeshModes.push(mode);};
     referenceOverlay:any=null;overlayCalls:any[]=[];setReferenceOverlay=(overlay:any)=>{this.referenceOverlay=overlay;this.overlayCalls.push(overlay);};
     start=async()=>{this.generation+=1;this.publish('starting');};
@@ -892,6 +893,91 @@ describe('tag-locked Continue (issue #45)',()=>{
     await observe(runtime,worker,TAGS[2],5,200,{x:9,z:2});                          /* the same tag, 8 m away */
     expect(hint(renderer,'aligned')).toHaveLength(0);
     expect(hint(renderer,'searching').length).toBeGreaterThan(0);
+    unmount(renderer);
+  });
+
+  describe('the saved scan mesh over the camera after the lock',()=>{
+    /* Triangles of A (project metres); with B = A the lock is the identity, so project (x, y, z) must be drawn at WebXR (x, z, -y). */
+    const MESH=Float32Array.from([1,-3,2, 2,-3,2, 1,-2,2, 2.5,-3.4,2, 3,-3.4,2, 2.5,-2.9,2.1]);
+    const lockedWithMesh=async(extra:Record<string,unknown>={})=>{
+      const started=await startContinue({getReferenceMesh:()=>MESH,...extra});
+      for(let k=0;k<3;k+=1)await observe(started.runtime,started.worker,TAGS[k],4,1+k*10);
+      return started;
+    };
+
+    it('shows nothing before the lock, then hands the runtime the triangles of A in the frame of this session',async()=>{
+      const{renderer,runtime,worker}=await startContinue({getReferenceMesh:()=>MESH});
+      expect(runtime.referenceMesh).toBeNull();
+      await observe(runtime,worker,TAGS[0],4,1);await observe(runtime,worker,TAGS[1],4,10);
+      expect(runtime.referenceMesh).toBeNull();                                                  /* two tags: still searching */
+      await observe(runtime,worker,TAGS[2],4,20);
+      expect(runtime.referenceMesh).not.toBeNull();
+      expect(runtime.referenceMesh.triangleCount).toBe(2);
+      const expected=[1,2,3, 2,2,3, 1,2,2, 2.5,2,3.4, 3,2,3.4, 2.5,2.1,2.9];
+      for(let i=0;i<expected.length;i+=1)expect(runtime.referenceMesh.trianglesXr[i]).toBeCloseTo(expected[i],3);
+      unmount(renderer);
+    });
+
+    it('moves with a refined lock and goes when the lock goes: reset of the reference space, a jumped tag, the panel going away',async()=>{
+      let started=await lockedWithMesh();
+      const placed=Array.from(started.runtime.referenceMesh.trianglesXr);
+      await observe(started.runtime,started.worker,TAGS[2],20,100,{x:TAGS[2].x+0.010,z:TAGS[2].z});
+      expect(started.runtime.referenceMesh).not.toBeNull();
+      expect(Array.from(started.runtime.referenceMesh.trianglesXr)).not.toEqual(placed);          /* re-placed by the refined lock */
+      await act(async()=>{started.runtime.setPhase('running',{originReset:true});await settleReact();});
+      expect(started.runtime.referenceMesh).toBeNull();
+      unmount(started.renderer);
+
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await lockedWithMesh();
+      await observe(started.runtime,started.worker,TAGS[2],5,200,{x:9,z:2});
+      expect(started.runtime.referenceMesh).toBeNull();
+      unmount(started.renderer);
+
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await lockedWithMesh();
+      expect(started.runtime.referenceMesh).not.toBeNull();
+      unmount(started.renderer);
+      expect(started.runtime.referenceMesh).toBeNull();
+    });
+
+    it('draws nothing when there is no mesh for the saved scan (never computed, or another scan), and nothing for a Fresh scan',async()=>{
+      let started=await lockedWithMesh({getReferenceMesh:()=>null,getReferencePoints:()=>Float32Array.from([1,-3,2, 2.5,-3.4,2, 1.6,-1.9,2.5])});
+      expect(started.runtime.referenceMesh).toBeNull();
+      expect(started.runtime.referenceOverlay).not.toBeNull();                                    /* the points are still drawn */
+      unmount(started.renderer);
+      panelHarness.runtimes=[];panelHarness.workers=[];
+      started=await startContinue({scanIntent:'fresh',getReferenceMesh:()=>MESH});
+      for(let k=0;k<3;k+=1)await observe(started.runtime,started.worker,TAGS[k],4,1+k*10);
+      expect(started.runtime.meshCalls.some((mesh:any)=>mesh!==null)).toBe(false);
+      unmount(started.renderer);
+    });
+  });
+
+  it('keeps the lock when more sightings refine it a little, adopts the better fit and moves the saved scan with it (phone run 2026-11-22: the lock was dropped 2 s after it was found)',async()=>{
+    const{renderer,runtime,worker}=await startContinue({getReferencePoints:()=>Float32Array.from([1,-3,2, 2.5,-3.4,2, 1.6,-1.9,2.5])});
+    for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,1+k*10);
+    expect(hint(renderer,'aligned')).toHaveLength(1);
+    const lockedOverlay=runtime.referenceOverlay;
+    const callsBefore=runtime.overlayCalls.length;
+    await observe(runtime,worker,TAGS[2],20,100,{x:TAGS[2].x+0.010,z:TAGS[2].z});                  /* 1 cm of drift in one tag (the real run: 9 mm), many more sightings */
+    expect(hint(renderer,'searching')).toHaveLength(0);                                            /* not lost */
+    expect(runtime.referenceOverlay).not.toBeNull();
+    expect(runtime.overlayCalls.length).toBeGreaterThan(callsBefore);                              /* the overlay was re-placed by the refined lock */
+    expect(Array.from(runtime.referenceOverlay.positions)).not.toEqual(Array.from(lockedOverlay.positions));
+    unmount(renderer);
+  });
+
+  it('judges each tag by its latest sightings: an old sighting from before the tracking drifted does not spoil a lock (phone run 2026-11-22: tag 3 seen 80 s apart was 19 cm apart)',async()=>{
+    const{renderer,runtime,worker}=await startContinue();
+    await observe(runtime,worker,TAGS[2],4,1,{x:TAGS[2].x+0.2,z:TAGS[2].z});                      /* early, in a frame that has since drifted by 20 cm */
+    await observe(runtime,worker,TAGS[0],4,10);
+    await observe(runtime,worker,TAGS[1],4,20);
+    expect(hint(renderer,'aligned')).toHaveLength(0);                                             /* the early tag is wrong, no lock yet */
+    await observe(runtime,worker,TAGS[2],4,30000);                                                /* 30 s later: the same tag at its right place */
+    await observe(runtime,worker,TAGS[0],4,30010);
+    await observe(runtime,worker,TAGS[1],4,30020);
+    expect(hint(renderer,'aligned')).toHaveLength(1);
     unmount(renderer);
   });
 

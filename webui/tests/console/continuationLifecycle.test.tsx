@@ -233,6 +233,17 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); });
   });
 
+  it('offers the mesh computed for the saved scan on screen to the scanner, and none for another scan (Continue draws it over the camera)', async () => {
+    const { baseSnapshot } = await openSavedBase();
+    expect(h.props.getReferenceMesh()).toBeNull();                                                 /* the mesh of this scan was never computed */
+    const triangles = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    expect(typeof h.viewportProps.onMeshReady).toBe('function');
+    act(() => { h.viewportProps.onMeshReady(baseSnapshot, triangles); });
+    expect(h.props.getReferenceMesh()).toBe(triangles);
+    act(() => { h.viewportProps.onMeshReady({ ...baseSnapshot }, Float32Array.from([9, 9, 9, 9, 9, 9, 9, 9, 9])); });
+    expect(h.props.getReferenceMesh(), 'a mesh that belongs to another snapshot object is never offered').toBeNull();
+  });
+
   it('hands the real B cloud of a rejected Continue to the Phone Lab capture hook, and does nothing when there is no hook (issue #45)', async () => {
     const captured: Array<{ name: string; bytes: Uint8Array }> = [];
     const reject = async (): Promise<void> => {

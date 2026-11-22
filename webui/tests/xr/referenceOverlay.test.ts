@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { evaluateRelock, type RelockBaseTag, type RelockTransform } from '../../src/xr/fiducial/continuationRelocalization';
 import {
   baseToExtensionLocalFloor,
+  buildReferenceMeshOverlay,
   buildReferenceOverlay,
+  REFERENCE_MESH_MAX_TRIANGLES,
   REFERENCE_OVERLAY_CONFIDENCE,
   REFERENCE_OVERLAY_MAX_POINTS,
 } from '../../src/xr/fiducial/referenceOverlay';
@@ -17,6 +19,50 @@ function toBase(p: readonly [number, number, number], t: RelockTransform): [numb
   const c = Math.cos(t.yaw); const s = Math.sin(t.yaw);
   return [c * p[0] - s * p[1] + t.tx, s * p[0] + c * p[1] + t.ty, p[2] + t.tz];
 }
+
+describe('the saved scan A MESH drawn over the live camera of B', () => {
+  const soup = (triangles: number): Float32Array => {
+    const out = new Float32Array(triangles * 9);
+    for (let t = 0; t < triangles; t += 1) out.set([t, 0, 0.1, t + 1, 0, 0.1, t, 1, 0.1], t * 9);
+    return out;
+  };
+
+  it('puts every corner where session B sees it: the inverse of the lock, then project (x, y, z) -> WebXR (x, z, -y)', () => {
+    const mesh = Float32Array.from([1, 2, 0.5, 2, 2, 0.5, 1, 3, 0.5, -1, -2, 0.2, 0, -2, 0.2, -1, -1, 0.2]);
+    for (const truth of [TRUTH, { yaw: 0, tx: 0, ty: 0, tz: 0 }, { yaw: -2.9, tx: -8, ty: 5, tz: -0.3 }]) {
+      const overlay = buildReferenceMeshOverlay(mesh, truth)!;
+      expect(overlay.triangleCount).toBe(2);
+      for (let vertex = 0; vertex < 6; vertex += 1) {
+        const expected = baseToExtensionLocalFloor([mesh[vertex * 3], mesh[vertex * 3 + 1], mesh[vertex * 3 + 2]], truth);
+        for (let axis = 0; axis < 3; axis += 1) expect(overlay.trianglesXr[vertex * 3 + axis]).toBeCloseTo(expected[axis], 6);
+      }
+    }
+    const identity = buildReferenceMeshOverlay(mesh, { yaw: 0, tx: 0, ty: 0, tz: 0 })!;
+    expect(Array.from(identity.trianglesXr.slice(0, 3))).toEqual([1, 0.5, -2]);
+  });
+
+  it('thins an oversized mesh evenly to the cap, keeping whole triangles', () => {
+    const overlay = buildReferenceMeshOverlay(soup(REFERENCE_MESH_MAX_TRIANGLES * 3 + 7), { yaw: 0, tx: 0, ty: 0, tz: 0 })!;
+    expect(overlay.triangleCount).toBeLessThanOrEqual(REFERENCE_MESH_MAX_TRIANGLES);
+    expect(overlay.triangleCount).toBeGreaterThan(REFERENCE_MESH_MAX_TRIANGLES / 2);
+    expect(overlay.trianglesXr.length).toBe(overlay.triangleCount * 9);
+    const firstX = overlay.trianglesXr[0];
+    const lastX = overlay.trianglesXr[(overlay.triangleCount - 1) * 9];
+    expect(lastX - firstX, 'spread over the whole mesh, not its first part').toBeGreaterThan(REFERENCE_MESH_MAX_TRIANGLES);
+  });
+
+  it('skips a triangle with a non-finite corner, and gives nothing for no transform, an unusable one or an empty mesh', () => {
+    const damaged = soup(3);
+    damaged[10] = Number.NaN;
+    expect(buildReferenceMeshOverlay(damaged, TRUTH)!.triangleCount).toBe(2);
+    expect(buildReferenceMeshOverlay(soup(3), null)).toBeNull();
+    expect(buildReferenceMeshOverlay(soup(3), { ...TRUTH, yaw: Number.NaN })).toBeNull();
+    expect(buildReferenceMeshOverlay(new Float32Array(0), TRUTH)).toBeNull();
+    const allBad = soup(2);
+    allBad.fill(Number.NaN);
+    expect(buildReferenceMeshOverlay(allBad, TRUTH)).toBeNull();
+  });
+});
 
 describe('the saved scan A drawn over the live camera of B (issue #45, gate 2)', () => {
   it('is the exact inverse of the lock: a point of B taken into A and back lands where it was seen', () => {

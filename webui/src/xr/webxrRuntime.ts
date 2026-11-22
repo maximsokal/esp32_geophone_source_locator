@@ -25,9 +25,11 @@ import {
   type CoverageRenderViewport,
 } from './liveCoverageRenderer';
 import type { ReferenceOverlay } from './fiducial/referenceOverlay';
-import { LiveMeshRenderer } from './liveMeshRenderer';
+import { LiveMeshRenderer, REFERENCE_MESH_STYLE } from './liveMeshRenderer';
+import type { ReferenceMeshOverlay } from './fiducial/referenceOverlay';
 import { LiveMeshClient } from './liveMeshClient';
 import { LIVE_MESH_MAX_POINTS } from './liveMeshCore';
+import { LIVE_MESH_MIN_INTERVAL_MS } from './liveMeshClient';
 import { activeXrPerformancePressure } from './xrPerformanceProfiler';
 import {
   ManualControlPointStore,
@@ -339,7 +341,7 @@ export class WebXrRuntime{
   private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
   private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
   private rafHandle:number|null=null;
-  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;private liveMeshMode:LiveMeshMode='auto';private liveMeshRenderer:LiveMeshRenderer|null=null;private liveMeshClient:LiveMeshClient|null=null;private liveMeshPending:{trianglesXr:Float32Array;triangleCount:number}|null=null;private liveMeshOff=false;private liveMeshLoggedActive=false;
+  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;private liveMeshMode:LiveMeshMode='auto';private liveMeshRenderer:LiveMeshRenderer|null=null;private liveMeshClient:LiveMeshClient|null=null;private liveMeshPending:{trianglesXr:Float32Array;triangleCount:number}|null=null;private liveMeshOff=false;private liveMeshLoggedActive=false;private referenceMesh:ReferenceMeshOverlay|null=null;private referenceMeshDirty=false;private referenceMeshRenderer:LiveMeshRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private tagGeometryLogged=false;private tagCaptureWidth=0;private tagCaptureHeight=0;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
@@ -630,6 +632,7 @@ export class WebXrRuntime{
     try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
     try{this.referenceRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceRenderer=null;this.referenceOverlay=null;this.referenceOverlayDirty=false;
     this.disposeLiveMesh();this.liveMeshOff=false;
+    try{this.referenceMeshRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceMeshRenderer=null;this.referenceMesh=null;this.referenceMeshDirty=false;
     try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
     try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;
     this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
@@ -859,9 +862,34 @@ export class WebXrRuntime{
     this.liveMeshMode=mode;
     if(mode==='off')this.stopLiveMesh();
   }
+  /**
+   * The saved scan's mesh, already in this session's WebXR frame (Continue, once the tags tie the sessions together). A view only; null removes it.
+   * Drawn in amber, below the blue mesh being built now. Not drawn while an origin reset is pending: it would be in the wrong frame.
+   */
+  setReferenceMesh(mesh:ReferenceMeshOverlay|null):void{
+    this.referenceMesh=mesh;this.referenceMeshDirty=mesh!==null;
+    if(mesh===null)this.referenceMeshRenderer?.clear();
+  }
   private liveMeshWanted():boolean{
     if(this.liveMeshOff||this.liveMeshMode==='off'||this.scanPaused||this.originResetPaused||this.gl===null)return false;
-    return this.liveMeshMode==='on'||this.livePerformancePressure()==='low';
+    return true;
+  }
+  /** 'on' builds at the normal pace. 'auto' follows the phone: the busier it is, the less often (never switched off by pressure alone: a phone that is busy while scanning is the normal case). */
+  private liveMeshIntervalMs():number{
+    if(this.liveMeshMode==='on')return LIVE_MESH_MIN_INTERVAL_MS;
+    const pressure=this.livePerformancePressure();
+    return pressure==='low'?LIVE_MESH_MIN_INTERVAL_MS:pressure==='medium'?LIVE_MESH_MIN_INTERVAL_MS*2:LIVE_MESH_MIN_INTERVAL_MS*3.5;
+  }
+  private tickReferenceMesh(layer:XrWebGlLayerLike,views:readonly CoverageRenderView[]):void{
+    const mesh=this.referenceMesh;
+    if(mesh===null||this.originResetPaused||this.gl===null)return;
+    try{
+      if(this.referenceMeshRenderer===null)this.referenceMeshRenderer=new LiveMeshRenderer(this.gl,REFERENCE_MESH_STYLE);
+      if(this.referenceMeshDirty){this.referenceMeshRenderer.update(mesh.trianglesXr,mesh.triangleCount);this.referenceMeshDirty=false;}
+      this.referenceMeshRenderer.render(layer as never,views);
+    }catch(error){
+      this.referenceMesh=null;try{this.referenceMeshRenderer?.dispose();}catch{/* already unusable */}this.referenceMeshRenderer=null;clientDiagnostics.warn('XR_REFERENCE_MESH_FAILED',error);
+    }
   }
   private livePerformancePressure():'low'|'medium'|'high'{return activeXrPerformancePressure();}
   private stopLiveMesh():void{
@@ -880,7 +908,7 @@ export class WebXrRuntime{
           onDisabled:(reason)=>{this.liveMeshOff=true;this.stopLiveMesh();clientDiagnostics.warn('XR_LIVE_MESH_DISABLED',{reason});},
         });
       }
-      this.liveMeshClient.request(()=>this.pointCloud.liveMeshInput(LIVE_MESH_MAX_POINTS));
+      this.liveMeshClient.request(()=>this.pointCloud.liveMeshInput(LIVE_MESH_MAX_POINTS),this.liveMeshIntervalMs());
       if(this.liveMeshRenderer===null&&this.gl!==null)this.liveMeshRenderer=new LiveMeshRenderer(this.gl);
       const renderer=this.liveMeshRenderer;
       if(renderer===null)return;
@@ -946,6 +974,7 @@ export class WebXrRuntime{
       if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
       this.frameCount+=1;this.updateLightEstimate(time,frame);
       if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}
+        this.tickReferenceMesh(layer,pose.views);
         this.tickLiveMesh(layer,pose.views);
         const overlay=this.referenceOverlay;
         if(overlay!==null&&!this.originResetPaused&&this.gl!==null){

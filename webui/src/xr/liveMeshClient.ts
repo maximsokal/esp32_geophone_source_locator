@@ -47,10 +47,10 @@ export class LiveMeshClient {
   get isDisabled(): boolean { return this.disabled; }
 
   /** Returns true when the request was accepted. `build` is only called then, so the caller does not gather points for nothing. */
-  request(build: () => LiveMeshInput | null): boolean {
+  request(build: () => LiveMeshInput | null, minIntervalMs: number = this.minIntervalMs): boolean {
     if (this.disposed || this.disabled || this.inFlight !== null) return false;
     const time = this.now();
-    if (time - this.lastAcceptedMs < this.minIntervalMs) return false;
+    if (time - this.lastAcceptedMs < minIntervalMs) return false;
     const input = build();
     if (input === null) return false;
     this.lastAcceptedMs = time;

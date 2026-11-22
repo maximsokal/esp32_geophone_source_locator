@@ -21,6 +21,44 @@ export const REFERENCE_OVERLAY_MAX_POINTS = 6000;
 /** Confidence given to every overlay point (the existing point shader colours by it). */
 export const REFERENCE_OVERLAY_CONFIDENCE = 0.5;
 
+/** Triangles the reference mesh draws at most. */
+export const REFERENCE_MESH_MAX_TRIANGLES = 12000;
+
+export interface ReferenceMeshOverlay {
+  /** WebXR local-floor triangle soup of the current session, 9 floats per triangle. */
+  trianglesXr: Float32Array;
+  triangleCount: number;
+}
+
+/**
+ * The saved scan's mesh (triangle soup, A's project frame) in the frame of this session once the tags tie B to A. Evenly thinned to `maxTriangles`; a
+ * triangle with a non-finite corner is skipped. Null for an unusable transform or when nothing is left: nothing is drawn rather than something misplaced.
+ */
+export function buildReferenceMeshOverlay(
+  trianglesProject: Float32Array,
+  transform: RelockTransform | null,
+  maxTriangles = REFERENCE_MESH_MAX_TRIANGLES,
+): ReferenceMeshOverlay | null {
+  if (transform === null || ![transform.yaw, transform.tx, transform.ty, transform.tz].every(Number.isFinite)) return null;
+  const available = Math.floor(trianglesProject.length / 9);
+  if (available <= 0 || !(maxTriangles > 0)) return null;
+  const stride = Math.max(1, Math.ceil(available / maxTriangles));
+  const out = new Float32Array(Math.min(available, maxTriangles) * 9);
+  let count = 0;
+  for (let triangle = 0; triangle < available && count < maxTriangles; triangle += stride) {
+    const o = triangle * 9;
+    let finite = true;
+    for (let k = 0; k < 9; k += 1) if (!Number.isFinite(trianglesProject[o + k])) { finite = false; break; }
+    if (!finite) continue;
+    for (let corner = 0; corner < 3; corner += 1) {
+      const local = baseToExtensionLocalFloor([trianglesProject[o + corner * 3], trianglesProject[o + corner * 3 + 1], trianglesProject[o + corner * 3 + 2]], transform);
+      out[count * 9 + corner * 3] = local[0]; out[count * 9 + corner * 3 + 1] = local[1]; out[count * 9 + corner * 3 + 2] = local[2];
+    }
+    count += 1;
+  }
+  return count === 0 ? null : { trianglesXr: out.slice(0, count * 9), triangleCount: count };
+}
+
 /** A -> B in project metres, then project -> WebXR local-floor (x, z, -y). Exposed for tests. */
 export function baseToExtensionLocalFloor(point: readonly [number, number, number], transform: RelockTransform): [number, number, number] {
   const x = point[0] - transform.tx;

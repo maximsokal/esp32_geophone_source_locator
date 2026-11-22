@@ -38,9 +38,9 @@ import { estimateTagPose } from '../xr/fiducial/tagPose';
 import { fuseTagObservations, type TagObservation, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
 import { LIVE_MESH_MODES, readLiveMeshMode, writeLiveMeshMode } from '../xr/liveMeshSetting';
 import type { LiveMeshMode } from '../xr/webxrRuntime';
-import { evaluateRelock, INITIAL_RELOCK_STATE, relockBaseTags, relockLostByJump, relockStillHolds, RELOCK_MIN_OBSERVATIONS, RELOCK_MIN_TAGS, RELOCK_MIN_VIEWS, type RelockBaseTag, type RelockState, type RelockTransform } from '../xr/fiducial/continuationRelocalization';
+import { evaluateRelock, INITIAL_RELOCK_STATE, recentTagObservations, relockBaseTags, relockLostByJump, relockStillHolds, RELOCK_MIN_OBSERVATIONS, RELOCK_MIN_TAGS, RELOCK_MIN_VIEWS, type RelockBaseTag, type RelockState, type RelockTransform } from '../xr/fiducial/continuationRelocalization';
 import type { TagPositionsArtifact } from '../xr/fiducial/tagPositionsArtifact';
-import { buildReferenceOverlay } from '../xr/fiducial/referenceOverlay';
+import { buildReferenceMeshOverlay, buildReferenceOverlay } from '../xr/fiducial/referenceOverlay';
 import { TagObservationStore } from '../xr/fiducial/tagObservationStore';
 import { registerSensorToScan } from '../xr/fiducial/rigidRegistration';
 import { geophonePositionsFromTags, geophonePositionsRegistrationBlock } from '../xr/fiducial/geophonePositions';
@@ -98,6 +98,8 @@ interface XrRuntimePanelProps {
   getRelockBase?: ()=>TagPositionsArtifact|null;
   /** The base scan's measured points (project frame, metres) to show over the camera once the new session is tied to it (issue #45, gate 2). */
   getReferencePoints?: ()=>Float32Array|null;
+  /** The saved scan's mesh (project frame triangle soup), when one exists; drawn over the camera after the tag lock. */
+  getReferenceMesh?: ()=>Float32Array|null;
   /**
    * Provisional tag result of this AR session (unbound to any scan). final=true is sent exactly once
    * after Finish, always after onPointCloudReady, and is the signal that tag finalization is done.
@@ -151,6 +153,7 @@ export function XrRuntimePanel({
   baseScanFrameId=null,
   getRelockBase,
   getReferencePoints,
+  getReferenceMesh,
   onTagRegistrationResult,
   onTagAnchors,
   onScanLaunchAborted,
@@ -164,8 +167,9 @@ export function XrRuntimePanel({
   useEffect(()=>{runtime.setLiveMeshMode(liveMeshMode);},[runtime,liveMeshMode]);
   const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);
   const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
-  const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;const getReferencePointsRef=useRef(getReferencePoints);getReferencePointsRef.current=getReferencePoints;
-  const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelock(null);setRelockAligned(false);};
+  const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;const getReferencePointsRef=useRef(getReferencePoints);getReferencePointsRef.current=getReferencePoints;const getReferenceMeshRef=useRef(getReferenceMesh);getReferenceMeshRef.current=getReferenceMesh;
+  const placeReferenceMesh=(transform:RelockTransform|null):void=>{const mesh=getReferenceMeshRef.current?.()??null;runtime.setReferenceMesh(mesh===null||transform===null?null:buildReferenceMeshOverlay(mesh,transform));};
+  const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);runtime.setReferenceMesh(null);setRelock(null);setRelockAligned(false);};
   const armRelock=():void=>{
     disarmRelock();
     if(scanIntentRef.current!=='continue')return;
@@ -174,19 +178,28 @@ export function XrRuntimePanel({
     relockBaseRef.current=base;relockArmedRef.current=true;setRelock({...INITIAL_RELOCK_STATE});
     clientDiagnostics.info('XR_RELOCK_START',{baseTags:base.map((tag)=>tag.tagId).join(',')});
   };
-  const dropRelockLock=(event:string):void=>{relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn(event,{});};
+  const dropRelockLock=(event:string):void=>{relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);runtime.setReferenceMesh(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn(event,{});};
   const updateRelock=(observations:readonly TagObservation[]):void=>{
     if(!relockArmedRef.current)return;
-    const fusion=fuseTagObservations(observations,{minObservations:RELOCK_MIN_OBSERVATIONS,minIndependentViews:RELOCK_MIN_VIEWS});
+    const fusion=fuseTagObservations(recentTagObservations(observations),{minObservations:RELOCK_MIN_OBSERVATIONS,minIndependentViews:RELOCK_MIN_VIEWS});
     const next=evaluateRelock(relockBaseRef.current,fusion);const held=relockTransformRef.current;
     if(held!==null){
-      if(relockLostByJump(relockUsedRef.current,fusion)||!relockStillHolds(held,next))dropRelockLock('XR_RELOCK_LOST');
+      if(relockLostByJump(relockUsedRef.current,fusion)||!relockStillHolds(held,next)){dropRelockLock('XR_RELOCK_LOST');return;}
+      /* The same lock, now informed by more sightings: adopt the better fit (the merge is seeded with the latest) and move the overlay with it. */
+      if(next.phase==='locked'&&next.transform!==null){
+        const moved=Math.hypot(next.transform.tx-held.tx,next.transform.ty-held.ty,next.transform.tz-held.tz)*1000;const turned=Math.abs(next.transform.yaw-held.yaw);
+        if(moved>2||turned>0.002){
+          relockTransformRef.current=next.transform;relockUsedRef.current=next.usedTagIds;
+          const reference=getReferencePointsRef.current?.()??null;runtime.setReferenceOverlay(reference===null?null:buildReferenceOverlay(reference,next.transform));placeReferenceMesh(next.transform);
+          clientDiagnostics.info('XR_RELOCK_REFINED',{tags:next.usedTagIds.join(','),movedMm:Math.round(moved*10)/10,turnedDeg:Math.round(turned*5729.578)/100,rmsMm:Math.round((next.rmsMm??0)*10)/10});
+        }
+      }
       return;
     }
     if(next.phase==='locked'&&next.transform!==null){
       relockTransformRef.current=next.transform;relockUsedRef.current=next.usedTagIds;setRelockAligned(true);
       const reference=getReferencePointsRef.current?.()??null;
-      runtime.setReferenceOverlay(reference===null?null:buildReferenceOverlay(reference,next.transform));
+      runtime.setReferenceOverlay(reference===null?null:buildReferenceOverlay(reference,next.transform));placeReferenceMesh(next.transform);
       clientDiagnostics.info('XR_RELOCK_LOCKED',{tags:next.usedTagIds.join(','),rmsMm:Math.round((next.rmsMm??0)*10)/10,yawDeg:Math.round(next.transform.yaw*5729.578)/100,txM:Math.round(next.transform.tx*1000)/1000,tyM:Math.round(next.transform.ty*1000)/1000,tzM:Math.round(next.transform.tz*1000)/1000});
     }
     setRelock((previous)=>previous!==null&&previous.phase===next.phase&&previous.found===next.found&&previous.reason===next.reason?previous:next);
@@ -194,11 +207,11 @@ export function XrRuntimePanel({
   useEffect(()=>{
     /* A reset moves the origin: tags seen before it are in another frame, so the lock and what led to it are void (issue #36 / #45). */
     if(!runtimeState.originReset||!relockArmedRef.current)return;
-    tagObservationsRef.current.clear();relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn('XR_RELOCK_RESET',{});
+    tagObservationsRef.current.clear();relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);runtime.setReferenceMesh(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn('XR_RELOCK_RESET',{});
   },[runtimeState.originReset]);
   useEffect(()=>{if((runtimeState.phase==='idle'||runtimeState.phase==='error')&&relockArmedRef.current)disarmRelock();},[runtimeState.phase]);
   useEffect(()=>{if(!relockAligned)return;const timer=window.setTimeout(()=>setRelockAligned(false),5000);return()=>window.clearTimeout(timer);},[relockAligned]);
-  useEffect(()=>()=>{runtime.setReferenceOverlay(null);},[runtime]);
+  useEffect(()=>()=>{runtime.setReferenceOverlay(null);runtime.setReferenceMesh(null);},[runtime]);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagNotices,setTagNotices]=useState<TagScanNotice[]>([]);const tagConfirmedRef=useRef<number[]>([]);const tagJumpedRef=useRef<number[]>([]);const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);

@@ -45,6 +45,8 @@ export interface SparseTsdfMesh {
   componentCount: number;
   eligibleComponentCount: number;
   meshReadiness: number;
+  /** How many times the voxel was made coarser because the triangle budget would otherwise have cut the surface (0 = never). */
+  coarsenings?: number;
   nodeCount: number;
   voxelSizeMeters: number;
   truncationMeters: number;
@@ -250,7 +252,27 @@ function polygonizeTetra(
  * occupancy; it only decides which reconstructed faces are trustworthy enough to
  * expose as a mesh.
  */
+/**
+ * The surface is extracted without a cut. A budget that was reached used to stop the extraction mid-way through the nodes, which are stored in the order
+ * the points arrived, so the surface ended as bands: on the 2026-11-22 scans the floor mesh covered one metre of a four metre room. When the budget
+ * would be exceeded, the field is rebuilt with a coarser voxel (fewer, larger triangles over the whole surface) instead, up to a few times; only if even the
+ * coarsest voxel does not fit is the old cut kept, as a last resort.
+ */
+export const SPARSE_TSDF_COARSEN_FACTOR = 1.3;
+export const SPARSE_TSDF_MAX_COARSENINGS = 3;
+
 export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
+  let attempt = 0;
+  let current = input;
+  for (;;) {
+    const built = buildSparseTsdfMeshOnce(current);
+    if (!built.budgetReached || attempt >= SPARSE_TSDF_MAX_COARSENINGS) return { ...built.mesh, coarsenings: attempt };
+    attempt += 1;
+    current = { ...current, voxelSizeMeters: current.voxelSizeMeters * SPARSE_TSDF_COARSEN_FACTOR };
+  }
+}
+
+function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh; budgetReached: boolean } {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const sourcePointCount = Math.min(
     Math.floor(input.positions.length / 3),
@@ -348,6 +370,7 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
   }
 
   const triangles: number[] = [];
+  let budgetReached = false;
   const minimumTriangleArea = voxelSizeMeters * voxelSizeMeters * MIN_TRIANGLE_AREA_FACTOR;
   outer: for (const origin of nodes.values()) {
     const cubeNodes: TsdfNode[] = [];
@@ -385,14 +408,14 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
       for (const triangle of polygonizeTetra(p, v)) {
         if (triangleArea(triangle[0], triangle[1], triangle[2]) < minimumTriangleArea) continue;
         triangles.push(...triangle[0], ...triangle[1], ...triangle[2]);
-        if (triangles.length / 9 >= maxTriangles) break outer;
+        if (triangles.length / 9 >= maxTriangles) { budgetReached = true; break outer; }
       }
     }
   }
 
   const topology = sanitizeMeshTopology(Float32Array.from(triangles), voxelSizeMeters);
   const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  return {
+  const mesh: SparseTsdfMesh = {
     trianglePositions: topology.trianglePositions,
     triangleCount: topology.triangleCount,
     rawTriangleCount: topology.sourceTriangleCount,
@@ -424,4 +447,5 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     truncationMeters,
     computeMs: ended - started,
   };
+  return { mesh, budgetReached };
 }

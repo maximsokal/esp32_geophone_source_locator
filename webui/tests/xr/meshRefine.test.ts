@@ -8,6 +8,7 @@ import { refineScanMesh } from '../../src/xr/meshRefine';
 import { sanitizeMeshTopology } from '../../src/xr/meshTopologySanity';
 import { normalIntrusionBudgets } from '../../src/xr/meshNormalIntrusion';
 import { selfIntersectionBudgets } from '../../src/xr/meshSelfIntersection';
+import { buildSparseTsdfMesh, SPARSE_TSDF_MAX_COARSENINGS } from '../../src/xr/sparseTsdf';
 import { decodeScanArtifact } from '../../src/xr/scanArtifact';
 
 const VOXEL = 0.05;
@@ -172,6 +173,33 @@ describe('the budgets that decide how much of a scan becomes mesh', () => {
     expect(mesh.triangleCount).toBeGreaterThan(3000);
   });
 
+  it('never cuts the surface into bands when the triangle budget is too small: it coarsens the voxel over the whole surface (phone run 2026-11-22: a 1 m strip of a 4 m floor)', () => {
+    const floorOnly = (() => {
+      const pts: number[] = []; const nrm: number[] = [];
+      for (let i = 0; i < 80; i += 1) for (let j = 0; j < 80; j += 1) { pts.push(i * 0.05, j * 0.05, 0); nrm.push(0, 0, 1); }       /* 4 m x 4 m */
+      const positions = Float32Array.from(pts);
+      return { positions, normals: Float32Array.from(nrm), confidence: new Float32Array(positions.length / 3).fill(0.9), voxelSizeMeters: 0.05 };
+    })();
+    const roomy = buildSparseTsdfMesh({ ...floorOnly, maxTriangles: 100_000 });
+    expect(roomy.coarsenings).toBe(0);
+    expect(roomy.triangleCount).toBeGreaterThan(8000);
+    const tight = buildSparseTsdfMesh({ ...floorOnly, maxTriangles: 5000 });
+    expect(tight.coarsenings!).toBeGreaterThanOrEqual(1);
+    expect(tight.triangleCount).toBeLessThanOrEqual(5000);
+    const extent = (soup: Float32Array, axis: number): number => { let lo = Infinity; let hi = -Infinity; for (let i = axis; i < soup.length; i += 3) { lo = Math.min(lo, soup[i]); hi = Math.max(hi, soup[i]); } return hi - lo; };
+    expect(extent(tight.trianglePositions, 0), 'the whole width of the floor, not a strip').toBeGreaterThan(0.78 * extent(roomy.trianglePositions, 0));
+    expect(extent(tight.trianglePositions, 1), 'the whole depth of the floor, not a strip').toBeGreaterThan(0.78 * extent(roomy.trianglePositions, 1));
+  });
+
+  it('gives up coarsening after a few steps and then keeps the old cut as a last resort, still within the budget', () => {
+    const pts: number[] = []; const nrm: number[] = [];
+    for (let i = 0; i < 80; i += 1) for (let j = 0; j < 80; j += 1) { pts.push(i * 0.05, j * 0.05, 0); nrm.push(0, 0, 1); }
+    const positions = Float32Array.from(pts);
+    const mesh = buildSparseTsdfMesh({ positions, normals: Float32Array.from(nrm), confidence: new Float32Array(positions.length / 3).fill(0.9), voxelSizeMeters: 0.05, maxTriangles: 60 });
+    expect(mesh.coarsenings).toBe(SPARSE_TSDF_MAX_COARSENINGS);
+    expect(mesh.triangleCount).toBeLessThanOrEqual(60);
+  });
+
   it('lets the diagnostics look at every triangle of a large clean mesh, so it is kept, not withheld', () => {
     const big = sheet(110, 110, 0.05);                                                                 /* 24,200 triangles */
     const result = sanitizeMeshTopology(big, 0.05);
@@ -189,6 +217,24 @@ describe('the budgets that decide how much of a scan becomes mesh', () => {
     expect(normalIntrusionBudgets(1000)).toEqual({ candidatePairs: 40_000, exactTests: 8_000 });
     expect(normalIntrusionBudgets(20_000)).toEqual({ candidatePairs: 160_000, exactTests: 40_000 });
     expect(normalIntrusionBudgets(10_000_000)).toEqual({ candidatePairs: 400_000, exactTests: 100_000 });
+  });
+});
+
+
+const SAVES_MERGED = resolve(__dirname, '../../../logs/phone-lab/2026-11-22_175253/saves');
+describe.skipIf(!existsSync(SAVES_MERGED))('the final mesh of the first scan and of the scan merged with its continuation (phone run 2026-11-22 17:52)', () => {
+  const scans = () => readdirSync(SAVES_MERGED).filter((f) => f.includes('_scan_')).sort().map((f) => decodeScanArtifact(new Uint8Array(readFileSync(resolve(SAVES_MERGED, f)))));
+  const range = (a: Float32Array, axis: number): [number, number] => { let lo = Infinity; let hi = -Infinity; for (let i = axis; i < a.length; i += 3) { lo = Math.min(lo, a[i]); hi = Math.max(hi, a[i]); } return [lo, hi]; };
+
+  it.each([0, 1])('scan %i: the mesh spans the whole scanned area, not bands of it (the floor mesh used to cover one metre of four)', (index) => {
+    const scan = scans()[index];
+    const mesh = buildDirectionalTsdfMesh(buildTsdfRequestArgs(scan as never) as never);
+    for (const axis of [0, 1]) {
+      const [pointLo, pointHi] = range(scan.tsdfPositions, axis);
+      const [meshLo, meshHi] = range(mesh.trianglePositions, axis);
+      expect(meshHi - meshLo, `axis ${axis}`).toBeGreaterThan(0.8 * (pointHi - pointLo));
+    }
+    expect(mesh.triangleCount).toBeGreaterThan(15_000);
   });
 });
 

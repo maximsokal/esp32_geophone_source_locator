@@ -316,6 +316,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* The tag layout read back from the ESP32 (or last saved) for this object/session: the baseline a continuation inherits, and what survives a page reload. */
   /* The saved tag layout of the scan on screen, as state: it draws the sensors when there are no live anchors (a scan restored from the ESP32). */
   const [savedTagView, setSavedTagView] = useState<TagPositionsArtifact | null>(null);
+  const savedScanMeshRef = useRef<{ snapshot: ScanPointCloudSnapshot; trianglePositions: Float32Array } | null>(null);
   const savedTagArtifactRef = useRef<{ objectId: string; sessionId: string; artifact: TagPositionsArtifact } | null>(null);
   /* SHA-256 of the scans this page encoded or restored, by their CRC32 frame id: the tag layout upload names the digest of the scan it belongs to. */
   const scanShaByFrameId = useRef(new Map<string, string>());
@@ -1632,6 +1633,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         scanIntent={scanIntentState}
         baseScanFrameId={scanDurability.durableId}
         getReferencePoints={() => scanDurability.durableSnapshot?.positions ?? null}
+        getReferenceMesh={() => {
+          /* The mesh computed for the saved scan on screen; none if it was never computed (the Mesh layer was not shown) or belongs to another scan. */
+          const held = savedScanMeshRef.current;
+          return held !== null && held.snapshot === scanDurability.durableSnapshot ? held.trianglePositions : null;
+        }}
         getRelockBase={() => {
           const stored = savedTagArtifactRef.current;
           return stored !== null && stored.objectId === objectId && stored.sessionId === scanSessionId ? stored.artifact : null;
@@ -1668,6 +1674,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             >
               <ScanPointCloudViewport
                 snapshot={scanSnapshot}
+                onMeshReady={(meshSnapshot, trianglePositions) => { savedScanMeshRef.current = { snapshot: meshSnapshot, trianglePositions }; }}
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}

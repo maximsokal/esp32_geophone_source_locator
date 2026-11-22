@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DepthPointCloudAccumulator } from '../../src/xr/depthPointCloud';
 import { WebXrRuntime } from '../../src/xr/webxrRuntime';
+import { LIVE_MESH_MIN_INTERVAL_MS } from '../../src/xr/liveMeshClient';
 import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import type { TagCameraFrame } from '../../src/xr/fiducial/tagDetectorClient';
 import { activeXrPerformancePressure, activeXrRenderPolicy, recordActiveXrPerformanceMetric } from '../../src/xr/xrPerformanceProfiler';
@@ -230,7 +231,7 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
       const internals=runtime as unknown as MeshInternals;
       const requests:number[]=[];
-      const client={request:vi.fn((build:()=>unknown)=>{requests.push(1);return build!==undefined;}),dispose:vi.fn(),busy:false,isDisabled:false};
+      const client={request:vi.fn((build:()=>unknown,_minIntervalMs?:number)=>{requests.push(1);return build!==undefined;}),dispose:vi.fn(),busy:false,isDisabled:false};
       const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
       internals.liveMeshClient=client;internals.liveMeshRenderer=renderer;
       vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockReturnValue(pressure);
@@ -245,22 +246,27 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       expect(client.request).not.toHaveBeenCalled();expect(renderer.render).not.toHaveBeenCalled();
     });
 
-    it("'auto' runs only while the phone has headroom (low pressure) and stops again when it does not",async()=>{
+    it("'auto' follows the phone: the busier it is the less often the mesh is built, and it is never switched off by pressure alone (phone run 2026-11-22: pressure was 'high' for the whole scan, so a rule 'only when low' meant never)",async()=>{
       const quiet=await meshRuntime('auto','low');
       await frame(quiet.session,16);
       expect(quiet.client.request).toHaveBeenCalledTimes(1);expect(quiet.renderer.render).toHaveBeenCalledTimes(1);
-      const busy=await meshRuntime('auto','high');
-      await frame(busy.session,16);
-      expect(busy.client.request).not.toHaveBeenCalled();expect(busy.renderer.render).not.toHaveBeenCalled();
+      const interval=(rig:{client:{request:{mock:{calls:unknown[][]}}}})=>rig.client.request.mock.calls[0][1] as number;
+      const base=interval(quiet);
+      expect(base).toBe(LIVE_MESH_MIN_INTERVAL_MS);
       const medium=await meshRuntime('auto','medium');
       await frame(medium.session,16);
-      expect(medium.client.request).not.toHaveBeenCalled();
+      expect(interval(medium)).toBe(base*2);
+      const busy=await meshRuntime('auto','high');
+      await frame(busy.session,16);
+      expect(busy.client.request).toHaveBeenCalledTimes(1);expect(busy.renderer.render).toHaveBeenCalledTimes(1);
+      expect(interval(busy)).toBe(base*3.5);
     });
 
-    it("'on' runs under high pressure too, because the operator asked for it",async()=>{
+    it("'on' builds at the normal pace under high pressure too, because the operator asked for it",async()=>{
       const{session,client,renderer}=await meshRuntime('on','high');
       await frame(session,16);
       expect(client.request).toHaveBeenCalledTimes(1);expect(renderer.render).toHaveBeenCalledTimes(1);
+      expect(client.request.mock.calls[0][1]).toBe(LIVE_MESH_MIN_INTERVAL_MS);
     });
 
     it('uploads a finished mesh to the renderer once, and draws it every frame',async()=>{
@@ -307,6 +313,69 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       await runtime.dispose();
       expect(client.dispose).toHaveBeenCalledTimes(1);expect(renderer.dispose).toHaveBeenCalledTimes(1);
     });
+
+  describe('the saved scan mesh over the camera (Continue)',()=>{
+    interface RefInternals{referenceMeshRenderer:unknown;referenceMesh:unknown;originResetPaused:boolean}
+    async function refRuntime(){
+      const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+      const internals=runtime as unknown as RefInternals;
+      const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
+      internals.referenceMeshRenderer=renderer;
+      return{session,runtime,internals,renderer};
+    }
+    const frame=async(session:FakeXrSession,time:number)=>{session.driveNextFrame(time,fakeFrame(session,()=>emptyPose()));await flushMicrotasks();};
+    const mesh={trianglesXr:new Float32Array(18),triangleCount:2};
+
+    it('draws nothing until a mesh is set, uploads it once and draws it every frame',async()=>{
+      const{session,runtime,renderer}=await refRuntime();
+      await frame(session,16);
+      expect(renderer.render).not.toHaveBeenCalled();
+      runtime.setReferenceMesh(mesh);
+      await frame(session,32);await frame(session,48);
+      expect(renderer.update).toHaveBeenCalledTimes(1);expect(renderer.update).toHaveBeenCalledWith(mesh.trianglesXr,2);
+      expect(renderer.render).toHaveBeenCalledTimes(2);
+    });
+
+    it('uploads again when a refined lock sets a new mesh',async()=>{
+      const{session,runtime,renderer}=await refRuntime();
+      runtime.setReferenceMesh(mesh);await frame(session,16);
+      const moved={trianglesXr:new Float32Array(18).fill(1),triangleCount:2};
+      runtime.setReferenceMesh(moved);await frame(session,32);
+      expect(renderer.update).toHaveBeenCalledTimes(2);expect(renderer.update).toHaveBeenLastCalledWith(moved.trianglesXr,2);
+    });
+
+    it('removing it clears the renderer, and nothing is drawn while the reference space has been reset',async()=>{
+      const{session,runtime,internals,renderer}=await refRuntime();
+      runtime.setReferenceMesh(mesh);await frame(session,16);
+      runtime.setReferenceMesh(null);
+      expect(renderer.clear).toHaveBeenCalled();
+      await frame(session,32);
+      expect(renderer.render).toHaveBeenCalledTimes(1);
+      runtime.setReferenceMesh(mesh);
+      internals.originResetPaused=true;
+      await frame(session,48);
+      expect(renderer.render).toHaveBeenCalledTimes(1);                                           /* it would be in the old frame */
+    });
+
+    it('a draw fault drops only the reference mesh: the frame loop and depth capture go on',async()=>{
+      const{session,runtime,internals,renderer}=await refRuntime();
+      renderer.render.mockImplementation(()=>{throw new Error('reference mesh draw failed');});
+      const captureDepth=vi.spyOn(runtime as unknown as {captureDepth:(time:number,frame:unknown,pose:unknown)=>void},'captureDepth');
+      runtime.setReferenceMesh(mesh);
+      await frame(session,16);
+      expect(internals.referenceMesh).toBeNull();expect(renderer.dispose).toHaveBeenCalled();
+      expect(runtime.getState().phase).toBe('running');expect(session.endCalls).toBe(0);
+      await frame(session,32);
+      expect(captureDepth).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases its GPU buffers when the runtime is disposed',async()=>{
+      const{runtime,renderer}=await refRuntime();
+      runtime.setReferenceMesh(mesh);
+      await runtime.dispose();
+      expect(renderer.dispose).toHaveBeenCalledTimes(1);
+    });
+  });
   });
 
   it('treats context loss as fatal and ignores restoration after teardown',async()=>{

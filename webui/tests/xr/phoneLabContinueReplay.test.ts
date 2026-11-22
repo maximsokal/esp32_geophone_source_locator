@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   evaluateRelock,
+  recentTagObservations,
   relockBaseTags,
+  relockStillHolds,
   RELOCK_MAX_RMS_MM,
   type RelockBaseTag,
+  type RelockTransform,
 } from '../../src/xr/fiducial/continuationRelocalization';
 import { baseToExtensionLocalFloor } from '../../src/xr/fiducial/referenceOverlay';
 import { fuseTagObservations, type TagObservation } from '../../src/xr/fiducial/tagObservationFusion';
@@ -248,5 +251,63 @@ describe('run 2026-11-22 16:33: the tags seen once each already agree with the s
     expect(state.phase, JSON.stringify({ reason: state.reason, found: state.found, rms: state.rmsMm })).toBe('locked');
     expect(state.usedTagIds).toEqual([1, 3, 4]);
     expect(state.rmsMm!).toBeLessThanOrEqual(RELOCK_MAX_RMS_MM);
+  });
+});
+
+/*
+ * Run 2026-11-22 17:52 (OBJ_0001): a Continue locked on tags 0, 2, 3 (RMS 8.1 mm) and lost the lock two seconds later (XR_RELOCK_LOST); it never found it again, so
+ * the merge fell back to the overlap search (RMS 97 mm, 31% overlap) and the merged mesh came out as double layers. These are the XR_TAG_POSE samples that run
+ * logged and the 871-byte layout saved for its first scan.
+ */
+describe('run 2026-11-22 17:52: the lock found on 0, 2, 3 must survive the next sightings', () => {
+  const DIR_C = resolve(__dirname, '../fixtures/phone-lab-2026-11-22c');
+  const layout = decodeTagPositions(readFileSync(resolve(DIR_C, 'tag-positions-v1.json'), 'utf-8'))!;
+  const poses = JSON.parse(readFileSync(resolve(DIR_C, 'tag-poses-b.json'), 'utf-8')) as Array<{ tagId: number; x: number; y: number; z: number; cam: [number, number, number]; t: number }>;
+  const base = relockBaseTags(layout, layout.scan_frame_id);
+  /** Each logged sighting stands for a short burst (the tracker saw each tag 3 or more times per sample). */
+  const observationsUpTo = (limit: number): TagObservation[] => poses.filter((pose) => pose.t <= limit).flatMap((pose) => [0, 1, 2].map((k) => ({
+    tagId: pose.tagId, positionScan: [pose.x, pose.y, pose.z] as const, cameraPosition: pose.cam, capturedAtMs: pose.t + k,
+  })));
+  const STEPS = [432643, 434793, 437041, 439189, 443923, 446752, 449589];
+  const fuse = (observations: TagObservation[]) => fuseTagObservations(observations, { minObservations: 3, minIndependentViews: 1 });
+
+  it('A saved all five tags as anchors', () => {
+    expect(base.map((tag) => tag.tagId)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('WITHOUT the recency window the lock found first is refused by the very next sightings: tag 3 seen 80 s earlier is 5 cm off (the failure of the run)', () => {
+    const first = evaluateRelock(base, fuse(observationsUpTo(STEPS[0])));
+    expect(first.phase).toBe('locked');
+    expect(first.usedTagIds).toEqual([0, 2, 3]);
+    expect(first.rmsMm!).toBeLessThan(RELOCK_MAX_RMS_MM);
+    const next = evaluateRelock(base, fuse(observationsUpTo(STEPS[1])));
+    expect(next.phase).toBe('relocalizing');
+    expect(next.reason).toBe('residual_too_high');
+    expect(relockStillHolds(first.transform!, next), 'this is the XR_RELOCK_LOST of the log').toBe(false);
+  });
+
+  it('WITH it, the lock is found on four tags, never drops over the whole walk, and moves by less than a millimetre between sightings', () => {
+    let held: RelockTransform | null = null;
+    for (const step of STEPS) {
+      const state = evaluateRelock(base, fuse(recentTagObservations(observationsUpTo(step))));
+      expect(state.phase, `at ${step}: ${state.reason}`).toBe('locked');
+      expect(state.usedTagIds).toEqual([0, 2, 3, 4]);
+      expect(state.rmsMm!).toBeLessThan(RELOCK_MAX_RMS_MM);
+      if (held !== null) {
+        expect(relockStillHolds(held, state)).toBe(true);
+        expect(Math.hypot(state.transform!.tx - held.tx, state.transform!.ty - held.ty, state.transform!.tz - held.tz) * 1000).toBeLessThan(2);
+        expect(Math.abs(state.transform!.yaw - held.yaw)).toBeLessThan(0.001);
+      }
+      held = state.transform;
+    }
+    expect(held!.yaw * 57.2958).toBeCloseTo(-66.03, 1);                                    /* the overlap search of the run said -65.9 degrees */
+  });
+
+  it('keeps only the latest sightings of each tag, and everything of a tag whose sightings are all recent', () => {
+    const observation = (tagId: number, t: number): TagObservation => ({ tagId, positionScan: [0, 0, 0], capturedAtMs: t });
+    const kept = recentTagObservations([observation(3, 1000), observation(3, 100_000), observation(3, 100_500), observation(0, 99_000), observation(0, 120_000)], 15_000);
+    expect(kept.map((o) => [o.tagId, o.capturedAtMs])).toEqual([[3, 100_000], [3, 100_500], [0, 120_000]]);
+    const untimed: TagObservation = { tagId: 1, positionScan: [0, 0, 0] };
+    expect(recentTagObservations([untimed, observation(1, 5)], 15_000)).toEqual([untimed, observation(1, 5)]);
   });
 });
