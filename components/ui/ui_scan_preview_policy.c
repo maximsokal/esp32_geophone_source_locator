@@ -5,6 +5,40 @@
 
 #define IDENTITY_PREFIX "scan-crc32:"
 
+bool ui_scan_preview_session_is_staged(const char *session_id)
+{
+    return session_id == NULL || session_id[0] == '\0';
+}
+
+bool ui_scan_preview_id_is_safe(const char *value, size_t capacity)
+{
+    if (value == NULL || value[0] == '\0' || capacity == 0U) return false;
+    for (size_t i = 0U; i < capacity && value[i] != '\0'; ++i) {
+        const char c = value[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+    }
+    return strnlen(value, capacity) < capacity;
+}
+
+bool ui_scan_preview_request_ids_valid(const char *object_id, size_t object_capacity, const char *session_id, size_t session_capacity)
+{
+    if (!ui_scan_preview_id_is_safe(object_id, object_capacity)) return false;
+    return ui_scan_preview_session_is_staged(session_id) || ui_scan_preview_id_is_safe(session_id, session_capacity);
+}
+
+bool ui_scan_preview_staged_path(const char *objects_path, const char *object_id, const char *file_name, char *out, size_t capacity)
+{
+    if (out == NULL || capacity == 0U) return false;
+    out[0] = '\0';
+    if (objects_path == NULL || object_id == NULL || file_name == NULL || file_name[0] == '\0') return false;
+    const int written = snprintf(out, capacity, "%s/%s/staging/%s", objects_path, object_id, file_name);
+    if (written <= 0 || (size_t)written >= capacity) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 bool ui_scan_preview_format_identity(uint32_t scan_crc, char *out, size_t capacity)
 {
     if (out == NULL || capacity == 0U) return false;

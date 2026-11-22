@@ -507,6 +507,44 @@ static void test_voxel_cube_faces_and_projected_corners(void)
     frame_assert_guards(w, h);
 }
 
+/* The pre-optimisation formulas, with 64-bit divisions: the new decode must give the very same cell for every valid index. */
+static void reference_cell(uint32_t index, const uint16_t dims[3], uint32_t *x, uint32_t *y, uint32_t *z)
+{
+    const uint64_t plane = (uint64_t)dims[0] * dims[1];
+    *x = index % dims[0];
+    *y = (uint32_t)(((uint64_t)index / dims[0]) % dims[1]);
+    *z = (uint32_t)((uint64_t)index / plane);
+}
+
+static void test_voxel_cell_decode_matches_the_64_bit_reference(void)
+{
+    static const uint16_t grids[][3] = {
+        {1U, 1U, 1U}, {2U, 1U, 1U}, {1U, 2U, 1U}, {1U, 1U, 2U}, {3U, 2U, 4U}, {10U, 10U, 10U}, {65535U, 1U, 1U},
+        {1U, 65535U, 1U}, {1U, 1U, 65535U}, {65535U, 65535U, 1U}, {256U, 256U, 65535U}, {65535U, 65535U, 65535U},
+    };
+    uint32_t state = 12345U;
+    for (size_t g = 0U; g < sizeof(grids) / sizeof(grids[0]); ++g) {
+        const uint16_t *dims = grids[g];
+        const uint64_t volume = (uint64_t)dims[0] * dims[1] * dims[2];
+        const uint64_t limit = volume > 0xffffffffULL ? 0xffffffffULL : volume - 1U;
+        uint64_t probes[12] = {0U, 1U, limit, limit > 0U ? limit - 1U : 0U, limit / 2U, limit / 3U};
+        for (size_t i = 6U; i < 12U; ++i) {
+            state = state * 1664525U + 1013904223U;
+            probes[i] = limit == 0U ? 0U : (uint64_t)state % (limit + 1U);
+        }
+        for (size_t i = 0U; i < 12U; ++i) {
+            if (probes[i] > limit) probes[i] = limit;      /* only valid indices: below the volume */
+            const uint32_t index = (uint32_t)probes[i];
+            uint32_t x, y, z, rx, ry, rz;
+            ui_preview3d_voxel_cell(index, dims, &x, &y, &z);
+            reference_cell(index, dims, &rx, &ry, &rz);
+            assert(x == rx && y == ry && z == rz);
+            assert(x < dims[0] && y < dims[1] && z < dims[2]);
+            assert((uint64_t)x + (uint64_t)dims[0] * ((uint64_t)y + (uint64_t)dims[1] * z) == index);   /* it inverts the index */
+        }
+    }
+}
+
 static void test_voxel_depth_order_and_registration_binding(void)
 {
     static uint32_t indices[] = {2U, 5U};
@@ -1193,6 +1231,7 @@ int main(void)
     test_empty_and_degenerate_scenes();
     test_occupancy_decimation_and_registration();
     test_voxel_cube_faces_and_projected_corners();
+    test_voxel_cell_decode_matches_the_64_bit_reference();
     test_voxel_depth_order_and_registration_binding();
     test_v2_preview_sensor_origin_uses_project_z_up();
     test_voxel_viewport_clipping_far_depth_and_budget();

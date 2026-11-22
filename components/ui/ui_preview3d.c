@@ -639,12 +639,26 @@ static const uint8_t s_face_colours[6] = {
     UI_PREVIEW3D_PX_VOXEL_TOP, UI_PREVIEW3D_PX_VOXEL_SIDE,
 };
 
+void ui_preview3d_voxel_cell(uint32_t index, const uint16_t dimensions[3], uint32_t *x_out, uint32_t *y_out, uint32_t *z_out)
+{
+    /* The same cell as index % dx, (index / dx) % dy, index / (dx * dy), with two 32-bit divisions: the ESP32-S3 divides 32-bit values in
+     * hardware, but 64-bit values in software (about 20 times slower), and the draw-order sort calls this for every comparison. A valid
+     * index is below dx * dy * dz <= 2^32, so every quotient fits 32 bits and the result is identical. */
+    const uint32_t dx = dimensions[0];
+    const uint32_t dy = dimensions[1];
+    const uint32_t row = index / dx;
+    const uint32_t z = row / dy;
+    *x_out = index - row * dx;
+    *y_out = row - z * dy;
+    *z_out = z;
+}
+
 static bool voxel_position(const ui_preview3d_scene_t *scene, uint32_t index, ui_preview3d_vec3_t *position)
 {
-    const uint64_t plane = (uint64_t)scene->voxel_dimensions[0] * scene->voxel_dimensions[1];
-    const uint32_t x = index % scene->voxel_dimensions[0];
-    const uint32_t y = (uint32_t)(((uint64_t)index / scene->voxel_dimensions[0]) % scene->voxel_dimensions[1]);
-    const uint32_t z = (uint32_t)((uint64_t)index / plane);
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+    ui_preview3d_voxel_cell(index, scene->voxel_dimensions, &x, &y, &z);
     const float half = scene->voxel_size_m * 0.5f;
     position->x = scene->voxel_origin.x + ((float)x + 0.5f) * scene->voxel_size_m;
     position->y = scene->voxel_origin.y + ((float)y + 0.5f) * scene->voxel_size_m;
@@ -709,10 +723,13 @@ static bool fill_quad(uint8_t *pixels, int width, int height, const float x[4], 
 
 static float voxel_depth(uint32_t index, const ui_preview3d_scene_t *scene, const float coefficients[3])
 {
-    const uint64_t plane = (uint64_t)scene->voxel_dimensions[0] * scene->voxel_dimensions[1];
-    const float x = (float)(index % scene->voxel_dimensions[0]) * scene->voxel_size_m;
-    const float y = (float)(((uint64_t)index / scene->voxel_dimensions[0]) % scene->voxel_dimensions[1]) * scene->voxel_size_m;
-    const float z = (float)((uint64_t)index / plane) * scene->voxel_size_m;
+    uint32_t cell_x;
+    uint32_t cell_y;
+    uint32_t cell_z;
+    ui_preview3d_voxel_cell(index, scene->voxel_dimensions, &cell_x, &cell_y, &cell_z);
+    const float x = (float)cell_x * scene->voxel_size_m;
+    const float y = (float)cell_y * scene->voxel_size_m;
+    const float z = (float)cell_z * scene->voxel_size_m;
     return x * coefficients[0] + y * coefficients[1] + z * coefficients[2];
 }
 

@@ -598,6 +598,30 @@ static void capture_preview(void)
         ui_scan_preview_handle_key_locked(KEYPAD_KEY_RIGHT);
         render_capture_menu("preview", registered != 0U ? "voxels_rotated_registered" : "voxels_rotated_unregistered");
     }
+    {
+        /* A real scan: the 119 cells a phone sent to the ESP32, through the production parser (not only the 2x2x2 cube above). */
+        static const uint8_t real_preview[] = {
+#include "real_scan_preview_v1.inc"
+        };
+        preview_base();
+        scan_preview_t real = {0};
+        const scan_preview_error_t parsed = scan_preview_parse(real_preview, sizeof(real_preview), NULL, &real);
+        assert(parsed == SCAN_PREVIEW_OK && real.voxel_count == 119U && real.voxel_size_m == 0.25f);
+        s_state.status = SCAN_PREVIEW_SCREEN_READY;
+        s_state.fallback_reason[0] = '\0';
+        s_state.has_preview = true;
+        s_state.preview = real;
+        s_geometry_computed_at_ms = 0U;
+        s_draw_order = malloc((size_t)real.voxel_count * sizeof(*s_draw_order));
+        assert(s_draw_order != NULL);
+        s_source_count = 0U;
+        for (ui_preview3d_preset_t view = UI_PREVIEW3D_PRESET_TOP; view <= UI_PREVIEW3D_PRESET_ISO; ++view) {
+            ui_preview3d_view_preset(&s_view, view);
+            render_current_locked();
+            char name[48]; (void)snprintf(name, sizeof(name), "voxels_real_scan_view%u", (unsigned)view);
+            render_capture_menu("preview", name);
+        }
+    }
     preview_base();
     s_state.status = SCAN_PREVIEW_SCREEN_READY;
     s_state.has_occupancy = true;

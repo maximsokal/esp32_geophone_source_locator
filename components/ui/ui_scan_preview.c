@@ -162,22 +162,16 @@ static bool request_is_current(const preview_request_t *request)
     return request != NULL && atomic_load_explicit(&s_active_generation, memory_order_acquire) == request->generation;
 }
 
-static bool safe_id(const char *value, size_t capacity)
-{
-    if (value == NULL || value[0] == '\0') return false;
-    for (size_t i = 0U; i < capacity && value[i] != '\0'; ++i) {
-        const char c = value[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
-    }
-    return strnlen(value, capacity) < capacity;
-}
-
 /*
  * Where a session's scan artifact is read from: its own file, else the shared scan of its sensor placement (several
  * recordings use one scan; a session refers to it). The check opens files, so it runs inside a storage operation.
  */
 static bool make_path(char path[PREVIEW_PATH_SIZE], const preview_request_t *request, const char *file_name)
 {
+    if (ui_scan_preview_session_is_staged(request->session_id)) {
+        /* The staged scan (before a recording exists) lives in the object's staging directory, never in a session. */
+        return ui_scan_preview_staged_path(STORAGE_MANAGER_OBJECTS_PATH, request->object_id, file_name, path, PREVIEW_PATH_SIZE);
+    }
     const esp_err_t guard = storage_manager_operation_begin();
     int result;
     if (guard == ESP_OK) {
@@ -425,7 +419,7 @@ static size_t geometry_sensor_count(const object_store_geometry_t *geometry)
 static void load_session(const preview_request_t *request, preview_result_t *result)
 {
     result->status = SCAN_PREVIEW_SCREEN_NO_PREVIEW;
-    if (!safe_id(request->object_id, sizeof(request->object_id)) || !safe_id(request->session_id, sizeof(request->session_id))) {
+    if (!ui_scan_preview_request_ids_valid(request->object_id, sizeof(request->object_id), request->session_id, sizeof(request->session_id))) {
         set_reason(result, "invalid session id");
         return;
     }
@@ -435,7 +429,8 @@ static void load_session(const preview_request_t *request, preview_result_t *res
     }
 
     geometry_read_t geometry_read = {.request = request, .geometry = &result->geometry};
-    if (storage_chunk(request, session_geometry_callback, &geometry_read) == ESP_OK) {
+    /* A staged scan has no session, so no session geometry and no source runs: the voxels are shown alone. */
+    if (!ui_scan_preview_session_is_staged(request->session_id) && storage_chunk(request, session_geometry_callback, &geometry_read) == ESP_OK) {
         result->geometry_computed_at_ms = localization_calculate_geometry_computed_at_ms(&result->geometry);
     }
 

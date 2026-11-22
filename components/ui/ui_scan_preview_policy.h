@@ -23,6 +23,21 @@ typedef enum
     UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES,
 } ui_scan_preview_view_t;
 
+/*
+ * Before a recording exists the phone saves the 3D scan under the object's staging directory and the workflow has no session id (issue #44
+ * follow-up: the TFT 3D button at "ready to record" used to answer "invalid session id"). An EMPTY session id therefore means "the staged scan".
+ */
+bool ui_scan_preview_session_is_staged(const char *session_id);
+
+/* An object or session id: non-empty, only letters, digits, '_' and '-', and shorter than `capacity` (so it cannot walk out of its directory). */
+bool ui_scan_preview_id_is_safe(const char *value, size_t capacity);
+
+/* The ids of a preview request: a safe object id and either a safe session id or the staged (empty) one. */
+bool ui_scan_preview_request_ids_valid(const char *object_id, size_t object_capacity, const char *session_id, size_t session_capacity);
+
+/* `<objects>/<object>/staging/<file>`; false (and an empty string) when it does not fit. */
+bool ui_scan_preview_staged_path(const char *objects_path, const char *object_id, const char *file_name, char *out, size_t capacity);
+
 /* Preserve scan-backed previews; use sensor-frame estimates only when no scan exists. */
 ui_scan_preview_view_t ui_scan_preview_select_view(
     bool scan_present,

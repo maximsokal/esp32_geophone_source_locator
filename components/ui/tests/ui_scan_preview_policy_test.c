@@ -190,8 +190,44 @@ static void test_scan_and_sensor_estimate_view_selection(void)
     assert(ui_scan_preview_select_view(true, false, 2U, 17U) == UI_SCAN_PREVIEW_VIEW_UNAVAILABLE);
 }
 
+static void test_empty_session_is_the_staged_scan(void)
+{
+    assert(ui_scan_preview_session_is_staged(""));
+    assert(ui_scan_preview_session_is_staged(NULL));
+    assert(!ui_scan_preview_session_is_staged("S000001"));
+    assert(!ui_scan_preview_session_is_staged("staging"));   /* the web token is not a session directory on the card */
+    assert(ui_scan_preview_request_ids_valid("OBJ_0001", 32U, "", 16U));
+    assert(ui_scan_preview_request_ids_valid("OBJ_0001", 32U, NULL, 16U));
+    assert(ui_scan_preview_request_ids_valid("OBJ_0001", 32U, "S000001", 16U));
+    assert(!ui_scan_preview_request_ids_valid("", 32U, "S000001", 16U));
+    assert(!ui_scan_preview_request_ids_valid(NULL, 32U, "", 16U));
+    assert(!ui_scan_preview_request_ids_valid("OBJ/../x", 32U, "", 16U));
+    assert(!ui_scan_preview_request_ids_valid("OBJ_0001", 32U, "S0/../1", 16U));
+    assert(!ui_scan_preview_request_ids_valid("OBJ_0001", 4U, "", 16U));          /* does not fit its buffer */
+    assert(!ui_scan_preview_id_is_safe("a b", 16U));
+    assert(!ui_scan_preview_id_is_safe("", 16U));
+    assert(ui_scan_preview_id_is_safe("A_b-9", 16U));
+}
+
+static void test_staged_path_is_in_the_staging_directory(void)
+{
+    char path[64];
+    assert(ui_scan_preview_staged_path("/sdcard/objects", "OBJ_0001", "preview-v1.bin", path, sizeof(path)));
+    assert(strcmp(path, "/sdcard/objects/OBJ_0001/staging/preview-v1.bin") == 0);
+    assert(!strstr(path, "sessions"));
+    char tiny[16];
+    memset(tiny, 'x', sizeof(tiny));
+    assert(!ui_scan_preview_staged_path("/sdcard/objects", "OBJ_0001", "scan-v1.bin", tiny, sizeof(tiny)));
+    assert(tiny[0] == '\0');
+    assert(!ui_scan_preview_staged_path(NULL, "OBJ_0001", "scan-v1.bin", path, sizeof(path)) && path[0] == '\0');
+    assert(!ui_scan_preview_staged_path("/sdcard/objects", "OBJ_0001", "", path, sizeof(path)));
+    assert(!ui_scan_preview_staged_path("/sdcard/objects", "OBJ_0001", "scan-v1.bin", NULL, 8U));
+}
+
 int main(void)
 {
+    test_empty_session_is_the_staged_scan();
+    test_staged_path_is_in_the_staging_directory();
     test_identity_format();
     test_scan_and_sensor_estimate_view_selection();
     test_occupancy_frame_id_must_match_current_scan();

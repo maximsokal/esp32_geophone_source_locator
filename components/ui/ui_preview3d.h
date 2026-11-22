@@ -191,6 +191,9 @@ size_t ui_preview3d_select_sources(
     ui_preview3d_source_t *sources,
     size_t source_capacity);
 
+/* Row-major cell of a voxel index in a grid of `dimensions` (x fastest): the inverse of x + dx * (y + dy * z). Exposed for tests. */
+void ui_preview3d_voxel_cell(uint32_t index, const uint16_t dimensions[3], uint32_t *x_out, uint32_t *y_out, uint32_t *z_out);
+
 /* Maps the half-open grid volume to its row-major voxel index. */
 bool ui_preview3d_source_to_voxel_index(
     const ui_preview3d_voxel_grid_t *grid,
