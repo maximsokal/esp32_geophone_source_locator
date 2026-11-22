@@ -72,6 +72,19 @@ describe('tag-locked re-localisation of a Continue scan (issue #45, gate 1)', ()
     expect(evaluateRelock(A, nonFinite).found).toBe(2);
   });
 
+  it('needs several sightings AND several views: either alone is not a reliable tag', () => {
+    const fewSightings = fusionOf(
+      fused(0, toB(A[0].positionMm, TRUTH)), fused(1, toB(A[1].positionMm, TRUTH)),
+      fused(2, toB(A[2].positionMm, TRUTH), { inlierCount: 2, observationCount: 2, independentViewCount: 6 }),   /* many views, too few sightings */
+    );
+    expect(evaluateRelock(A, fewSightings)).toMatchObject({ phase: 'relocalizing', found: 2, foundTagIds: [0, 1] });
+    const oneView = fusionOf(
+      fused(0, toB(A[0].positionMm, TRUTH)), fused(1, toB(A[1].positionMm, TRUTH)),
+      fused(2, toB(A[2].positionMm, TRUTH), { inlierCount: 30, observationCount: 30, independentViewCount: 1 }),   /* many sightings, one view */
+    );
+    expect(evaluateRelock(A, oneView)).toMatchObject({ phase: 'relocalizing', found: 2 });
+  });
+
   it.each([
     { yaw: 0, tx: 0, ty: 0, tz: 0 },
     { yaw: 0.7, tx: 2.5, ty: -1.2, tz: 0.04 },
