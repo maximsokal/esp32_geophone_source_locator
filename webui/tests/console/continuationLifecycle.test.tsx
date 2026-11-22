@@ -73,10 +73,10 @@ async function flush(): Promise<void> {
   await act(async () => { for (let index = 0; index < 200; index += 1) await Promise.resolve(); });
 }
 
-async function mount(): Promise<ReactTestRenderer> {
+async function mount(sessionId: string | null = 'S'): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId: 'S', status: null })));
+    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId, status: null })));
   });
   mounted.push(renderer);
   await flush();
@@ -223,6 +223,14 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     await flush();
     const unlocked = h.workers[h.workers.length - 1];
     expect(unlocked.request.options).not.toHaveProperty('seed');
+  });
+
+  it('reopens a scan that is still staged (no recording yet) with the saved scan on screen and Continue available (audit 2026-11-22)', async () => {
+    device.scan = encodeScanArtifact(makeValidScanSnapshot());
+    await mount(null);
+    expect((h.viewportProps?.snapshot as ScanPointCloudSnapshot | undefined)?.pointCount).toBe(1);
+    expect(h.loadScan).toHaveBeenCalledWith('OBJ', 'staging');
+    await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); });
   });
 
   it('keeps durable A visible while registration is pending, then preserves A after a worker error', async () => {
@@ -505,6 +513,18 @@ describe('a continuation inherits the saved tag layout of A (issues #37, #38)', 
     if (built.layout === null) throw new Error('fixture layout expected');
     return encodeTagPositions(tagPositionsFromLayout(built.layout, baseId, 1));
   }
+
+  it('a staged scan reopened from the workflow brings its saved tags to the scanner as re-lock anchors (audit 2026-11-22)', async () => {
+    const bytes = encodeScanArtifact(makeValidScanSnapshot());
+    const baseId = scanId(bytes);
+    device.scan = bytes;
+    h.loadTags.mockResolvedValue(savedLayoutFor(baseId, [MAIN, G1, G2, G3]));
+    await mount(null);
+    expect(h.loadTags).toHaveBeenCalledWith('OBJ', 'staging');
+    const stored = h.props.getRelockBase();
+    expect(stored).not.toBeNull();
+    expect(stored.scan_frame_id).toBe(baseId);
+  });
 
   async function mergeWithExtensionTags(extensionTags: ReturnType<typeof tag>[]): Promise<string> {
     const baseId = scanId(encodeScanArtifact(makeValidScanSnapshot()));

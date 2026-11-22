@@ -50,6 +50,8 @@ interface Props {
 interface Loaded {
   snapshot: ScanPointCloudSnapshot;
   scanId: string;
+  /** SHA-256 of the decoded scan file, when known: the device voxels must be bound to exactly this scan, not only to its CRC32. */
+  scanSha256?: string;
   tags: TagPositionsArtifact | null;
   runs: readonly LocalizationRun[];
   registration: RegistrationArtifact | null;
@@ -142,7 +144,7 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
         const scanId = decoded.identity.frameId;
         const companions = await loadCompanions(objectId, effectiveSession, scanId, finished);
         if (cancelled) return;
-        setState({ phase: 'ready', data: { snapshot: decoded.snapshot, scanId, ...companions } });
+        setState({ phase: 'ready', data: { snapshot: decoded.snapshot, scanId, ...(decoded.identity.sha256 === undefined ? {} : { scanSha256: decoded.identity.sha256 }), ...companions } });
         clientDiagnostics.info('WORKFLOW_SCAN_VIEW_READY', {
           objectId, sessionId: effectiveSession, stablePoints: decoded.snapshot.pointCount,
           tags: companions.tags?.nodes.length ?? 0, source: companions.registration !== null, finished,
@@ -162,7 +164,7 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
   /* The same representation choice as the scanner result: the voxels are read back from the ESP32 for THIS scan only. */
   const voxels = useSavedEsp32Voxels(
     data !== null && representation !== 'mesh'
-      ? { objectId, sessionId: effectiveSession, kind: representation === 'esp32-preview' ? 'preview' : 'solver', scanId: data.scanId }
+      ? { objectId, sessionId: effectiveSession, kind: representation === 'esp32-preview' ? 'preview' : 'solver', scanId: data.scanId, scanSha256: data.scanSha256 }
       : null,
   );
   const markers = useMemo(() => data?.tags === null || data === null ? [] : tagLayoutMarkers(data.tags), [data]);

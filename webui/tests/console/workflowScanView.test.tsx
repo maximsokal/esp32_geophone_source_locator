@@ -177,6 +177,24 @@ describe('ESP32 voxels in the embedded scan view (issue #44)', () => {
     expect(h.viewport.esp32Voxels).toMatchObject({ kind: 'solver', status: 'saved' });
   });
 
+  it('binds the device occupancy to the SHA-256 of the scan on screen: the same frame id with another digest is refused (audit 2026-11-22)', async () => {
+    const SHA_A = 'a'.repeat(64); const SHA_B = 'b'.repeat(64);
+    const bound = (sha: string) => encodeOccupancySolverArtifact({
+      freeAirPositions: new Float32Array([1.1, 0.1, 0.1]), occupiedSurfacePositions: new Float32Array([0.1, 0.1, 0.1]),
+      occupancyEnvelopeBounds: null, occupancySolverCandidateBelowSurfaceMeters: 0, occupancyCellsSaturated: false,
+      occupancyFineVoxelSizeMeters: 0.25, occupancyVoxelSizeMeters: 0.25,
+    }, { frameId: SCAN_ID, createdAtMs: 1, scanSha256: sha });
+    h.decodeResult = { snapshot: { pointCount: 5 }, identity: { frameId: SCAN_ID, sha256: SHA_A } };
+    h.loadOccupancy.mockResolvedValue(bound(SHA_B));
+    await mount({ sessionId: 'S000001', finished: true });
+    await choose('esp32-solver');
+    expect(h.viewport.esp32Voxels).toBeNull();
+    h.loadOccupancy.mockResolvedValue(bound(SHA_A));
+    await choose('mesh');
+    await choose('esp32-solver');
+    expect(h.viewport.esp32Voxels).toMatchObject({ kind: 'solver', status: 'saved' });
+  });
+
   it("draws nothing and says why when the device holds none, or holds another scan's", async () => {
     await mount({ sessionId: null, finished: false });
     await choose('esp32-preview');

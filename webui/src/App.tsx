@@ -291,7 +291,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const scanAuthority = authoritativeSnapshot(scanDurability);
   const scanViewportProvenance = viewportProvenance(scanDurability);
   const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(
-    objectId === null || sessionId === null ? 'unbound' : 'loading',
+    objectId === null ? 'unbound' : 'loading',
   );
   const [scanStorageError, setScanStorageError] = useState<unknown | null>(null);
   const [liveTagAnchors, setLiveTagAnchors] = useState<readonly TagSensorAnchor[]>([]);
@@ -466,7 +466,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const deviceKind = representation === 'esp32-preview' ? 'preview' : 'solver';
   const deviceVoxels = useSavedEsp32Voxels(
     representation !== 'mesh' && !localBytes && savedScanOnDevice && objectId !== null && scanDurability.durableId !== null
-      ? { objectId, sessionId: scanSessionId, kind: deviceKind, scanId: scanDurability.durableId }
+      ? { objectId, sessionId: scanSessionId, kind: deviceKind, scanId: scanDurability.durableId, scanSha256: scanShaByFrameId.current.get(scanDurability.durableId) }
       : null,
   );
   const esp32VoxelView = useMemo<Esp32VoxelView | null>(() => {
@@ -679,7 +679,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       persistenceController.abandon();
     };
 
-    if (objectId === null || sessionId === null) {
+    if (objectId === null) {
       setScanStoragePhase('unbound');
       return abandonScannerOwner;
     }
@@ -689,8 +689,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   }, [objectId, sessionId, persistenceController, updateScanDurability, applyGeometry, publishRegistration, cancelContinuation, cancelScanEncode, cancelScanDecode]);
 
   useEffect(() => {
-    if (objectId === null || sessionId === null || storageActionsDisabled) return undefined;
-    const key = `${objectId}/${sessionId}`;
+    if (objectId === null || storageActionsDisabled) return undefined;      /* a staged scan (no recording yet) is restored from 'staging' like any other */
+    const key = `${objectId}/${scanSessionId}`;
     const shouldLoadScan = scanLoadSession.current !== key;
     const shouldLoadEvidence = sessionEvidenceLoad.current !== key;
     if (!shouldLoadScan && !shouldLoadEvidence) return undefined;
@@ -699,15 +699,15 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     let cancelled = false;
     if (shouldLoadEvidence) {
       evidenceReady.current = Promise.all([
-        retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId)).then(
+        retryPreemptedRead(() => fetchLocalizationRuns(objectId, scanSessionId)).then(
           (listing) => ({ ok: true as const, listing }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
-        loadSessionRegistration(objectId, sessionId).then(
+        loadSessionRegistration(objectId, scanSessionId).then(
           (json) => ({ ok: true as const, json }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
-        loadSessionTagPositions(objectId, sessionId).then(
+        loadSessionTagPositions(objectId, scanSessionId).then(
           (json) => ({ ok: true as const, json }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
@@ -717,10 +717,10 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         if (tagsResult.ok && typeof tagsResult.json === 'string') {
           try {
             const artifact = decodeTagPositions(tagsResult.json);
-            savedTagArtifactRef.current = { objectId, sessionId, artifact };
+            savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact };
             savedTagLayoutRef.current = { scanId: artifact.scan_frame_id ?? '', nodes: artifact.nodes.length, confirmed: artifact.nodes.filter((node) => node.confirmed).length };
           } catch (reason) {
-            clientDiagnostics.warn('TAG_POSITIONS_RESTORE_FAILED', { objectId, sessionId, error: reason instanceof Error ? reason.message : String(reason) });
+            clientDiagnostics.warn('TAG_POSITIONS_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: reason instanceof Error ? reason.message : String(reason) });
           }
         }
         /* A failed sub-request stays retryable (issue #22): only a fully loaded evidence set is remembered for this screen. */
@@ -733,35 +733,35 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           const message = geometryResult.reason instanceof Error ? geometryResult.reason.message : String(geometryResult.reason);
           applyGeometry(null);
           setLocalizationRunListing(null);
-          clientDiagnostics.warn('SENSOR_GEOMETRY_RESTORE_FAILED', { objectId, sessionId, error: message });
+          clientDiagnostics.warn('SENSOR_GEOMETRY_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: message });
         }
         if (!registrationResult.ok) {
           const message = registrationResult.reason instanceof Error ? registrationResult.reason.message : String(registrationResult.reason);
           publishRegistration(null, null);
-          clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
+          clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: message });
         } else if (registrationResult.json === null) publishRegistration(null, null);
         else {
           /* Restored into the raw mirror too; every consumer still applies the predicate against the loaded scan. */
-          try { publishRegistration({ objectId, sessionId }, decodeRegistrationArtifact(registrationResult.json)); }
+          try { publishRegistration({ objectId, sessionId: scanSessionId }, decodeRegistrationArtifact(registrationResult.json)); }
           catch (reason) {
             const message = reason instanceof Error ? reason.message : String(reason);
             publishRegistration(null, null);
-            clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
+            clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: message });
           }
         }
         void clientDiagnostics.flush();
       });
     }
     if (!shouldLoadScan) return () => { cancelled = true; };
-    void loadObjectScanArtifact(objectId, sessionId).then(
+    void loadObjectScanArtifact(objectId, scanSessionId).then(
       async (artifact) => {
         if (cancelled || generation !== storageGeneration.current || decodeOwnerGeneration !== scanDecodeOwnerGeneration.current) return;
         if (artifact === null) {
           scanLoadSession.current = key;
           setScanStoragePhase('none');
-          clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId, sessionId });
+          clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId, sessionId: scanSessionId });
           void clientDiagnostics.flush();
-          void persistenceController.reconcile(objectId, sessionId, null);
+          void persistenceController.reconcile(objectId, scanSessionId, null);
           return;
         }
 
@@ -775,7 +775,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             transferInput: true,
             budgetLimitBytes: SCAN_DECODE_TRANSIENT_BUDGET_BYTES,
             onFallback: () => clientDiagnostics.warn('SCAN_RESULT_RESTORE_WORKER_UNAVAILABLE', {
-              objectId, sessionId, reason: 'Worker is unavailable',
+              objectId, sessionId: scanSessionId, reason: 'Worker is unavailable',
             }),
           });
           if (cancelled || generation !== storageGeneration.current || decodeOwnerGeneration !== scanDecodeOwnerGeneration.current) {
@@ -794,7 +794,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           if (loadedIdentity.sha256 !== undefined) scanShaByFrameId.current.set(loadedScanId, loadedIdentity.sha256);
           const restoreSummary = Object.freeze({
             objectId,
-            sessionId,
+            sessionId: scanSessionId,
             bytes: loadedIdentity.byteLength,
             scanId: loadedIdentity.frameId,
             scanCrc32: loadedIdentity.crc32,
@@ -826,7 +826,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
               registration: registrationEmbedFor(loadedScanId),
             });
           };
-          void persistenceController.reconcile(objectId, sessionId, null, buildOccupancy, buildPreview, loadedScanId, loadedIdentity).then((reconciled) => {
+          void persistenceController.reconcile(objectId, scanSessionId, null, buildOccupancy, buildPreview, loadedScanId, loadedIdentity).then((reconciled) => {
             if (cancelled || generation !== storageGeneration.current || decodeOwnerGeneration !== scanDecodeOwnerGeneration.current) return;
             scanLoadSession.current = key;
             if (reconciled?.scan === 'saved' && reconciled.scanId === loadedScanId) {
@@ -838,7 +838,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             setScanStoragePhase('loaded');
             clientDiagnostics.info('SCAN_RESULT_RESTORED', {
               objectId,
-              sessionId,
+              sessionId: scanSessionId,
               bytes: restoreSummary.bytes,
               stablePoints: restored.pointCount,
               tentativePoints: restored.tentativePointCount,
@@ -861,7 +861,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             ? 'scan.error.no_stable_surface'
             : 'scan.error.restore_failed'));
           setScanStoragePhase('error');
-          clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
+          clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: message });
           void clientDiagnostics.flush();
         }
       },
@@ -872,8 +872,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         setScanReadRetryable(true);
         setScanStorageError(reason);
         setScanStoragePhase('error');
-        void persistenceController.reconcile(objectId, sessionId, null);
-        clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
+        void persistenceController.reconcile(objectId, scanSessionId, null);
+        clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: message });
         void clientDiagnostics.flush();
       },
     );
@@ -882,7 +882,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       cancelled = true;
       cancelScanDecode('Saved scan load effect ended.');
     };
-  }, [objectId, sessionId, scanLoadAttempt, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration, cancelScanDecode]);
+  }, [objectId, scanSessionId, scanLoadAttempt, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration, cancelScanDecode]);
 
   /* Retry loading the saved scan (and any sensor evidence that failed) without leaving the scanner screen. */
   const retryScanLoad = useCallback((): void => {

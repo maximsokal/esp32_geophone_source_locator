@@ -219,7 +219,10 @@ export function evaluateRelock(base: readonly RelockBaseTag[], fusion: TagObserv
  * by more than a tolerance, ends the lock: B must not keep feeding A through a frame that has changed under it.
  */
 export function relockStillHolds(locked: RelockTransform, current: RelockState, toleranceMm = 2 * RELOCK_MAX_RMS_MM): boolean {
-  if (current.phase !== 'locked' || current.transform === null) return true;       /* nothing contradicts it; fewer tags in view is normal */
+  /* Fewer tags in view, or too few reliable ones, contradicts nothing. Three or more tags that disagree with each other or with A do: the frame under B has changed. */
+  if (current.phase !== 'locked' || current.transform === null) {
+    return !(current.found >= RELOCK_MIN_TAGS && (current.reason === 'distance_mismatch' || current.reason === 'residual_too_high'));
+  }
   const shiftMm = Math.hypot(current.transform.tx - locked.tx, current.transform.ty - locked.ty, current.transform.tz - locked.tz) * 1000;
   const turn = Math.abs(Math.atan2(Math.sin(current.transform.yaw - locked.yaw), Math.cos(current.transform.yaw - locked.yaw)));
   return shiftMm <= toleranceMm && turn <= 0.02;            /* about 1.1 degrees of yaw */

@@ -243,6 +243,16 @@ describe('does a granted lock still hold', () => {
     expect(relockStillHolds(locked, evaluateRelock(A, seen([0])))).toBe(true);
   });
 
+  it('ends when three tags in view contradict A or each other, although no new transform exists (audit 2026-11-22)', () => {
+    const mismatch = evaluateRelock(A, seen([0, 1, 2], TRUTH, (_, p) => [p[0] * 1.05, p[1] * 1.05, p[2] * 1.05]));
+    expect(mismatch.reason).toBe('distance_mismatch');
+    expect(relockStillHolds(locked, mismatch)).toBe(false);
+    const moved = evaluateRelock(A, seen([0, 1, 2], TRUTH, (id, p) => (id === 1 ? [p[0] + 0.2, p[1], p[2]] : p)));
+    expect(relockStillHolds(locked, moved)).toBe(false);
+    /* two tags, or tags that are merely too few: still nothing contradicts the lock */
+    expect(relockStillHolds(locked, evaluateRelock(A, seen([0, 1])))).toBe(true);
+  });
+
   it('ends for a transform that moved: a 100 mm shift or a 3 degree turn', () => {
     expect(relockStillHolds(locked, state({ ...locked, tx: locked.tx + 0.1 }))).toBe(false);
     expect(relockStillHolds(locked, state({ ...locked, yaw: locked.yaw + 0.05 }))).toBe(false);
