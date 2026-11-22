@@ -22,9 +22,9 @@ import { xrToProject } from './liveTagTracker';
 
 /** How many distinct, known, confirmed tags the lock needs. */
 export const RELOCK_MIN_TAGS = 3;
-/** A tag must be seen at least this often from at least this many independent views in B (lighter than the layout's 5 / 3: a lock is quick). */
+/** A tag must be seen at least this often in B. One view is enough: the lock is cross-checked by the tags' mutual distances against A (15 mm tolerance) and by an RMS gate, and the 2026-11-22 run showed operators glance at each tag from one place. */
 export const RELOCK_MIN_OBSERVATIONS = 3;
-export const RELOCK_MIN_VIEWS = 2;
+export const RELOCK_MIN_VIEWS = 1;
 /** The best triangle of the tags must have at least this height (same as the saved layout's gate): nearer to a line cannot fix a rotation. */
 export const RELOCK_MIN_TRIANGLE_HEIGHT_MM = 30;
 /** A pair of tags may be this much farther or nearer in B than in A, or three sigma of the four positions when that is larger. */

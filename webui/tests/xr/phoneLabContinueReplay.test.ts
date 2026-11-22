@@ -211,3 +211,42 @@ describe.skipIf(captured === null)('a real captured B cloud of a rejected Contin
     }
   });
 });
+
+/*
+ * Run 2026-11-22 16:33. The Continue found G4, G3 and G1 (the three tags saved for scan A) once each for a few seconds, from one place each, and never
+ * locked: the lock then asked for two independent views per tag, no points were gathered, and the scan was withheld. These are the XR_TAG_POSE samples it
+ * logged and the 870-byte layout it had saved for A (scan-crc32:47789e9f). They show that a single glance already agrees with A to a few millimetres,
+ * which is why one view is enough for the lock (the distance gate stays).
+ */
+describe('run 2026-11-22 16:33: the tags seen once each already agree with the saved layout', () => {
+  const DIR_B = resolve(__dirname, '../fixtures/phone-lab-2026-11-22b');
+  const layout = decodeTagPositions(readFileSync(resolve(DIR_B, 'tag-positions-v1.json'), 'utf-8'))!;
+  const samples = JSON.parse(readFileSync(resolve(DIR_B, 'tag-poses-b.json'), 'utf-8')) as Array<{ tagId: number; x: number; y: number; z: number }>;
+  const base = relockBaseTags(layout, layout.scan_frame_id);
+
+  it('A saved tags 0, 1, 3 and 4 as anchors (it confirmed 1, 3, 4 and saw 0 three times)', () => {
+    expect(base.map((tag) => tag.tagId)).toEqual([0, 1, 3, 4]);
+  });
+
+  it('every pairwise distance between the glanced tags matches the saved layout within the lock tolerance', () => {
+    const inA = new Map(base.map((tag) => [tag.tagId, tag.positionMm]));
+    for (let i = 0; i < samples.length; i += 1) for (let j = i + 1; j < samples.length; j += 1) {
+      const a = samples[i]; const b = samples[j];
+      const dB = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 1000;               /* distances do not depend on the axis convention */
+      const pa = inA.get(a.tagId)!; const pb = inA.get(b.tagId)!;
+      const dA = Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]);
+      expect(Math.abs(dA - dB), `tags ${a.tagId}-${b.tagId}: A ${dA.toFixed(0)} mm, B ${dB.toFixed(0)} mm`).toBeLessThan(25);
+    }
+  });
+
+  it('locks from three tags seen from ONE view each, as the operator actually looked', () => {
+    const obs = (tagId: number, x: number, y: number, z: number, n = 4) => Array.from({ length: n }, (_, k) => ({
+      tagId, positionScan: [x, y, z] as const, cameraPosition: [x, y + 0.4, z] as const, capturedAtMs: 1000 * tagId + k * 40,    /* still camera: no baseline */
+    }));
+    const all = samples.flatMap((sample) => obs(sample.tagId, sample.x, sample.y, sample.z));
+    const state = evaluateRelock(base, fuseTagObservations(all, { minObservations: 3, minIndependentViews: 1 }));
+    expect(state.phase, JSON.stringify({ reason: state.reason, found: state.found, rms: state.rmsMm })).toBe('locked');
+    expect(state.usedTagIds).toEqual([1, 3, 4]);
+    expect(state.rmsMm!).toBeLessThanOrEqual(RELOCK_MAX_RMS_MM);
+  });
+});

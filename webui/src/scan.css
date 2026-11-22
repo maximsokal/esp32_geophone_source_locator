@@ -481,10 +481,10 @@
 .scan-camera-hud button[aria-pressed="true"] { color: var(--ui-accent); border-color: var(--ui-accent); }
 .scan-camera-hud button:disabled { opacity: 0.4; }
 
-/* After a scan the result comes first: the slim mode bar, then the viewer, and the scanner card with its start/continue buttons last. */
+/* After a scan the scanner card with its Continue scan / Scan again buttons comes FIRST, beside where "Continue to recording" is (phone run 2026-11-22: the main buttons were at the bottom), then the slim mode bar and the viewer. */
 .app-shell--result { display: flex; flex-direction: column; }
+.app-shell--result > .xr-runtime-card { order: 0; margin: 0 0 10px; }
 .app-shell--result > .scan-toolbar { order: 1; }
 .app-shell--result > .workspace { order: 2; }
-.app-shell--result > .xr-runtime-card { order: 3; margin-top: 10px; }
 .scan-more-controls > summary { cursor: pointer; padding: 6px 2px; font-weight: 700; color: var(--ui-accent); }
 .scan-more-controls[open] > summary { margin-bottom: 6px; }

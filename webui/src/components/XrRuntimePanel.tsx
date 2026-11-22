@@ -158,19 +158,19 @@ export function XrRuntimePanel({
   /* Issue #45, gate 1: a Continue scan is tied to the saved scan by known tags before any depth of the new session is used. The gate on the runtime keeps
      depth out while the lock is open; it opens on a lock and closes again when the frame moves. A saved scan with fewer than three confirmed tags cannot
      be re-located this way, and then the Continue works as before (overlap registration after the capture). */
-  const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);const[relockWithheld,setRelockWithheld]=useState(false);
+  const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);
   const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
   const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;const getReferencePointsRef=useRef(getReferencePoints);getReferencePointsRef.current=getReferencePoints;
-  const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(false);runtime.setReferenceOverlay(null);setRelock(null);setRelockAligned(false);};
+  const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelock(null);setRelockAligned(false);};
   const armRelock=():void=>{
-    disarmRelock();setRelockWithheld(false);
+    disarmRelock();
     if(scanIntentRef.current!=='continue')return;
     const base=relockBaseTags(getRelockBaseRef.current?.()??null,baseScanFrameIdRef.current);
     if(base.length<RELOCK_MIN_TAGS){clientDiagnostics.info('XR_RELOCK_UNAVAILABLE',{baseTags:base.length});return;}
-    relockBaseRef.current=base;relockArmedRef.current=true;runtime.setDepthGate(true);setRelock({...INITIAL_RELOCK_STATE});
+    relockBaseRef.current=base;relockArmedRef.current=true;setRelock({...INITIAL_RELOCK_STATE});
     clientDiagnostics.info('XR_RELOCK_START',{baseTags:base.map((tag)=>tag.tagId).join(',')});
   };
-  const dropRelockLock=(event:string):void=>{relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(true);runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn(event,{});};
+  const dropRelockLock=(event:string):void=>{relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn(event,{});};
   const updateRelock=(observations:readonly TagObservation[]):void=>{
     if(!relockArmedRef.current)return;
     const fusion=fuseTagObservations(observations,{minObservations:RELOCK_MIN_OBSERVATIONS,minIndependentViews:RELOCK_MIN_VIEWS});
@@ -180,7 +180,7 @@ export function XrRuntimePanel({
       return;
     }
     if(next.phase==='locked'&&next.transform!==null){
-      relockTransformRef.current=next.transform;relockUsedRef.current=next.usedTagIds;runtime.setDepthGate(false);setRelockAligned(true);
+      relockTransformRef.current=next.transform;relockUsedRef.current=next.usedTagIds;setRelockAligned(true);
       const reference=getReferencePointsRef.current?.()??null;
       runtime.setReferenceOverlay(reference===null?null:buildReferenceOverlay(reference,next.transform));
       clientDiagnostics.info('XR_RELOCK_LOCKED',{tags:next.usedTagIds.join(','),rmsMm:Math.round((next.rmsMm??0)*10)/10,yawDeg:Math.round(next.transform.yaw*5729.578)/100,txM:Math.round(next.transform.tx*1000)/1000,tyM:Math.round(next.transform.ty*1000)/1000,tzM:Math.round(next.transform.tz*1000)/1000});
@@ -190,11 +190,11 @@ export function XrRuntimePanel({
   useEffect(()=>{
     /* A reset moves the origin: tags seen before it are in another frame, so the lock and what led to it are void (issue #36 / #45). */
     if(!runtimeState.originReset||!relockArmedRef.current)return;
-    tagObservationsRef.current.clear();relockTransformRef.current=null;relockUsedRef.current=[];runtime.setDepthGate(true);runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn('XR_RELOCK_RESET',{});
+    tagObservationsRef.current.clear();relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);setRelockAligned(false);setRelock({...INITIAL_RELOCK_STATE});clientDiagnostics.warn('XR_RELOCK_RESET',{});
   },[runtimeState.originReset]);
   useEffect(()=>{if((runtimeState.phase==='idle'||runtimeState.phase==='error')&&relockArmedRef.current)disarmRelock();},[runtimeState.phase]);
   useEffect(()=>{if(!relockAligned)return;const timer=window.setTimeout(()=>setRelockAligned(false),5000);return()=>window.clearTimeout(timer);},[relockAligned]);
-  useEffect(()=>()=>{runtime.setDepthGate(false);runtime.setReferenceOverlay(null);},[runtime]);
+  useEffect(()=>()=>{runtime.setReferenceOverlay(null);},[runtime]);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagNotices,setTagNotices]=useState<TagScanNotice[]>([]);const tagConfirmedRef=useRef<number[]>([]);const tagJumpedRef=useRef<number[]>([]);const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
@@ -246,11 +246,12 @@ export function XrRuntimePanel({
     }else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&previous!==runtimeState.phase){
       tagGeometryEpoch.current+=1;
       const finishedRaw=runtimeState.phase==='ended'&&runtimeState.pointCount>0;
-      /* A Continue that never found its tags has tied nothing to the saved scan: nothing is handed over, so the saved scan stays as it was. */
+      /* Depth is gathered from the first frame of a Continue (points must appear at once). A Continue whose tags never locked is still handed over: the
+         merge then falls back to the overlap search, and a rejection is reported with the reason, not hidden here. */
       const neverLocked=relockArmedRef.current&&relockTransformRef.current===null;
       const lockedForMerge=relockTransformRef.current;       /* read before disarming: the merge of this Continue is registered by it */
-      const finished=finishedRaw&&!neverLocked;
-      if(runtimeState.phase==='ended'&&neverLocked){clientDiagnostics.warn('XR_RELOCK_NEVER_LOCKED',{pointCount:runtimeState.pointCount});setRelockWithheld(true);}
+      const finished=finishedRaw;
+      if(runtimeState.phase==='ended'&&neverLocked)clientDiagnostics.warn('XR_RELOCK_NEVER_LOCKED',{pointCount:runtimeState.pointCount});
       disarmRelock();
       /* MAX-403: the Finished scan is primary evidence and is handed over at once; tag finalization is a separate bounded stage. */
       if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot(),{relockTransform:lockedForMerge});
@@ -488,7 +489,6 @@ export function XrRuntimePanel({
     <section className="xr-runtime-card xr-runtime-card-compact" aria-label={t('xr.title')}>
       <div className="xr-runtime-heading"><div><div className="panel-title">{t('xr.heading')}</div><strong>{t('xr.subtitle')}</strong></div><span className={`xr-phase ${qualityClass(runtimeState)}`}>{phaseLabel(runtimeState,locale)}</span></div>
       <div className="xr-compact-status"><span className={capabilities?.immersiveAr?'good-text':'bad-text'}>WebXR {capabilities?.immersiveAr?'✓':capabilities===null?t('xr.value.checking'):'—'}</span><span className={runtimeState.depthAvailable?'good-text':''}>{t('xr.label.depth')} {runtimeState.depthAvailable?'✓':runtimeState.phase==='idle'?t('xr.value.on_start'):'—'}</span><span className={runtimeState.rgbGuidanceAvailable?'good-text':''}>{t('xr.label.rgb')} {runtimeState.rgbGuidanceAvailable?'✓':capabilities?.rawXrRgbApi?t('xr.value.on_start'):'—'}</span><span className={runtimeState.wakeLockActive?'good-text':''}>{t('xr.label.screen')} {runtimeState.wakeLockActive?t('xr.value.awake'):capabilities?.wakeLockApi?t('xr.value.wake_ready'):t('xr.value.wake_lock_off')}</span></div>
-      {relockWithheld&&<div className="xr-runtime-warning" role="status" data-relock="never-locked">{t('xr.relock.never_locked')}</div>}
       <div className="xr-runtime-controls xr-runtime-controls-compact">
         {savedScanAvailable ? <>
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('continue')}>{computePreparing?t('xr.starting_ar'):t('xr.continue_scan')}</button>

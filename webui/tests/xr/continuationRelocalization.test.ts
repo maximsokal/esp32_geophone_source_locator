@@ -67,12 +67,13 @@ describe('tag-locked re-localisation of a Continue scan (issue #45, gate 1)', ()
       fused(2, toB(A[2].positionMm, TRUTH), { independentViewCount: 1 }),
       fused(3, toB(A[3].positionMm, TRUTH), { frameJump: true, jumpSeparationM: 4.2 }),
     );
-    expect(evaluateRelock(A, provisional)).toMatchObject({ phase: 'relocalizing', found: 1, foundTagIds: [0] });
+    /* tag 1: two sightings are too few; tag 2: one view is enough; tag 3: its frame jumped */
+    expect(evaluateRelock(A, provisional)).toMatchObject({ phase: 'relocalizing', found: 2, foundTagIds: [0, 2] });
     const nonFinite = fusionOf(fused(0, [Number.NaN, 0, 0]), fused(1, toB(A[1].positionMm, TRUTH)), fused(2, toB(A[2].positionMm, TRUTH)));
     expect(evaluateRelock(A, nonFinite).found).toBe(2);
   });
 
-  it('needs several sightings AND several views: either alone is not a reliable tag', () => {
+  it('needs several sightings, but not several views: the operator glances at each tag from one place (2026-11-22)', () => {
     const fewSightings = fusionOf(
       fused(0, toB(A[0].positionMm, TRUTH)), fused(1, toB(A[1].positionMm, TRUTH)),
       fused(2, toB(A[2].positionMm, TRUTH), { inlierCount: 2, observationCount: 2, independentViewCount: 6 }),   /* many views, too few sightings */
@@ -82,7 +83,7 @@ describe('tag-locked re-localisation of a Continue scan (issue #45, gate 1)', ()
       fused(0, toB(A[0].positionMm, TRUTH)), fused(1, toB(A[1].positionMm, TRUTH)),
       fused(2, toB(A[2].positionMm, TRUTH), { inlierCount: 30, observationCount: 30, independentViewCount: 1 }),   /* many sightings, one view */
     );
-    expect(evaluateRelock(A, oneView)).toMatchObject({ phase: 'relocalizing', found: 2 });
+    expect(evaluateRelock(A, oneView)).toMatchObject({ phase: 'locked', found: 3 });
   });
 
   it.each([
@@ -197,9 +198,9 @@ describe('saved tags as the anchors of a re-lock', () => {
     ...overrides,
   } as TagPositionsArtifact);
 
-  it('takes only the confirmed nodes, in the scan frame: MAIN position plus the layout offset', () => {
+  it('takes the confirmed nodes and those seen 3 times, in the scan frame: MAIN position plus the layout offset', () => {
     const tags = relockBaseTags(artifact(), 'scan-crc32:aaaaaaaa');
-    expect(tags.map((tag) => tag.tagId)).toEqual([0, 1]);
+    expect(tags.map((tag) => tag.tagId)).toEqual([0, 1, 2]);
     expect(tags[1].positionMm).toEqual([2500, 1800, 320]);
     expect(tags[1].uncertaintyMm).toBe(3);
   });
@@ -216,14 +217,14 @@ describe('saved tags as the anchors of a re-lock', () => {
       ...overrides,
     } as Partial<TagPositionsArtifact>);
     expect(relockBaseTags(weakConfirmation({}), 'scan-crc32:aaaaaaaa').map((tag) => tag.tagId)).toEqual([0, 1, 2, 4]);
-    /* many sightings from one view, or many views with too few sightings: neither is reliable */
+    /* too few sightings is never reliable, however many views; many sightings from one view is */
     const lopsided = artifact({
       nodes: [
         { node_id: 0, tag_id: 0, x_mm: 0, y_mm: 0, z_mm: 0, uncertainty_mm: 0, confirmed: false, observations: 40, views: 1 },
         { node_id: 1, tag_id: 1, x_mm: 1500, y_mm: -200, z_mm: 20, uncertainty_mm: 7, confirmed: false, observations: 2, views: 9 },
       ],
     } as Partial<TagPositionsArtifact>);
-    expect(relockBaseTags(lopsided, 'scan-crc32:aaaaaaaa')).toEqual([]);
+    expect(relockBaseTags(lopsided, 'scan-crc32:aaaaaaaa').map((tag) => tag.tagId)).toEqual([0]);
   });
 
   it('gives no anchors for a layout saved for another scan, with no scan id, or without a usable MAIN position', () => {

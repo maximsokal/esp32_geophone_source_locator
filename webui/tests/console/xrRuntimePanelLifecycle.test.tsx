@@ -801,20 +801,18 @@ describe('tag-locked Continue (issue #45)',()=>{
     await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];return{renderer,runtime,worker};
   }
 
-  it('closes the depth gate when a Continue starts, asks for 3 known tags, and opens it only when the third is found',async()=>{
+  it('never holds depth back: points are gathered from the first frame; the hint asks for 3 known tags and turns into the aligned status when the third is found (phone run 2026-11-22: a closed gate meant no points at all)',async()=>{
     const{renderer,runtime,worker}=await startContinue();
-    expect(runtime.depthGate).toBe(true);
+    expect(runtime.depthGateCalls).toEqual([]);
     expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:0}));
     await observe(runtime,worker,TAGS[0],4,1);
     expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:1}));
-    expect(runtime.depthGate).toBe(true);
     await observe(runtime,worker,TAGS[0],6,10);                                    /* the same tag again is still one tag */
     expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:1}));
     await observe(runtime,worker,TAGS[1],4,20);
     expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:2}));
-    expect(runtime.depthGate).toBe(true);
     await observe(runtime,worker,TAGS[2],4,30);
-    expect(runtime.depthGate).toBe(false);
+    expect(runtime.depthGateCalls).toEqual([]);
     expect(hint(renderer,'searching')).toHaveLength(0);
     expect(textOf(hint(renderer,'aligned')[0])).toBe(translate('en','xr.relock.aligned'));
     unmount(renderer);
@@ -829,52 +827,53 @@ describe('tag-locked Continue (issue #45)',()=>{
 
   it('does nothing for a Fresh scan, and for a saved scan with fewer than 3 confirmed tags (the Continue then works as before)',async()=>{
     let started=await startContinue({scanIntent:'fresh'});
-    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    expect(started.runtime.depthGateCalls).toEqual([]);
     expect(hint(started.renderer,'searching')).toHaveLength(0);
     unmount(started.renderer);
     panelHarness.runtimes=[];panelHarness.workers=[];
     started=await startContinue({getRelockBase:()=>artifact(2)});
-    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    expect(started.runtime.depthGateCalls).toEqual([]);
     expect(hint(started.renderer,'searching')).toHaveLength(0);
     unmount(started.renderer);
     panelHarness.runtimes=[];panelHarness.workers=[];
     started=await startContinue({getRelockBase:()=>({...artifact(),scan_frame_id:'scan-crc32:bbbbbbbb'})});   /* tags of another scan anchor nothing */
-    expect(started.runtime.depthGateCalls.includes(true)).toBe(false);
+    expect(started.runtime.depthGateCalls).toEqual([]);
     unmount(started.renderer);
   });
 
   it('voids the lock on a reference-space reset, drops what was seen before it, and needs the tags again',async()=>{
     const{renderer,runtime,worker}=await startContinue();
     for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,1+k*10);
-    expect(runtime.depthGate).toBe(false);
+    expect(hint(renderer,'aligned')).toHaveLength(1);
     await act(async()=>{runtime.setPhase('running',{originReset:true});await settleReact();});
-    expect(runtime.depthGate).toBe(true);
+    expect(hint(renderer,'aligned')).toHaveLength(0);
     expect(textOf(hint(renderer,'searching')[0])).toBe(translate('en','xr.relock.find',{needed:3,found:0}));
     await act(async()=>{runtime.setPhase('running',{originReset:false});await settleReact();});
     for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,100+k*10);
-    expect(runtime.depthGate).toBe(false);
+    expect(hint(renderer,'aligned')).toHaveLength(1);
+    expect(runtime.depthGateCalls).toEqual([]);
     unmount(renderer);
   });
 
   it('ends the lock when a tag it relied on jumps (the frame shifted without a reset event)',async()=>{
     const{renderer,runtime,worker}=await startContinue();
     for(let k=0;k<3;k+=1)await observe(runtime,worker,TAGS[k],4,1+k*10);
-    expect(runtime.depthGate).toBe(false);
+    expect(hint(renderer,'aligned')).toHaveLength(1);
     await observe(runtime,worker,TAGS[2],5,200,{x:9,z:2});                          /* the same tag, 8 m away */
-    expect(runtime.depthGate).toBe(true);
+    expect(hint(renderer,'aligned')).toHaveLength(0);
     expect(hint(renderer,'searching').length).toBeGreaterThan(0);
     unmount(renderer);
   });
 
-  it('hands nothing over when the tags were never found, says so, and leaves the saved scan alone; a locked Continue hands its scan over',async()=>{
+  it('hands the scan over whether or not the tags locked: a lock seeds the merge, no lock leaves it to the overlap search (phone run 2026-11-22 lost a whole scan by withholding it)',async()=>{
     const ready=vi.fn();
     let started=await startContinue({onPointCloudReady:ready});
     expect(ready.mock.calls).toEqual([[null]]);                                     /* only the startup notice */
     await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
-    expect(ready.mock.calls).toEqual([[null]]);
-    expect(hint(started.renderer,'never-locked')).toHaveLength(1);
-    expect(textOf(hint(started.renderer,'never-locked')[0])).toBe(translate('en','xr.relock.never_locked'));
-    expect(started.runtime.depthGate).toBe(false);                                  /* the gate never outlives the session */
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect(ready.mock.calls[1][0]).not.toBeNull();
+    expect(ready.mock.calls[1][1]).toEqual({relockTransform:null});                 /* nothing locked: no seed */
+    expect(hint(started.renderer,'never-locked')).toHaveLength(0);
     unmount(started.renderer);
 
     panelHarness.runtimes=[];panelHarness.workers=[];
@@ -884,7 +883,7 @@ describe('tag-locked Continue (issue #45)',()=>{
     await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
     expect(lockedReady).toHaveBeenCalledTimes(2);
     expect(lockedReady.mock.calls[1][0]).not.toBeNull();
-    expect(hint(started.renderer,'never-locked')).toHaveLength(0);
+    expect(lockedReady.mock.calls[1][1].relockTransform).not.toBeNull();           /* locked: the merge is registered by it */
     unmount(started.renderer);
   });
 
@@ -950,10 +949,9 @@ describe('tag-locked Continue (issue #45)',()=>{
     });
   });
 
-  it('opens the gate again when the panel goes away',async()=>{
+  it('never touches the depth gate, so a panel that goes away cannot leave depth blocked',async()=>{
     const{renderer,runtime}=await startContinue();
-    expect(runtime.depthGate).toBe(true);
     unmount(renderer);
-    expect(runtime.depthGate).toBe(false);
+    expect(runtime.depthGateCalls.includes(true)).toBe(false);
   });
 });
