@@ -22,7 +22,7 @@ import {
 import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact, decodeOccupancySolverArtifact, type DecodedOccupancyArtifact } from './xr/occupancySolverArtifact';
-import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
+import { buildVoxelPreviewArtifact, decodeVoxelPreviewArtifact } from './xr/voxelPreview';
 import { decodeRegistrationArtifact, encodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { TAG_FINALIZE_WINDOW_MS } from './xr/fiducial/tagModeState';
 import {
@@ -32,7 +32,10 @@ import {
   type RegistrationExpectation,
 } from './xr/registrationApplicability';
 import { bindRegistrationToScan, decideContinuationRegistration, type RegistrationAgreement } from './xr/registrationCompose';
-import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type ScanPersistenceState } from './xr/scanPersistence';
+import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type PreparedDerivatives, type ScanPersistenceState } from './xr/scanPersistence';
+import { esp32VoxelPreviewState } from './xr/esp32VoxelStatus';
+import type { Esp32VoxelView } from './components/ScanPointCloudViewport';
+import { ScanRepresentationSelect, type ScanRepresentation } from './components/ScanRepresentationSelect';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
 import type { ViewCommand } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
@@ -313,6 +316,9 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   useEffect(() => { setLiveTagAnchors([]); }, [objectId, sessionId]);
   const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
+  /* The derivative bytes the controller prepared for the scan being saved (issue #44) and which representation of the scan is on screen. */
+  const [esp32Prepared, setEsp32Prepared] = useState<PreparedDerivatives | null>(null);
+  const [representation, setRepresentation] = useState<ScanRepresentation>('mesh');
   const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [localizationRunListing, setLocalizationRunListing] = useState<LocalizationRunListing | null>(null);
   const [registrationArtifact, setRegistrationArtifact] = useState<RegistrationArtifact | null>(null);
@@ -443,9 +449,18 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       } else if (state.scan === 'saved' && state.scanId !== null && scanDurabilityRef.current.durableId === state.scanId) {
         updateScanDurability((current) => setScanDerivativesReady(current, state.occupancy === 'ready'));
       }
+    }, (prepared) => {
+      setEsp32Prepared(prepared);
+      if (prepared === null) setRepresentation('mesh');
     });
   }
   const persistenceController = scanPersistenceController.current;
+  /* The voxels shown when the operator picks them: the exact prepared bytes, decoded, with a status that never claims more than is verified. */
+  const esp32VoxelState = useMemo(() => esp32VoxelPreviewState(esp32Prepared, scanPersistence), [esp32Prepared, scanPersistence]);
+  const esp32VoxelView = useMemo<Esp32VoxelView | null>(
+    () => representation === 'esp32-preview' && esp32VoxelState?.artifact != null ? { artifact: esp32VoxelState.artifact, status: esp32VoxelState.status } : null,
+    [representation, esp32VoxelState],
+  );
 
   useEffect(() => () => {
     scanDecodeClient.current?.dispose();
@@ -598,12 +613,14 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
 
   const selectMode = useCallback((mode: ScanMode): void => {
     const next = scanViewForMode(mode);
+    setRepresentation('mesh');
     setScanMode(next.mode);
     setDisplay(next.display);
     clientDiagnostics.info('SCAN_RESULT_MODE', { mode, display: next.display });
   }, []);
 
   const toggleDisplay = useCallback((key: keyof ScanDisplayOptions): void => {
+    setRepresentation('mesh');
     setScanMode(null);
     setDisplay((current) => {
       const next = toggleScanLayer({ mode: null, display: current }, key).display;
@@ -1523,7 +1540,17 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             <button type="button" aria-pressed={scanMode === 'quality'} onClick={() => selectMode('quality')}>{t('scan.mode.quality')}</button>
             <button type="button" aria-pressed={scanMode === 'surface'} onClick={() => selectMode('surface')}>{t('scan.mode.surface')}</button>
             <button type="button" aria-pressed={scanMode === 'search-volume'} onClick={() => selectMode('search-volume')}>{t('scan.mode.search_volume')}</button>
-            <button type="button" aria-pressed={scanMode === 'mesh'} onClick={() => selectMode('mesh')}>{t('scan.mode.mesh')}</button>
+            <ScanRepresentationSelect
+              representation={representation}
+              meshActive={scanMode === 'mesh'}
+              preview={esp32Prepared?.preview != null ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
+              onChoose={(choice) => {
+                if (choice === 'esp32-preview') {
+                  setRepresentation('esp32-preview');
+                  clientDiagnostics.info('SCAN_RESULT_REPRESENTATION', { representation: choice });
+                } else selectMode('mesh');
+              }}
+            />
           </div>
 
           <details className="scan-more-controls">
@@ -1599,6 +1626,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}
+                esp32Voxels={esp32VoxelView}
                 sensorMarkers={resultSensorMarkers}
                 sensorGeometry={durableViewport ? localizationGeometry : null}
                 registrationArtifact={viewerRegistration}

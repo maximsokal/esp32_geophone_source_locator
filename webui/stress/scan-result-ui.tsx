@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import '../src/styles.css';
 import '../src/scan.css';
 import '../src/console.css';
-import { ScanPointCloudViewport } from '../src/components/ScanPointCloudViewport';
+import { ScanPointCloudViewport, type Esp32VoxelView } from '../src/components/ScanPointCloudViewport';
+import { ScanRepresentationSelect, type ScanRepresentation } from '../src/components/ScanRepresentationSelect';
+import { buildVoxelPreviewArtifact, decodeVoxelPreviewArtifact } from '../src/xr/voxelPreview';
 import { SceneViewport, type ViewCommand, type ViewPreset } from '../src/components/SceneViewport';
 import { XrRuntimePanel } from '../src/components/XrRuntimePanel';
 import LocalizationOverlayScene from '../src/features/objects/LocalizationOverlayScene';
@@ -57,6 +59,7 @@ const recordedSnapshot: ScanPointCloudSnapshot = {
 
 function Harness() {
   const [mode, setMode] = useState<ScanMode>('quality');
+  const [representation, setRepresentation] = useState<ScanRepresentation>('mesh');
   const [command, setCommand] = useState<ViewCommand>({ preset: 'perspective', sequence: 0 });
   const [snapshot, setSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
   const [renderer, setRenderer] = useState('scan');
@@ -75,6 +78,12 @@ function Harness() {
     });
     return () => client.dispose();
   }, []);
+  /* The voxels come from the production builder and decoder, exactly the path the bytes take to the ESP32 and back into the viewer. */
+  const voxelView = useMemo<Esp32VoxelView | null>(() => {
+    if (representation !== 'esp32-preview' || snapshot === null) return null;
+    const bytes = buildVoxelPreviewArtifact(snapshot, encodeScanArtifact(recordedSnapshot));
+    return { artifact: decodeVoxelPreviewArtifact(bytes), status: 'prepared' };
+  }, [representation, snapshot]);
   const preset = (next: ViewPreset): void => {
     setCommand((current) => ({ preset: next, sequence: current.sequence + 1 }));
   };
@@ -93,7 +102,10 @@ function Harness() {
       <section className="toolbar scan-toolbar">
         <div className="scan-mode-controls">
           {(['quality', 'surface', 'search-volume', 'mesh'] as const).map(next =>
-            <button key={next} id={`mode-${next === 'search-volume' ? 'volume' : next}`} onClick={() => setMode(next)}>{next}</button>)}
+            <button key={next} id={`mode-${next === 'search-volume' ? 'volume' : next}`} onClick={() => { setRepresentation('mesh'); setMode(next); }}>{next}</button>)}
+          {/* The production select (the harness keeps its own Mesh button for the older tests; the App has only the select). */}
+          <ScanRepresentationSelect representation={representation} meshActive={mode === 'mesh'} preview={snapshot === null ? 'absent' : 'ready'}
+            onChoose={(choice) => { setRepresentation(choice); if (choice === 'mesh') setMode('mesh'); }} />
         </div>
         <div className="scan-mode-controls">
           <button id="view-3d" onClick={() => preset('perspective')}>3D</button>
@@ -107,13 +119,14 @@ function Harness() {
           </select>
         </div>
       </section>
+      <output id="voxel-state" data-cells={voxelView?.artifact.voxelCount ?? 0} data-faces-rendered={voxelView === null ? 0 : 1}>{voxelView === null ? 'mesh' : 'esp32-preview'}</output>
       <output id="fixture-state" data-loaded={snapshot !== null} data-active={active}>{error || (snapshot ? `${snapshot.pointCount} recorded points` : 'Loading emitted decode Worker')}</output>
       {mounted && snapshot && renderer === 'runtime' && !tableOnly && <XrRuntimePanel onSessionActiveChange={setActive} />}
       <section className="workspace" style={{ gridTemplateColumns: '1fr' }}>
         {mounted && visibleSnapshot && renderer !== 'runtime' && (tableOnly
           ? <table><caption>Recorded scan summary (2D)</caption><tbody><tr><th>Points</th><td>{visibleSnapshot.pointCount}</td></tr></tbody></table>
           : renderer === 'scan'
-            ? <ScanPointCloudViewport snapshot={visibleSnapshot} viewCommand={command} display={displayForScanMode(mode)} mode={mode} />
+            ? <ScanPointCloudViewport snapshot={visibleSnapshot} viewCommand={command} display={displayForScanMode(mode)} mode={mode} esp32Voxels={voxelView} />
             : renderer === 'sensors'
               ? <SceneViewport scene={demoScene} selectedId="MAIN" viewCommand={command} onSelect={() => {}} />
               : renderer === 'localization'

@@ -50,6 +50,8 @@ import {
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import { TsdfMeshCache, tsdfSettingsKey } from '../xr/tsdfMeshCache';
+import { buildEsp32VoxelGeometry, decodeVoxelCell, exposedFaceCount, VOXEL_FACE_BITS, type Esp32VoxelGeometry, type VoxelCell } from '../xr/esp32VoxelScene';
+import type { VoxelPreviewArtifact } from '../xr/voxelPreview';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import { SceneViewport, type ViewCommand } from './SceneViewport';
@@ -61,7 +63,15 @@ import {
   type ViewportFailure,
 } from './ViewportFailureBoundary';
 
+/** What the ESP32 receives or has received, shown in place of the scan layers (issue #44). The artifact is decoded from the exact bytes. */
+export type Esp32VoxelStatus = 'prepared' | 'uploading' | 'saved' | 'failed' | 'stale' | 'unavailable';
+export interface Esp32VoxelView {
+  artifact: VoxelPreviewArtifact;
+  status: Esp32VoxelStatus;
+}
+
 interface ScanPointCloudViewportProps {
+  esp32Voxels?: Esp32VoxelView | null;
   snapshot: ScanPointCloudSnapshot;
   viewCommand: ViewCommand;
   display: ScanDisplayOptions;
@@ -172,6 +182,40 @@ function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wirefr
   const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); next.computeVertexNormals(); return next; }, [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
   return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color={uiTheme.accent} transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color={uiTheme.text} transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
+}
+
+/**
+ * The transmitted GXPRV1 cells as one batched geometry (issue #44): exposed faces only, one buffer, flat shading by face direction, picking by triangle.
+ * No lights are needed: each vertex carries its own shade, so the layer looks the same under any scene setup.
+ */
+const VOXEL_SHADE_BY_NORMAL_Y = (normalY: number, normalX: number): number => normalY > 0.5 ? 1 : normalY < -0.5 ? 0.45 : Math.abs(normalX) > 0.5 ? 0.78 : 0.62;
+function voxelColors(geometry: Esp32VoxelGeometry): Float32Array {
+  const colors = new Float32Array(geometry.positions.length);
+  const base = new THREE.Color(uiTheme.accent);
+  for (let vertex = 0; vertex < colors.length / 3; vertex += 1) {
+    const shade = VOXEL_SHADE_BY_NORMAL_Y(geometry.normals[vertex * 3 + 1], geometry.normals[vertex * 3]);
+    colors[vertex * 3] = base.r * shade; colors[vertex * 3 + 1] = base.g * shade; colors[vertex * 3 + 2] = base.b * shade;
+  }
+  return colors;
+}
+
+function Esp32VoxelMesh({ artifact, centre, onPick }: { artifact: VoxelPreviewArtifact; centre: { x: number; y: number; z: number }; onPick: (cell: VoxelCell | null) => void }) {
+  const built = useMemo(() => buildEsp32VoxelGeometry(artifact, centre), [artifact, centre.x, centre.y, centre.z]);
+  const geometry = useMemo(() => {
+    const next = new THREE.BufferGeometry();
+    next.setAttribute('position', new THREE.BufferAttribute(built.positions, 3));
+    next.setAttribute('normal', new THREE.BufferAttribute(built.normals, 3));
+    next.setAttribute('color', new THREE.BufferAttribute(voxelColors(built), 3));
+    next.computeBoundingSphere();
+    return next;
+  }, [built]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  if (built.triangleCount === 0) return null;
+  return <mesh geometry={geometry} renderOrder={3} onClick={(event) => {
+    event.stopPropagation();
+    const triangle = event.faceIndex;
+    onPick(triangle === undefined || triangle === null ? null : decodeVoxelCell(artifact, built.triangleCell[triangle]));
+  }}><meshBasicMaterial vertexColors transparent opacity={0.92} side={THREE.FrontSide} /></mesh>;
 }
 
 function LineLayer({ positions, color, opacity, renderOrder }: { positions: Float32Array; color: string; opacity: number; renderOrder: number }) {
@@ -316,7 +360,9 @@ function LayerView({ layer, extent, selectedNode, onSensorSelect }: {
   }
 }
 
-function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights, selectedNode, onSensorSelect, identityKey, overlayResetKeys, onOverlayFailure, onOverlayRecovered }: {
+function SceneLayers({ voxels, onVoxelPick, prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights, selectedNode, onSensorSelect, identityKey, overlayResetKeys, onOverlayFailure, onOverlayRecovered }: {
+  voxels: VoxelPreviewArtifact | null;
+  onVoxelPick: (cell: VoxelCell | null) => void;
   prepared: PreparedScanScene;
   display: ScanDisplayOptions;
   meshPositions: Float32Array;
@@ -337,6 +383,7 @@ function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarker
   return <>
     <color attach="background" args={[uiTheme.background]} />
     {baseLayers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}
+    {voxels !== null && <Esp32VoxelMesh artifact={voxels} centre={{ x: prepared.centerX, y: prepared.centerY, z: prepared.centerZ }} onPick={onVoxelPick} />}
     <ViewportFailureBoundary
       key={identityKey}
       resetKeys={overlayResetKeys}
@@ -353,8 +400,9 @@ function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarker
 export function ScanPointCloudViewport({
   snapshot,
   viewCommand: viewCommandProp,
-  display,
+  display: displayProp,
   mode,
+  esp32Voxels = null,
   sensorMarkers = NO_SENSOR_MARKERS,
   selectedSensorNode,
   onSensorMarkerSelect,
@@ -371,6 +419,10 @@ export function ScanPointCloudViewport({
 }: ScanPointCloudViewportProps) {
   const { locale } = useLocale();
   const t = useT();
+  /* With the ESP32 voxels on screen the scan layers are hidden and none of their work (points, TSDF mesh) is requested. */
+  const display = useMemo<ScanDisplayOptions>(() => esp32Voxels === null ? displayProp : {
+    ...displayProp, goodPoints: false, badPoints: false, mesh: false, freeAir: false, unknownSpace: false, manualPoints: false,
+  }, [displayProp, esp32Voxels === null]);
   const controlsOwner = useOrbitControlsOwner();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [panMode, setPanMode] = useState(false);
@@ -383,6 +435,8 @@ export function ScanPointCloudViewport({
     command: { preset, sequence: 1_000_000 + (current !== null && current.base === viewCommandProp ? current.command.sequence - 1_000_000 + 1 : 1) },
   }));
   const [fullscreen, setFullscreen] = useState(false);
+  const [pickedVoxel, setPickedVoxel] = useState<VoxelCell | null>(null);
+  useEffect(() => { setPickedVoxel(null); }, [esp32Voxels?.artifact]);
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const sync = (): void => setFullscreen(document.fullscreenElement !== null && document.fullscreenElement === shellRef.current);
@@ -652,7 +706,7 @@ export function ScanPointCloudViewport({
   };
 
   return <div ref={shellRef} className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} panMode={panMode} hud={hud} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers voxels={esp32Voxels?.artifact ?? null} onVoxelPick={setPickedVoxel} prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} panMode={panMode} hud={hud} /></Canvas>
     <div className="scan-camera-hud" role="group" aria-label={t('scan.camera.hud_label')}>
       {(['perspective', 'top', 'front'] as const).map((preset) => <button key={preset} type="button" data-camera-action={`view-${preset}`} aria-pressed={viewCommand.preset === preset} onClick={() => requestPreset(preset)}>{preset === 'perspective' ? '3D' : t(preset === 'top' ? 'scan.view.top' : 'scan.view.front')}</button>)}
       <button type="button" data-camera-action="fit" onClick={() => requestHud('fit')}>{t('scan.camera.fit')}</button>
@@ -677,7 +731,17 @@ export function ScanPointCloudViewport({
         {run.method_name} · {t(currency === 'history_previous_scan' ? 'scan.source_history.previous_scan' : 'scan.source_history.scan_unknown')}
       </span>)}
     </div>}
-    <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
+    {esp32Voxels === null
+      ? <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
+      : <div className="scan-mode-overlay" data-voxel-status={esp32Voxels.status}>3D · {t('scan.representation.esp32_preview')} · {t(`scan.voxels.status.${esp32Voxels.status}` as 'scan.voxels.status.prepared')}</div>}
+    {esp32Voxels !== null && <div className="scan-voxel-details" role="status" aria-live="polite">
+      <div>{t('scan.voxels.summary', { cells: formatNumber(locale, esp32Voxels.artifact.voxelCount), size: formatNumber(locale, esp32Voxels.artifact.voxelSizeMeters, { maximumFractionDigits: 3 }), faces: formatNumber(locale, exposedFaceCount(esp32Voxels.artifact)) })}</div>
+      {pickedVoxel !== null && <div>{t('scan.voxels.cell', {
+        i: pickedVoxel.grid[0], j: pickedVoxel.grid[1], k: pickedVoxel.grid[2],
+        x: formatNumber(locale, pickedVoxel.center[0], { maximumFractionDigits: 3 }), y: formatNumber(locale, pickedVoxel.center[1], { maximumFractionDigits: 3 }), z: formatNumber(locale, pickedVoxel.center[2], { maximumFractionDigits: 3 }),
+        faces: VOXEL_FACE_BITS.filter((_, bit) => (pickedVoxel.faceMask & (1 << bit)) !== 0).join(' '),
+      })}</div>}
+    </div>}
     {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
     {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
     {selectedMarker !== null && <section className="scan-sensor-details" aria-label={t('scan.selected_sensor_details')} data-sensor-status={selectedMarker.status}>

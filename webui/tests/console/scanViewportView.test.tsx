@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { ScanPointCloudViewport } from '../../src/components/ScanPointCloudViewport';
+import { ScanPointCloudViewport, type Esp32VoxelView } from '../../src/components/ScanPointCloudViewport';
+import { encodeVoxelPreviewArtifact, decodeVoxelPreviewArtifact } from '../../src/xr/voxelPreview';
 import type { LocalizationSessionGeometry } from '../../src/api/deviceApi';
 import type { RegistrationArtifact } from '../../src/xr/fiducial/registrationArtifact';
 import type { SensorPlacementMarker, SensorPlacementNode } from '../../src/xr/sensorPlacementScene';
@@ -58,6 +59,7 @@ function render(
     selectedSensorNode?: SensorPlacementNode | null;
     sensorGeometry?: LocalizationSessionGeometry | null;
     registrationArtifact?: RegistrationArtifact | null;
+    esp32Voxels?: Esp32VoxelView | null;
   } = {},
   locale: I18nLocale = 'en',
 ): string {
@@ -180,6 +182,36 @@ describe('in-canvas camera controls (issue #41)', () => {
     }
     expect(html).toMatch(/data-camera-action="focus"[^>]*disabled|disabled=""[^>]*data-camera-action="focus"/);
     expect(html).toContain('aria-pressed="false"');                                  /* Pan mode starts off: one finger rotates */
+  });
+
+  describe('ESP32 voxels in place of the scan layers (issue #44)', () => {
+    const artifact = decodeVoxelPreviewArtifact(encodeVoxelPreviewArtifact({
+      sourceScanCrc32: 7, geometryComputedAtMs: 0n, registration: null, origin: [0, 0, 0], voxelSizeMeters: 0.25, dimensions: [3, 1, 1],
+      voxelCount: 3, indexWidth: 2, indices: new Uint32Array([0, 1, 2]), faceMasks: new Uint8Array([0b111111, 0b110011, 0b111101]), coarseningSteps: 0,
+    }));
+
+    it.each(['en', 'uk'] as const)('names the representation, the exact counts and the truthful status in the mode label (%s)', (locale) => {
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { artifact, status: 'prepared' } }, locale);
+      expect(html).toContain(translate(locale, 'scan.representation.esp32_preview'));
+      expect(html).toContain(translate(locale, 'scan.voxels.status.prepared'));
+      expect(html).toContain('data-voxel-status="prepared"');
+      /* 6 + 4 + 5 exposed faces, 3 cells of 0.25 m */
+      expect(html).toContain(translate(locale, 'scan.voxels.summary', { cells: formatNumber(locale, 3), size: formatNumber(locale, 0.25, { maximumFractionDigits: 3 }), faces: formatNumber(locale, 15) }));
+      expect(html).not.toContain(displayFingerprint(scanViewForMode('mesh').display).toUpperCase());
+    });
+
+    it.each(['prepared', 'uploading', 'saved', 'failed', 'stale', 'unavailable'] as const)('shows the %s status as the device state, nothing more', (status) => {
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { artifact, status } });
+      expect(html).toContain(`data-voxel-status="${status}"`);
+      expect(html).toContain(translate('en', `scan.voxels.status.${status}` as 'scan.voxels.status.prepared'));
+    });
+
+    it('without the voxels the viewport is unchanged: the usual mode label and no voxel details', () => {
+      const html = render(scanViewForMode('mesh'));
+      expect(html).not.toContain('scan-voxel-details');
+      expect(html).not.toContain('data-voxel-status');
+      expect(html).toContain(scanModeLabel('mesh'));
+    });
   });
 
   it.each(['en', 'uk'] as const)('carries the 3D / Top / Front presets in the strip, so no separate toolbar group is needed (%s)', (locale) => {

@@ -281,6 +281,34 @@
   font-weight: 750;
 }
 
+.scan-mode-select {
+  min-width: 0;
+  font-size: 0.72rem;
+  font-weight: 750;
+  min-height: 44px;
+  border-radius: inherit;
+}
+
+.scan-mode-select[data-active="true"] {
+  border-color: rgba(76, 214, 129, 0.78);
+  color: var(--ui-good);
+  background: rgba(76, 214, 129, 0.22);
+}
+
+.scan-voxel-details {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 6px 9px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  border-radius: 8px;
+  background: rgba(8, 12, 16, 0.78);
+  color: var(--ui-text, #e8eef2);
+  pointer-events: none;
+}
+
 .scan-mode-controls button[aria-pressed="true"] {
   border-color: rgba(76, 214, 129, 0.78);
   color: var(--ui-good);

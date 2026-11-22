@@ -137,6 +137,44 @@ test('switching Mesh -> Search volume -> Mesh -> Quality -> Search volume -> Sur
   await released(page);
 });
 
+/* Issue #44: the voxels the ESP32 TFT receives are shown in the SAME canvas, from the decoded bytes, and Mesh brings the model back. */
+test('ESP32 TFT voxels replace the mesh in the same canvas without a camera reset or a new reconstruction, and Mesh restores the model', async ({ page }) => {
+  await open(page);
+  const reconstructs = async () => (await journal(page)).workers.reduce((sum, worker) => sum + worker.requests.filter(type => type === 'reconstruct').length, 0);
+  const shell = page.locator('.workspace .scan-viewport').first();
+  const canvas = page.locator('.workspace canvas').first();
+  const select = page.locator('.scan-mode-select');
+  await page.locator('#mode-mesh').click();
+  await expect.poll(async () => (await journal(page)).workers.filter(worker => worker.requests.includes('reconstruct') && worker.triangles.some(count => count > 0)).length,
+    { timeout: 20_000, message: 'the mesh is reconstructed first' }).toBeGreaterThan(0);
+  await rendered(page);
+  const camera = async () => ({ revision: await shell.getAttribute('data-camera-revision'), distance: await shell.getAttribute('data-camera-distance') });
+  const cameraBefore = await camera();
+  const reconstructsBefore = await reconstructs();
+  const meshPicture = await canvas.screenshot();
+
+  await select.selectOption('esp32-preview');
+  await expect(page.locator('.scan-voxel-details')).toBeVisible();
+  const cells = Number(await page.locator('#voxel-state').getAttribute('data-cells'));
+  expect(cells, 'the transmitted preview has cells').toBeGreaterThan(0);
+  expect(cells).toBeLessThanOrEqual(3000);
+  await expect(page.locator('.scan-voxel-details')).toContainText(String(cells));
+  await expect(page.locator('.scan-mode-overlay')).toHaveAttribute('data-voxel-status', 'prepared');
+  await expect.poll(async () => (await canvas.screenshot()).equals(meshPicture), { message: 'the voxels are drawn, not the mesh' }).toBe(false);
+  expect(await camera(), 'the camera is not reset').toEqual(cameraBefore);
+  expect(await reconstructs(), 'choosing the voxels reconstructs nothing').toBe(reconstructsBefore);
+  expect(await page.locator('.workspace canvas').count(), 'one canvas, not a second viewer').toBe(1);
+  await scenarioScreenshot(page, 'esp32-voxels');
+
+  await select.selectOption('mesh');
+  await expect(page.locator('.scan-voxel-details')).toHaveCount(0);
+  await expect(page.locator('.scan-mesh-overlay')).toBeVisible();
+  expect(await camera(), 'the camera is still not reset').toEqual(cameraBefore);
+  expect(await reconstructs(), 'going back to the mesh does not reconstruct it again').toBe(reconstructsBefore);
+  await page.locator('#mount').click();
+  await released(page);
+});
+
 for (const renderer of ['scan', 'localization', 'sensors']) {
   test(`${renderer}: controls remain attached after extent updates and all resources close`, async ({ page }) => {
     await open(page);
