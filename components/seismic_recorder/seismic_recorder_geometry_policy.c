@@ -485,8 +485,9 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
     if (participation == NULL || layout == NULL || cs_geometry == NULL || out == NULL) return ESP_ERR_INVALID_ARG;
     if (remote_count_out != NULL) *remote_count_out = 0U;
     if (!layout->available || !layout->nodes[0].valid) return ESP_ERR_NOT_FOUND;
-    /* Issue #35: a degenerate (collinear / flat) layout is not geometry; the Channel Sounding layout stays the answer. */
-    if (layout->weakest_main_triangle_height_mm < SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM) return ESP_ERR_NOT_FOUND;
+    /* Issue #35: a degenerate (collinear / flat) layout is not geometry; the Channel Sounding layout stays the answer. The verdict is taken from the
+       coordinates that are adopted (best MAIN triangle, below), never from the file's claimed weakest triangle: the producer accepts a layout when ANY MAIN
+       triangle is sound and records the weakest of all, so a good layout with one extra near-collinear remote must not be rejected by that claim. */
 
     uint64_t identity_ms = 0U;
     size_t cs_computed = 0U;

@@ -156,7 +156,7 @@ describe.skipIf(!existsSync(SAVES))('the real cloud of scan A merged through the
     return { ...base, positions, normals, confidence, normalConfidence, pointCount: keep.length };
   }
 
-  it('merges: the seeded registration accepts the real A and the extension derived from it, where the same overlap is hard for a search', () => {
+  it('merges: the seeded registration accepts the real A and a SYNTHETIC extension derived from it (the real B cloud of that run was never saved, so this proves the registration path, not the phone capture)', () => {
     const base = decodeScanArtifact(scanFile());
     const extension = extensionFrom(base);
     expect(base.pointCount).toBe(3249);

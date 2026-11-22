@@ -17,6 +17,13 @@ const decoded = (occupied: number[], free: number[], size = 0.25): DecodedOccupa
 const centre = { x: 0, y: 0, z: 0 };
 
 describe('solver occupancy geometry GOCCUPY1 (issue #44)', () => {
+  it('does not treat a neighbour beyond the int16 grid as a cell: cells (0,32767,0) and (1,-32768,0) are not adjacent (audit 2026-11-22)', () => {
+    const masks = Array.from(exposedFaceMasks(Int16Array.from([0, 32767, 0, 1, -32768, 0])));
+    expect(masks).toEqual([63, 63]);
+    const edge = Array.from(exposedFaceMasks(Int16Array.from([-32768, -32768, -32768, 32767, 32767, 32767])));
+    expect(edge).toEqual([63, 63]);
+  });
+
   it('a lone cell exposes all 6 faces; two face-sharing cells hide the shared faces and keep 10', () => {
     expect(Array.from(exposedFaceMasks(Int16Array.from([0, 0, 0])))).toEqual([63]);
     const pair = exposedFaceMasks(Int16Array.from([0, 0, 0, 1, 0, 0]));

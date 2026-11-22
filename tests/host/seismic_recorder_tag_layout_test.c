@@ -135,8 +135,10 @@ static void unobserved_or_degenerate_layouts_are_not_geometry(void)
     object_store_geometry_t out;
 
     seismic_recorder_tag_layout_t flat = layout_of(all, 4U);
+    /* The claimed weakest height is informational: sound coordinates are accepted whatever the file claims (one good MAIN triangle is enough, as the
+       producer decides), and the verdict for flat coordinates is the coordinate test below. */
     flat.weakest_main_triangle_height_mm = SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM - 1;
-    assert(seismic_recorder_geometry_apply_tag_layout(&part, &flat, &cs, &out, NULL) == ESP_ERR_NOT_FOUND);
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &flat, &cs, &out, NULL) == ESP_OK);
     flat.weakest_main_triangle_height_mm = SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM;
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &flat, &cs, &out, NULL) == ESP_OK);
 

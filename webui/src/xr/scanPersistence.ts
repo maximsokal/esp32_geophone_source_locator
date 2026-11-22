@@ -194,6 +194,8 @@ interface PendingPreview {
   sessionId: string;
   scanId: string;
   scanSha256?: string;
+  /** The preview was built together with an occupancy artifact; false = from fallback surface samples, to be rebuilt once an occupancy exists. */
+  fromOccupancy: boolean;
   bytes: Uint8Array;
 }
 
@@ -511,6 +513,9 @@ export class ScanPersistenceController {
     }
     // The builders above may have assigned these fields while awaited; read them through the declared type.
     const preparedOccupancy = this.pendingOccupancy as PendingOccupancy | null;
+    /* A preview built while the occupancy had failed came from fallback samples; once the occupancy exists it must be rebuilt from it, or the pair disagrees. */
+    const previewBeforeOccupancy = this.pendingPreview as PendingPreview | null;
+    if (previewBeforeOccupancy !== null && !previewBeforeOccupancy.fromOccupancy && preparedOccupancy !== null) this.pendingPreview = null;
     if (this.pendingPreview === null) {
       const previewWait = this.preparePreview(epoch, pending, preparedOccupancy?.bytes ?? null);
       if (previewWait !== undefined) {
@@ -735,7 +740,7 @@ export class ScanPersistenceController {
 
   private preparePreview(epoch: number, pending: PendingScan, occupancyBytes: Uint8Array | null): Promise<void> | undefined {
     const accept = (built: Uint8Array): void => {
-      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, scanSha256: pending.identity.sha256, bytes: built };
+      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, scanSha256: pending.identity.sha256, fromOccupancy: occupancyBytes !== null, bytes: built };
     };
     const fail = (reason: unknown): void => {
       this.pendingPreview = null;

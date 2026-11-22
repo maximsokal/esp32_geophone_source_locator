@@ -840,6 +840,20 @@ describe('derivatives are prepared with the save, before anything is sent (issue
     expect(announcements).toContain('prepared');
   });
 
+  it('rebuilds a preview that was made while the occupancy had failed, from the occupancy the retry produced (audit 2026-11-22)', async () => {
+    const { ports, uploaded } = harness();
+    const controller = new ScanPersistenceController(ports);
+    let attempts = 0;
+    const flaky = vi.fn(() => { attempts += 1; if (attempts === 1) throw new Error('first attempt fails'); return occupancyBytes; });
+    const fallbackPreview = new Uint8Array([9, 9, 9]);
+    const buildPreview = vi.fn((occupancy: Uint8Array | null) => (occupancy === null ? fallbackPreview : previewBytes));
+    const state = await controller.save('OBJ', 'SESSION', scanBytes, flaky, buildPreview);
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+    expect(buildPreview).toHaveBeenLastCalledWith(occupancyBytes);
+    expect(uploaded.preview).toBe(previewBytes);            /* never the fallback paired with the new occupancy */
+    expect(controller.preparedDerivatives?.preview).toBe(previewBytes);
+  });
+
   it('repeats a failed early build at the commit, as before, and reports the failure then', async () => {
     const { ports } = harness();
     const controller = new ScanPersistenceController(ports);

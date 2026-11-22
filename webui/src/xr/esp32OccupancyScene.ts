@@ -40,6 +40,12 @@ function key(x: number, y: number, z: number): number {
   return ((x + 32768) * 65536 + (y + 32768)) * 65536 + (z + 32768);
 }
 
+/** A neighbour outside the int16 grid is no cell of the artifact; without this check its key would equal that of an unrelated valid cell. */
+function hasCell(present: ReadonlySet<number>, x: number, y: number, z: number): boolean {
+  if (x < -32768 || x > 32767 || y < -32768 || y > 32767 || z < -32768 || z > 32767) return false;
+  return present.has(key(x, y, z));
+}
+
 /** Exposed-face mask per cell of one class, against the other cells of the SAME class. Bit order as VOXEL_FACE_BITS. */
 export function exposedFaceMasks(cells: Int16Array): Uint8Array {
   const count = cells.length / 3;
@@ -49,12 +55,12 @@ export function exposedFaceMasks(cells: Int16Array): Uint8Array {
   for (let i = 0; i < count; i += 1) {
     const x = cells[i * 3]; const y = cells[i * 3 + 1]; const z = cells[i * 3 + 2];
     let mask = 0;
-    if (!present.has(key(x + 1, y, z))) mask |= 1;
-    if (!present.has(key(x - 1, y, z))) mask |= 2;
-    if (!present.has(key(x, y + 1, z))) mask |= 4;
-    if (!present.has(key(x, y - 1, z))) mask |= 8;
-    if (!present.has(key(x, y, z + 1))) mask |= 16;
-    if (!present.has(key(x, y, z - 1))) mask |= 32;
+    if (!hasCell(present, x + 1, y, z)) mask |= 1;
+    if (!hasCell(present, x - 1, y, z)) mask |= 2;
+    if (!hasCell(present, x, y + 1, z)) mask |= 4;
+    if (!hasCell(present, x, y - 1, z)) mask |= 8;
+    if (!hasCell(present, x, y, z + 1)) mask |= 16;
+    if (!hasCell(present, x, y, z - 1)) mask |= 32;
     masks[i] = mask;
   }
   return masks;
