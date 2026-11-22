@@ -341,7 +341,7 @@ export class WebXrRuntime{
   private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
   private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
   private rafHandle:number|null=null;
-  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;private liveMeshMode:LiveMeshMode='auto';private liveMeshRenderer:LiveMeshRenderer|null=null;private liveMeshClient:LiveMeshClient|null=null;private liveMeshPending:{trianglesXr:Float32Array;triangleCount:number}|null=null;private liveMeshOff=false;private liveMeshLoggedActive=false;private referenceMesh:ReferenceMeshOverlay|null=null;private referenceMeshDirty=false;private referenceMeshRenderer:LiveMeshRenderer|null=null;
+  private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;private referenceRenderer:LiveCoveragePointRenderer|null=null;private referenceOverlay:ReferenceOverlay|null=null;private referenceOverlayDirty=false;private liveMeshMode:LiveMeshMode='auto';private liveMeshRenderer:LiveMeshRenderer|null=null;private liveMeshClient:LiveMeshClient|null=null;private liveMeshPending:{trianglesXr:Float32Array;triangleCount:number}|null=null;private liveMeshOff=false;private liveMeshLoggedActive=false;private liveMeshModeLogged=false;private referenceMesh:ReferenceMeshOverlay|null=null;private referenceMeshDirty=false;private referenceMeshRenderer:LiveMeshRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private tagGeometryLogged=false;private tagCaptureWidth=0;private tagCaptureHeight=0;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
@@ -859,6 +859,7 @@ export class WebXrRuntime{
    * the pressure; 'off' never. The worker build is throttled and never queued, so a busy phone gets a slower preview, not a slower scan.
    */
   setLiveMeshMode(mode:LiveMeshMode):void{
+    if(mode!==this.liveMeshMode||!this.liveMeshModeLogged){this.liveMeshModeLogged=true;clientDiagnostics.info('XR_LIVE_MESH_MODE_SET',{mode});}
     this.liveMeshMode=mode;
     if(mode==='off')this.stopLiveMesh();
   }

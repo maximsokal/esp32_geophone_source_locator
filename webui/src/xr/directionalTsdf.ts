@@ -350,6 +350,7 @@ export function finalizeDirectionalTsdfPlan(
     componentCount: meshes.reduce((sum, mesh) => sum + mesh.componentCount, 0),
     eligibleComponentCount: meshes.reduce((sum, mesh) => sum + mesh.eligibleComponentCount, 0),
     meshReadiness: maximumMeshReadiness(meshes),
+    coarsenings: meshes.reduce((maximum, mesh) => Math.max(maximum, mesh.coarsenings ?? 0), 0),
     nodeCount: meshes.reduce((sum, mesh) => sum + mesh.nodeCount, 0),
     voxelSizeMeters,
     truncationMeters: meshes[0]?.truncationMeters ?? plan.inputVoxelSizeMeters * 2.75,

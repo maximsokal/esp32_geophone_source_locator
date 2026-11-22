@@ -602,6 +602,8 @@ export function ScanPointCloudViewport({
         sourcePoints: result.sourcePointCount,
         certifiedPoints: snapshot.tsdfPointCount,
         integratedPoints: result.integratedPointCount,
+        coarsenings: result.coarsenings ?? 0,
+        channelTriangles: (result as { channelTriangleCounts?: number[] }).channelTriangleCounts?.join(',') ?? null,
         refineHolesFilled: (result as { meshRefine?: { holesFilled: number } }).meshRefine?.holesFilled ?? null,
         refineSmoothedVertices: (result as { meshRefine?: { smoothedVertices: number } }).meshRefine?.smoothedVertices ?? null,
         nodes: result.nodeCount,
