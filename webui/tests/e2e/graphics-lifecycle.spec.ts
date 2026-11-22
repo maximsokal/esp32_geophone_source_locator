@@ -137,8 +137,8 @@ test('switching Mesh -> Search volume -> Mesh -> Quality -> Search volume -> Sur
   await released(page);
 });
 
-/* Issue #44: the voxels the ESP32 TFT receives are shown in the SAME canvas, from the decoded bytes, and Mesh brings the model back. */
-test('ESP32 TFT voxels replace the mesh in the same canvas without a camera reset or a new reconstruction, and Mesh restores the model', async ({ page }) => {
+/* Issue #44: the voxels the ESP32 receives (TFT preview and solver occupancy) are shown in the SAME canvas, from the decoded bytes, and Mesh brings the model back. */
+for (const [choice, kind] of [['esp32-preview', 'preview'], ['esp32-solver', 'solver']] as const) test(`ESP32 ${kind} voxels replace the mesh in the same canvas without a camera reset or a new reconstruction, and Mesh restores the model`, async ({ page }) => {
   await open(page);
   const reconstructs = async () => (await journal(page)).workers.reduce((sum, worker) => sum + worker.requests.filter(type => type === 'reconstruct').length, 0);
   const shell = page.locator('.workspace .scan-viewport').first();
@@ -153,18 +153,20 @@ test('ESP32 TFT voxels replace the mesh in the same canvas without a camera rese
   const reconstructsBefore = await reconstructs();
   const meshPicture = await canvas.screenshot();
 
-  await select.selectOption('esp32-preview');
+  await select.selectOption(choice);
   await expect(page.locator('.scan-voxel-details')).toBeVisible();
+  await expect(page.locator('#voxel-state')).toHaveAttribute('data-kind', kind);
   const cells = Number(await page.locator('#voxel-state').getAttribute('data-cells'));
   expect(cells, 'the transmitted preview has cells').toBeGreaterThan(0);
-  expect(cells).toBeLessThanOrEqual(3000);
-  await expect(page.locator('.scan-voxel-details')).toContainText(String(cells));
+  expect(cells).toBeLessThanOrEqual(kind === 'preview' ? 3000 : 20000);
+  if (kind === 'preview') await expect(page.locator('.scan-voxel-details')).toContainText(String(cells));
+  else await expect(page.locator('.scan-voxel-details')).toContainText('UNKNOWN');
   await expect(page.locator('.scan-mode-overlay')).toHaveAttribute('data-voxel-status', 'prepared');
   await expect.poll(async () => (await canvas.screenshot()).equals(meshPicture), { message: 'the voxels are drawn, not the mesh' }).toBe(false);
   expect(await camera(), 'the camera is not reset').toEqual(cameraBefore);
   expect(await reconstructs(), 'choosing the voxels reconstructs nothing').toBe(reconstructsBefore);
   expect(await page.locator('.workspace canvas').count(), 'one canvas, not a second viewer').toBe(1);
-  await scenarioScreenshot(page, 'esp32-voxels');
+  await scenarioScreenshot(page, `esp32-voxels-${kind}`);
 
   await select.selectOption('mesh');
   await expect(page.locator('.scan-voxel-details')).toHaveCount(0);

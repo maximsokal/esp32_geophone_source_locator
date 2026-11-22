@@ -191,7 +191,7 @@ describe('in-canvas camera controls (issue #41)', () => {
     }));
 
     it.each(['en', 'uk'] as const)('names the representation, the exact counts and the truthful status in the mode label (%s)', (locale) => {
-      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { artifact, status: 'prepared' } }, locale);
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { kind: 'preview', artifact, status: 'prepared' } }, locale);
       expect(html).toContain(translate(locale, 'scan.representation.esp32_preview'));
       expect(html).toContain(translate(locale, 'scan.voxels.status.prepared'));
       expect(html).toContain('data-voxel-status="prepared"');
@@ -201,9 +201,22 @@ describe('in-canvas camera controls (issue #41)', () => {
     });
 
     it.each(['prepared', 'uploading', 'saved', 'failed', 'stale', 'unavailable'] as const)('shows the %s status as the device state, nothing more', (status) => {
-      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { artifact, status } });
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { kind: 'preview', artifact, status } });
       expect(html).toContain(`data-voxel-status="${status}"`);
       expect(html).toContain(translate('en', `scan.voxels.status.${status}` as 'scan.voxels.status.prepared'));
+    });
+
+    it.each(['en', 'uk'] as const)('the solver view names OCCUPIED / FREE counts and says UNKNOWN is not transmitted (%s)', (locale) => {
+      const occupancy = {
+        header: { schema: 2, frame_id: 'scan-crc32:00000001', voxel_size_m: 0.25, below_surface_m: 0, envelope: null, free_count: 1, occupied_count: 2, saturated: false, created_at_ms: 0, registration: null },
+        free: Int16Array.from([3, 0, 0]), occupied: Int16Array.from([0, 0, 0, 1, 0, 0]), legacyRegistrationIgnored: false,
+      };
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: { kind: 'solver', occupancy, status: 'saved' } }, locale);
+      expect(html).toContain(translate(locale, 'scan.representation.esp32_solver'));
+      expect(html).toContain(translate(locale, 'scan.solver.summary', { occupied: formatNumber(locale, 2), free: formatNumber(locale, 1), size: formatNumber(locale, 0.25, { maximumFractionDigits: 3 }) }));
+      expect(html).toContain(translate(locale, 'scan.solver.unknown_note'));
+      expect(html).toContain('data-voxel-kind="solver"');
+      expect(html).toContain('data-voxel-status="saved"');
     });
 
     it('without the voxels the viewport is unchanged: the usual mode label and no voxel details', () => {

@@ -31,6 +31,15 @@ describe('3D representation select inside the existing Mesh entry (issue #44)', 
     expect(markup({ preview: 'ready' })).toContain(translate('en', 'scan.representation.esp32_preview'));
   });
 
+  it('offers the solver voxels as a third choice, only when they exist, and keeps that choice readable', () => {
+    const options = (solver: Esp32PreviewAvailability) => [...markup({ preview: 'ready', solver }).matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]);
+    expect(options('absent')).toEqual(['', 'mesh', 'esp32-preview']);
+    expect(options('ready')).toEqual(['', 'mesh', 'esp32-preview', 'esp32-solver']);
+    expect(markup({ preview: 'ready', solver: 'preparing' })).toMatch(/<option value="esp32-solver"[^>]*disabled/);
+    expect(markup({ preview: 'ready', solver: 'preparing' })).toContain(translate('en', 'scan.representation.esp32_solver_preparing'));
+    expect(markup({ representation: 'esp32-solver', preview: 'ready', solver: 'ready' })).toMatch(/<option value="esp32-solver"[^>]*selected/);
+  });
+
   it('keeps the selection readable in the control: Mesh when the mesh mode is active, the voxels when chosen, neutral otherwise', () => {
     expect(markup({ meshActive: true, preview: 'ready' })).toMatch(/<option value="mesh"[^>]*selected/);
     expect(markup({ representation: 'esp32-preview', preview: 'ready' })).toMatch(/<option value="esp32-preview"[^>]*selected/);
@@ -43,13 +52,14 @@ describe('3D representation select inside the existing Mesh entry (issue #44)', 
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(ScanRepresentationSelect, {
-        representation: 'mesh', meshActive: false, preview: 'ready', onChoose,
+        representation: 'mesh', meshActive: false, preview: 'ready', solver: 'ready', onChoose,
       })));
     });
     const select = renderer.root.findByType('select');
     act(() => { select.props.onChange({ target: { value: 'esp32-preview' } }); });
+    act(() => { select.props.onChange({ target: { value: 'esp32-solver' } }); });
     act(() => { select.props.onChange({ target: { value: 'mesh' } }); });
     act(() => { select.props.onChange({ target: { value: '' } }); });
-    expect(onChoose.mock.calls).toEqual([['esp32-preview'], ['mesh']]);
+    expect(onChoose.mock.calls).toEqual([['esp32-preview'], ['esp32-solver'], ['mesh']]);
   });
 });

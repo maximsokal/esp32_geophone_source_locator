@@ -7,6 +7,7 @@ import '../src/console.css';
 import { ScanPointCloudViewport, type Esp32VoxelView } from '../src/components/ScanPointCloudViewport';
 import { ScanRepresentationSelect, type ScanRepresentation } from '../src/components/ScanRepresentationSelect';
 import { buildVoxelPreviewArtifact, decodeVoxelPreviewArtifact } from '../src/xr/voxelPreview';
+import { decodeOccupancySolverArtifact, encodeOccupancySolverArtifact, occupancyFrameIdForScan } from '../src/xr/occupancySolverArtifact';
 import { SceneViewport, type ViewCommand, type ViewPreset } from '../src/components/SceneViewport';
 import { XrRuntimePanel } from '../src/components/XrRuntimePanel';
 import LocalizationOverlayScene from '../src/features/objects/LocalizationOverlayScene';
@@ -57,6 +58,16 @@ const recordedSnapshot: ScanPointCloudSnapshot = {
   manualControlPoints: [{ id: 1, position: [0.2, 0.2, 0.1] }],
 };
 
+/** One centre per occupied cell, as the production occupancy builder hands to the encoder. */
+function uniqueCellCentres(positions: Float32Array, size: number): Float32Array {
+  const cells = new Map<string, [number, number, number]>();
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const cell: [number, number, number] = [Math.floor(positions[i] / size), Math.floor(positions[i + 1] / size), Math.floor(positions[i + 2] / size)];
+    cells.set(cell.join(','), cell);
+  }
+  return Float32Array.from([...cells.values()].flatMap(([x, y, z]) => [(x + 0.5) * size, (y + 0.5) * size, (z + 0.5) * size]));
+}
+
 function Harness() {
   const [mode, setMode] = useState<ScanMode>('quality');
   const [representation, setRepresentation] = useState<ScanRepresentation>('mesh');
@@ -80,9 +91,15 @@ function Harness() {
   }, []);
   /* The voxels come from the production builder and decoder, exactly the path the bytes take to the ESP32 and back into the viewer. */
   const voxelView = useMemo<Esp32VoxelView | null>(() => {
-    if (representation !== 'esp32-preview' || snapshot === null) return null;
-    const bytes = buildVoxelPreviewArtifact(snapshot, encodeScanArtifact(recordedSnapshot));
-    return { artifact: decodeVoxelPreviewArtifact(bytes), status: 'prepared' };
+    if (snapshot === null) return null;
+    const scanBytes = encodeScanArtifact(recordedSnapshot);
+    if (representation === 'esp32-preview') return { kind: 'preview', artifact: decodeVoxelPreviewArtifact(buildVoxelPreviewArtifact(snapshot, scanBytes)), status: 'prepared' };
+    if (representation === 'esp32-solver') {
+      /* Raw recorded points repeat inside a cell and the fixture's FREE sample sits among them; a real occupancy lists every cell once and never as both classes. */
+      const bytes = encodeOccupancySolverArtifact({ ...snapshot, occupiedSurfacePositions: uniqueCellCentres(snapshot.occupiedSurfacePositions, 0.25), freeAirPositions: new Float32Array([2.1, 2.1, 0.1, 2.4, 2.1, 0.1]) }, { frameId: occupancyFrameIdForScan(scanBytes), createdAtMs: 0 });
+      return { kind: 'solver', occupancy: decodeOccupancySolverArtifact(bytes), status: 'prepared' };
+    }
+    return null;
   }, [representation, snapshot]);
   const preset = (next: ViewPreset): void => {
     setCommand((current) => ({ preset: next, sequence: current.sequence + 1 }));
@@ -104,7 +121,7 @@ function Harness() {
           {(['quality', 'surface', 'search-volume', 'mesh'] as const).map(next =>
             <button key={next} id={`mode-${next === 'search-volume' ? 'volume' : next}`} onClick={() => { setRepresentation('mesh'); setMode(next); }}>{next}</button>)}
           {/* The production select (the harness keeps its own Mesh button for the older tests; the App has only the select). */}
-          <ScanRepresentationSelect representation={representation} meshActive={mode === 'mesh'} preview={snapshot === null ? 'absent' : 'ready'}
+          <ScanRepresentationSelect representation={representation} meshActive={mode === 'mesh'} preview={snapshot === null ? 'absent' : 'ready'} solver={snapshot === null ? 'absent' : 'ready'}
             onChoose={(choice) => { setRepresentation(choice); if (choice === 'mesh') setMode('mesh'); }} />
         </div>
         <div className="scan-mode-controls">
@@ -119,7 +136,7 @@ function Harness() {
           </select>
         </div>
       </section>
-      <output id="voxel-state" data-cells={voxelView?.artifact.voxelCount ?? 0} data-faces-rendered={voxelView === null ? 0 : 1}>{voxelView === null ? 'mesh' : 'esp32-preview'}</output>
+      <output id="voxel-state" data-kind={voxelView?.kind ?? 'none'} data-cells={voxelView === null ? 0 : voxelView.kind === 'preview' ? voxelView.artifact.voxelCount : (voxelView.occupancy.occupied.length + voxelView.occupancy.free.length) / 3}>{voxelView === null ? 'mesh' : 'esp32-preview'}</output>
       <output id="fixture-state" data-loaded={snapshot !== null} data-active={active}>{error || (snapshot ? `${snapshot.pointCount} recorded points` : 'Loading emitted decode Worker')}</output>
       {mounted && snapshot && renderer === 'runtime' && !tableOnly && <XrRuntimePanel onSessionActiveChange={setActive} />}
       <section className="workspace" style={{ gridTemplateColumns: '1fr' }}>

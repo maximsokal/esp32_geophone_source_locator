@@ -78,13 +78,30 @@ const AXIS_OF_BIT = [0, 0, 1, 1, 2, 2] as const;
 const POSITIVE_OF_BIT = [true, false, true, false, true, false] as const;
 
 export function buildEsp32VoxelGeometry(artifact: VoxelPreviewArtifact, centre: VoxelSceneCentre): Esp32VoxelGeometry {
-  const faces = exposedFaceCount(artifact);
+  const minCorners = new Float64Array(artifact.voxelCount * 3);
+  for (let ordinal = 0; ordinal < artifact.voxelCount; ordinal += 1) {
+    const cell = decodeVoxelCell(artifact, ordinal);
+    minCorners.set(cell.minCorner, ordinal * 3);
+  }
+  return buildCellFaceGeometry(minCorners, artifact.faceMasks, artifact.voxelSizeMeters, centre);
+}
+
+/**
+ * Exposed faces of axis-aligned cubes of one size (project frame, Z up) as one triangle soup in viewport coordinates. `minCorners` holds three
+ * numbers per cell (the minimum corner, metres) and `faceMasks` one exposed-face mask per cell (bit order as VOXEL_FACE_BITS). The triangle's
+ * `triangleCell` is the position of its cell in `minCorners`. Shared by the TFT preview and the solver occupancy so both draw the same way.
+ */
+export function buildCellFaceGeometry(minCorners: Float64Array, faceMasks: Uint8Array, size: number, centre: VoxelSceneCentre): Esp32VoxelGeometry {
+  const cellCount = faceMasks.length;
+  let faces = 0;
+  for (let i = 0; i < cellCount; i += 1) {
+    for (let bit = 0; bit < 6; bit += 1) if ((faceMasks[i] & (1 << bit)) !== 0) faces += 1;
+  }
   const triangleCount = faces * 2;
   const positions = new Float32Array(triangleCount * 9);
   const normals = new Float32Array(triangleCount * 9);
   const triangleCell = new Uint32Array(triangleCount);
   const triangleFace = new Uint8Array(triangleCount);
-  const size = artifact.voxelSizeMeters;
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
   let triangle = 0;
@@ -100,17 +117,17 @@ export function buildEsp32VoxelGeometry(artifact: VoxelPreviewArtifact, centre: 
     }
   };
 
-  for (let ordinal = 0; ordinal < artifact.voxelCount; ordinal += 1) {
-    const cell = decodeVoxelCell(artifact, ordinal);
+  for (let ordinal = 0; ordinal < cellCount; ordinal += 1) {
+    const minCorner = [minCorners[ordinal * 3], minCorners[ordinal * 3 + 1], minCorners[ordinal * 3 + 2]];
     for (let bit = 0; bit < 6; bit += 1) {
-      if ((cell.faceMask & (1 << bit)) === 0) continue;
+      if ((faceMasks[ordinal] & (1 << bit)) === 0) continue;
       const axis = AXIS_OF_BIT[bit];
       const positive = POSITIVE_OF_BIT[bit];
       const u = (axis + 1) % 3;
       const v = (axis + 2) % 3;
       const normal: [number, number, number] = [0, 0, 0];
       normal[axis] = positive ? 1 : -1;
-      const origin: [number, number, number] = [cell.minCorner[0], cell.minCorner[1], cell.minCorner[2]];
+      const origin: [number, number, number] = [minCorner[0], minCorner[1], minCorner[2]];
       if (positive) origin[axis] += size;
       const corner = (du: number, dv: number): [number, number, number] => {
         const point: [number, number, number] = [origin[0], origin[1], origin[2]];
@@ -137,5 +154,5 @@ export function buildEsp32VoxelGeometry(artifact: VoxelPreviewArtifact, centre: 
     min.fill(0);
     max.fill(0);
   }
-  return { positions, normals, triangleCell, triangleFace, cellCount: artifact.voxelCount, faceCount: faces, triangleCount, bounds: { min, max } };
+  return { positions, normals, triangleCell, triangleFace, cellCount, faceCount: faces, triangleCount, bounds: { min, max } };
 }

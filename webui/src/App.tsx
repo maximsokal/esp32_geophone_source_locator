@@ -33,7 +33,7 @@ import {
 } from './xr/registrationApplicability';
 import { bindRegistrationToScan, decideContinuationRegistration, type RegistrationAgreement } from './xr/registrationCompose';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type PreparedDerivatives, type ScanPersistenceState } from './xr/scanPersistence';
-import { esp32VoxelPreviewState } from './xr/esp32VoxelStatus';
+import { esp32SolverState, esp32VoxelPreviewState } from './xr/esp32VoxelStatus';
 import type { Esp32VoxelView } from './components/ScanPointCloudViewport';
 import { ScanRepresentationSelect, type ScanRepresentation } from './components/ScanRepresentationSelect';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
@@ -457,10 +457,12 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   const persistenceController = scanPersistenceController.current;
   /* The voxels shown when the operator picks them: the exact prepared bytes, decoded, with a status that never claims more than is verified. */
   const esp32VoxelState = useMemo(() => esp32VoxelPreviewState(esp32Prepared, scanPersistence), [esp32Prepared, scanPersistence]);
-  const esp32VoxelView = useMemo<Esp32VoxelView | null>(
-    () => representation === 'esp32-preview' && esp32VoxelState?.artifact != null ? { artifact: esp32VoxelState.artifact, status: esp32VoxelState.status } : null,
-    [representation, esp32VoxelState],
-  );
+  const esp32SolverView = useMemo(() => esp32SolverState(esp32Prepared, scanPersistence), [esp32Prepared, scanPersistence]);
+  const esp32VoxelView = useMemo<Esp32VoxelView | null>(() => {
+    if (representation === 'esp32-preview' && esp32VoxelState?.artifact != null) return { kind: 'preview', artifact: esp32VoxelState.artifact, status: esp32VoxelState.status };
+    if (representation === 'esp32-solver' && esp32SolverView?.occupancy != null) return { kind: 'solver', occupancy: esp32SolverView.occupancy, status: esp32SolverView.status };
+    return null;
+  }, [representation, esp32VoxelState, esp32SolverView]);
 
   useEffect(() => () => {
     scanDecodeClient.current?.dispose();
@@ -1544,9 +1546,10 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
               representation={representation}
               meshActive={scanMode === 'mesh'}
               preview={esp32Prepared?.preview != null ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
+              solver={esp32Prepared?.occupancy != null ? 'ready' : esp32Prepared === null && (scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying') ? 'preparing' : 'absent'}
               onChoose={(choice) => {
-                if (choice === 'esp32-preview') {
-                  setRepresentation('esp32-preview');
+                if (choice === 'esp32-preview' || choice === 'esp32-solver') {
+                  setRepresentation(choice);
                   clientDiagnostics.info('SCAN_RESULT_REPRESENTATION', { representation: choice });
                 } else selectMode('mesh');
               }}
