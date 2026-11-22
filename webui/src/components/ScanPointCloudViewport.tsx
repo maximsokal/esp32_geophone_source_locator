@@ -49,6 +49,7 @@ import {
 } from '../xr/scanViewportScene';
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
+import { TsdfMeshCache, tsdfSettingsKey } from '../xr/tsdfMeshCache';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import { SceneViewport, type ViewCommand } from './SceneViewport';
@@ -482,6 +483,7 @@ export function ScanPointCloudViewport({
     display.freeAir || display.unknownSpace,
   ), [candidateVolume, display.freeAir, display.unknownSpace, prepared, sourceHighlights]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
+  const tsdfCache = useMemo(() => new TsdfMeshCache<ScanPointCloudSnapshot, SparseTsdfMesh>(), []);
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
   const [tsdfError, setTsdfError] = useState<string | null>(null);
   const [interactionRevision,setInteractionRevision] = useState(0);
@@ -537,6 +539,17 @@ export function ScanPointCloudViewport({
       return () => { cancelled = true; };
     }
 
+    /* Idempotent by scan identity and settings: showing the Mesh layer again, an admission change or a re-render never recomputes a mesh we hold. */
+    const settingsKey = tsdfSettingsKey({ allowOptionalAi: admission.admitted.optionalAi });
+    const cachedMesh = display.mesh && admission.admitted.tsdfReconstruction ? tsdfCache.get(snapshot, settingsKey) : null;
+    if (cachedMesh !== null) {
+      tsdfClient.cancel('TSDF result already held for this scan.', true);
+      setTsdfMesh(cachedMesh);
+      setTsdfError(null);
+      clientDiagnostics.info('SCAN_TSDF_CACHE_HIT', { triangles: cachedMesh.triangleCount, components: cachedMesh.meshTopologyComponentCount, settings: settingsKey });
+      return () => { cancelled = true; };
+    }
+
     const started = performance.now();
     const reconstruction = runAdmittedTsdfRequest(
       display.mesh,
@@ -560,6 +573,7 @@ export function ScanPointCloudViewport({
     setTsdfError(null);
     void reconstruction.then((result) => {
       if (cancelled) return;
+      tsdfCache.set(snapshot, settingsKey, result);
       setTsdfMesh(result);
       clientDiagnostics.info('SCAN_TSDF_READY', {
         sourcePoints: result.sourcePointCount,
@@ -573,6 +587,8 @@ export function ScanPointCloudViewport({
         localHotspotTriangles: result.localNoiseHotspotTriangleCount,
         discardedTriangles: result.topologyDiscardedTriangleCount,
         nonManifoldEdges: result.nonManifoldEdgeCount,
+        /* The component count of the FINAL triangle mesh (edge adjacency), the baseline for any stitching work (issue #43). */
+        meshComponents: result.meshTopologyComponentCount,
         orientationConflicts: result.orientationConflictCount,
         selfIntersections: result.selfIntersectionPairCount,
         selfIntersectionExactTests: result.selfIntersectionExactTestedPairs,
@@ -597,7 +613,7 @@ export function ScanPointCloudViewport({
       cancelled = true;
       tsdfClient.cancel('TSDF reconstruction demand or admission changed.', true);
     };
-  }, [admission.admitted.optionalAi, admission.admitted.tsdfReconstruction, admission.bytes.workerConcurrency, display.mesh, postScanGeneration, snapshot, tsdfClient]);
+  }, [admission.admitted.optionalAi, admission.admitted.tsdfReconstruction, admission.bytes.workerConcurrency, display.mesh, postScanGeneration, snapshot, tsdfCache, tsdfClient]);
 
   const meshPositions = useMemo(
     () => tsdfMesh === null

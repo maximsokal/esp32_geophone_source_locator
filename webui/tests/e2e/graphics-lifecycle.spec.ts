@@ -116,6 +116,27 @@ for (const locale of ['en', 'uk'] as const) test.describe(`camera strip ${locale
   }
 });
 
+/* Issue #43: hiding and showing the Mesh layer must not reconstruct the same scan again (the phone run showed SCAN_TSDF_READY twice). */
+test('switching Mesh -> Search volume -> Mesh -> Quality -> Search volume -> Surface -> Mesh reconstructs the TSDF exactly once', async ({ page }) => {
+  await open(page);
+  const reconstructs = async () => (await journal(page)).workers.reduce((sum, worker) => sum + worker.requests.filter(type => type === 'reconstruct').length, 0);
+  await page.locator('#mode-mesh').click();
+  await expect.poll(async () => (await journal(page)).workers.filter(worker => worker.requests.includes('reconstruct') && worker.triangles.some(count => count > 0)).length,
+    { timeout: 20_000, message: 'first Mesh reconstruction finishes' }).toBeGreaterThan(0);
+  const first = await reconstructs();
+  expect(first, 'the first Mesh view did reconstruct (the page may already have started it on open)').toBeGreaterThanOrEqual(1);
+  /* Search volume is the only mode that hides the Mesh layer (Quality and Surface keep it), so it is the switch that used to drop the result. */
+  for (const mode of ['volume', 'mesh', 'quality', 'volume', 'surface', 'mesh']) {
+    await page.locator(`#mode-${mode}`).click();
+    await rendered(page);
+    await page.waitForTimeout(400);
+  }
+  await expect(page.locator('.scan-mesh-overlay')).not.toHaveAttribute('data-mesh-quality', 'pending');
+  expect(await reconstructs(), 'no worker reconstruct request after the first one').toBe(first);
+  await page.locator('#mount').click();
+  await released(page);
+});
+
 for (const renderer of ['scan', 'localization', 'sensors']) {
   test(`${renderer}: controls remain attached after extent updates and all resources close`, async ({ page }) => {
     await open(page);
