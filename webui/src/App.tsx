@@ -54,7 +54,9 @@ import {
 } from './xr/deviceComputeProfile';
 import {
   SCAN_ANNOTATION_CAPACITY_ERROR,
+  encodeScanArtifact,
 } from './xr/scanArtifact';
+import { capturePhoneLabBytes } from './xr/phoneLabCapture';
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
 import { buildTagLayout, tagAnchorsToBaseFrame, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
@@ -1046,6 +1048,9 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             reason: merged.reason,
             diagnostics: merged.diagnostics,
           });
+          /* Phone Lab only: keep the real B cloud and the transform the tags gave, so a rejected Continue can be replayed offline. */
+          capturePhoneLabBytes('continuation_b_rejected', () => encodeScanArtifact(incoming));
+          capturePhoneLabBytes('continuation_seed_json', () => new TextEncoder().encode(JSON.stringify({ seed, reason: merged.reason, diagnostics: merged.diagnostics })));
           scanIntent.current = 'fresh';
           /* Keep the durable base and its registration available for another Continue attempt. */
           rejectedContinuation.current = true;

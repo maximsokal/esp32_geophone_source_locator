@@ -190,6 +190,17 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
   }
 
   async function handleLab(req, res, url, send) {
+    if (req.method === 'POST' && url.pathname === '/lab/capture') {
+      const name = url.searchParams.get('name') ?? '';
+      if (!/^[a-z0-9_]{1,40}$/.test(name)) return send(400, { ok: false, error: 'ESP_ERR_INVALID_ARG' });
+      const body = await readBody(req, MAX_ARTIFACT_BYTES);
+      const copy = `${stamp().replace(/[:.]/g, '-')}_${name}_${body.length}.bin`;
+      writeFileSync(join(runDir, 'saves', copy), body);
+      counts.saves += 1;
+      appendFileSync(file('saves.log'), `${stamp()} capture ${name} bytes=${body.length} copy=${copy}
+`);
+      return send(200, { ok: true, name });
+    }
     if (req.method === 'POST' && url.pathname === '/lab/events') {
       let body;
       try { body = JSON.parse((await readBody(req, MAX_JSON_BYTES)).toString('utf8')); } catch { return send(400, { ok: false }); }

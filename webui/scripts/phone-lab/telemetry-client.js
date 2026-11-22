@@ -100,5 +100,11 @@
   deviceInfo();
 
 
-  window.__phoneLab = { sessionId: sessionId, emit: emit, flush: function () { flush(false); } };
+  /* Bytes for replay tests (e.g. the cloud of a rejected Continue): kept by the lab server beside the run's saves. */
+  function capture(name, bytes) {
+    try {
+      fetch('/lab/capture?name=' + encodeURIComponent(String(name)), { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes, keepalive: bytes.length < 60000 }).catch(function () {});
+    } catch (e) { /* telemetry must never break the app */ }
+  }
+  window.__phoneLab = { sessionId: sessionId, emit: emit, flush: function () { flush(false); }, capture: capture };
 })();

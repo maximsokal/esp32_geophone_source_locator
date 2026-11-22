@@ -171,3 +171,43 @@ describe.skipIf(!existsSync(SAVES))('the real cloud of scan A merged through the
     expect(seeded.snapshot.pointCount).toBeGreaterThanOrEqual(base.pointCount);                       /* the merge never loses what A had */
   });
 });
+
+/*
+ * A Continue the phone rejected leaves its REAL B cloud (and the tag-derived transform it had) in the run's saves, captured by the Phone Lab server
+ * (`continuation_b_rejected`, `continuation_seed_json`; see src/xr/phoneLabCapture.ts). Replays the newest such capture against the scan A saved in the same
+ * run. Skipped, never faked, while no run has captured one.
+ */
+const LAB_RUNS = resolve(__dirname, '../../../logs/phone-lab');
+function newestCapture(): { dir: string; b: string; seed: string | null; scan: string } | null {
+  if (!existsSync(LAB_RUNS)) return null;
+  const runs = readdirSync(LAB_RUNS).sort().reverse();
+  for (const run of runs) {
+    const dir = resolve(LAB_RUNS, run, 'saves');
+    if (!existsSync(dir)) continue;
+    const files = readdirSync(dir).sort();
+    const b = files.filter((name) => name.includes('_continuation_b_rejected_')).pop();
+    const scan = files.filter((name) => name.includes('_scan_')).shift();       /* A is the first scan saved in the run */
+    if (b === undefined || scan === undefined) continue;
+    const seed = files.filter((name) => name.includes('_continuation_seed_json_')).pop() ?? null;
+    return { dir, b, seed, scan };
+  }
+  return null;
+}
+const captured = newestCapture();
+describe.skipIf(captured === null)('a real captured B cloud of a rejected Continue (needs a Phone Lab run that captured one)', () => {
+  it('is decodable, and its merge with the saved A is decided with the transform the tags gave', () => {
+    const { dir, b, seed, scan } = captured!;
+    const base = decodeScanArtifact(new Uint8Array(readFileSync(resolve(dir, scan))));
+    const extension = decodeScanArtifact(new Uint8Array(readFileSync(resolve(dir, b))));
+    expect(extension.pointCount).toBeGreaterThan(0);
+    const logged = seed === null ? null : JSON.parse(readFileSync(resolve(dir, seed), 'utf-8')) as { seed: { yaw: number; tx: number; ty: number; tz: number } | null };
+    const result = registerAndMergeScanContinuation(base, extension, undefined, logged?.seed ?? null);
+    if (logged?.seed != null) {
+      /* The tags had locked B to A: the merge must now be accepted. A rejection here is the bug this replay exists to catch. */
+      expect(result.ok, result.ok ? '' : `${result.reason} ${JSON.stringify(result.diagnostics)}`).toBe(true);
+    } else {
+      /* No lock was available: the old search decides, and it must give a reasoned verdict. */
+      if (!result.ok) expect(result.reason.length).toBeGreaterThan(0);
+    }
+  });
+});

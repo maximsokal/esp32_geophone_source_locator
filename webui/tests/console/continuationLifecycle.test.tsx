@@ -233,6 +233,30 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); });
   });
 
+  it('hands the real B cloud of a rejected Continue to the Phone Lab capture hook, and does nothing when there is no hook (issue #45)', async () => {
+    const captured: Array<{ name: string; bytes: Uint8Array }> = [];
+    const reject = async (): Promise<void> => {
+      await openSavedBase();
+      const extension = makeValidScanSnapshot();
+      const worker = await startContinue(extension);
+      const request = worker.request;
+      await act(async () => { worker.send({ type: 'result', requestId: request.requestId, generation: request.generation, result: { ok: false, reason: 'overlap', diagnostics: null } }); });
+      await flush();
+    };
+    (globalThis as { __phoneLab?: unknown }).__phoneLab = { capture: (name: string, bytes: Uint8Array) => captured.push({ name, bytes }) };
+    try { await reject(); } finally { delete (globalThis as { __phoneLab?: unknown }).__phoneLab; }
+    const cloud = captured.find((entry) => entry.name === 'continuation_b_rejected');
+    expect(cloud).toBeDefined();
+    expect(decodeScanArtifact(cloud!.bytes).pointCount).toBe(makeValidScanSnapshot().pointCount);       /* the exact B, decodable by the replay tests */
+    expect(JSON.parse(new TextDecoder().decode(captured.find((entry) => entry.name === 'continuation_seed_json')!.bytes))).toMatchObject({ reason: 'overlap' });
+
+    captured.length = 0;
+    await act(async () => { for (const renderer of [...mounted]) renderer.unmount(); mounted.length = 0; });
+    h.props = null; h.workers = [];
+    await reject();
+    expect(captured).toEqual([]);                                  /* production bundle: no hook, nothing captured, nothing thrown */
+  });
+
   it('keeps durable A visible while registration is pending, then preserves A after a worker error', async () => {
     const { renderer, baseSnapshot, baseBytes, baseId } = await openSavedBase();
     const worker = await startContinue();

@@ -121,6 +121,19 @@ describe('phone lab fake device API', () => {
     expect((await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=..%2F..%2Fx', { method: 'POST', body: 'x' })).status).toBe(400);
   });
 
+  it('keeps bytes the phone captures (the real cloud of a rejected Continue) beside the run saves, under a safe name only', async () => {
+    const { call, runDir } = await start();
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    expect((await call('/lab/capture?name=continuation_b_rejected', { method: 'POST', body: bytes })).status).toBe(200);
+    const saved = readdirSync(join(runDir, 'saves')).find((entry) => entry.includes('_continuation_b_rejected_5.bin'));
+    expect(saved).toBeDefined();
+    expect(Array.from(readFileSync(join(runDir, 'saves', saved!)))).toEqual([1, 2, 3, 4, 5]);
+    expect(readFileSync(join(runDir, 'saves.log'), 'utf8')).toContain('capture continuation_b_rejected bytes=5');
+    for (const name of ['../evil', 'a b', '', 'X'.repeat(41), 'Upper']) {
+      expect((await call(`/lab/capture?name=${encodeURIComponent(name)}`, { method: 'POST', body: bytes })).status).toBe(400);
+    }
+  });
+
   it('records the production client-log lines with a receive time', async () => {
     const { call, runDir } = await start();
     expect((await call('/api/client-log', { method: 'POST', body: 'INFO|10|XR_TAG_CAPTURE_ENABLED\nWARN|11|XR_TAG_CAPTURE_REFUSED\n' })).status).toBe(204);
