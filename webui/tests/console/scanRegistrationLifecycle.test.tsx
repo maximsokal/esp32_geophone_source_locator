@@ -61,10 +61,10 @@ async function flush(): Promise<void> {
   await act(async () => { for (let i = 0; i < 200; i += 1) await Promise.resolve(); });
 }
 
-async function mountApp(): Promise<ReactTestRenderer> {
+async function mountApp(sessionId: string | null = 'S'): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId: 'S', status: null })));
+    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId, status: null })));
   });
   mounted.push(renderer);
   await flush();
@@ -381,6 +381,22 @@ describe('App scan information: distances recalculated from the scan', () => {
     expect(g2.filter((marker) => marker.status === 'visual_only')).toHaveLength(1);
     expect(g2.find((marker) => marker.status === 'visual_only')).toMatchObject({ tagId: 2, source: 'apriltag', positionScanM: [0.5, 0.4, 1] });
     expect(g2.slice(0, before.length)).toEqual(before); // the channel-sounding information is still there, beside the tag position
+  });
+
+  it('places the tags of a scan made in the STAGED flow (no recording yet, the way the phone scans) in the 3D result (phone run 2026-11-22: no sensors)', async () => {
+    await mountApp(null);
+    h.viewportProps = null;
+    await finishScan('fresh', null);
+    expect(h.viewportProps).not.toBeNull();
+    await act(async () => {
+      h.props.onTagAnchors([
+        { tagId: 0, node: 'MAIN', positionScan: [0, 1, 0], spreadM: 0.003, observationCount: 8, independentViewCount: 4, confirmed: true },
+        { tagId: 1, node: 'G1', positionScan: [0.7, 1, -0.2], spreadM: 0.004, observationCount: 9, independentViewCount: 4, confirmed: true },
+      ]);
+    });
+    await flush();
+    const placed = (h.viewportProps as { sensorMarkers: { node: string; positionScanM: readonly number[] | null }[] }).sensorMarkers.filter((marker) => marker.positionScanM !== null);
+    expect(placed.map((marker) => marker.node).sort()).toEqual(['G1', 'MAIN']);
   });
 
   it('shows an unconfirmed tag as a provisional marker with its three-axis position, beside the confirmed ones', async () => {

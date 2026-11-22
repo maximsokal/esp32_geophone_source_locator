@@ -14,6 +14,16 @@ export function tagNodeName(nodeId: number): SensorPlacementNode | null {
   return Number.isInteger(nodeId) && nodeId >= 0 && nodeId < NODE_NAMES.length ? NODE_NAMES[nodeId] : null;
 }
 
+/**
+ * The saved layout's markers for the nodes the scene does not already place: what a scan shows when it comes back from the ESP32 (restored session, the
+ * scanner reopened after Back) and there are no live tag anchors of a scan just made. Nothing already placed is changed.
+ */
+export function mergeSavedLayoutMarkers(markers: readonly SensorPlacementMarker[], artifact: TagPositionsArtifact | null): SensorPlacementMarker[] {
+  if (artifact === null) return [...markers];
+  const placed = new Set(markers.filter((marker) => marker.positionScanM !== null).map((marker) => marker.node));
+  return [...markers, ...tagLayoutMarkers(artifact).filter((marker) => !placed.has(marker.node))];
+}
+
 /** One marker per node of the layout, at layout + MAIN's position in the scan (project frame, metres, Z up). */
 export function tagLayoutMarkers(artifact: TagPositionsArtifact): SensorPlacementMarker[] {
   const [mainX, mainY, mainZ] = artifact.main_scan_position_mm;

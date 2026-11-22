@@ -57,6 +57,7 @@ import {
   encodeScanArtifact,
 } from './xr/scanArtifact';
 import { capturePhoneLabBytes } from './xr/phoneLabCapture';
+import { mergeSavedLayoutMarkers } from './xr/fiducial/tagLayoutScene';
 import { buildSensorPlacementScene, mergeLiveTagAnchorMarkers } from './xr/sensorPlacementScene';
 import type { TagSensorAnchor } from './xr/fiducial/liveTagTracker';
 import { buildTagLayout, tagAnchorsToBaseFrame, tagLayoutQuality, tagLayoutReplaces } from './xr/fiducial/tagLayout';
@@ -313,6 +314,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   /* The best layout saved for the scan on screen: a weaker look at the same scan (rejected continuation) must not replace it. */
   const savedTagLayoutRef = useRef<{ scanId: string; nodes: number; confirmed: number } | null>(null);
   /* The tag layout read back from the ESP32 (or last saved) for this object/session: the baseline a continuation inherits, and what survives a page reload. */
+  /* The saved tag layout of the scan on screen, as state: it draws the sensors when there are no live anchors (a scan restored from the ESP32). */
+  const [savedTagView, setSavedTagView] = useState<TagPositionsArtifact | null>(null);
   const savedTagArtifactRef = useRef<{ objectId: string; sessionId: string; artifact: TagPositionsArtifact } | null>(null);
   /* SHA-256 of the scans this page encoded or restored, by their CRC32 frame id: the tag layout upload names the digest of the scan it belongs to. */
   const scanShaByFrameId = useRef(new Map<string, string>());
@@ -655,6 +658,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     scanLoadSession.current = null;
     sessionEvidenceLoad.current = null;
     savedTagArtifactRef.current = null;
+    setSavedTagView(null);
     savedTagLayoutRef.current = null;
     setScanReadRetryable(false);
     scanIntent.current = 'fresh';
@@ -720,6 +724,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           try {
             const artifact = decodeTagPositions(tagsResult.json);
             savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact };
+            setSavedTagView(artifact);
             savedTagLayoutRef.current = { scanId: artifact.scan_frame_id ?? '', nodes: artifact.nodes.length, confirmed: artifact.nodes.filter((node) => node.confirmed).length };
           } catch (reason) {
             clientDiagnostics.warn('TAG_POSITIONS_RESTORE_FAILED', { objectId, sessionId: scanSessionId, error: reason instanceof Error ? reason.message : String(reason) });
@@ -1419,6 +1424,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(inherited), scanShaByFrameId.current.get(scanId));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
           savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: inherited };
+          setSavedTagView(inherited);
           savedTagLayoutRef.current = { scanId, ...baselineQuality };
           clientDiagnostics.info('TAG_POSITIONS_INHERITED', { objectId, sessionId: scanSessionId, from: baseline.scan_frame_id, nodes: baseline.nodes.length, candidate: built.layout === null ? `none:${built.reason}` : 'weaker' });
         } else if (built.layout === null) {
@@ -1430,6 +1436,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           const result = await saveSessionTagPositions(objectId, scanSessionId, encodeTagPositions(toSave), scanShaByFrameId.current.get(scanId));
           if (result?.ok !== true) throw new Error(result?.error ?? 'tag_positions_rejected');
           savedTagArtifactRef.current = { objectId, sessionId: scanSessionId, artifact: toSave };
+          setSavedTagView(toSave);
           savedTagLayoutRef.current = { scanId, ...tagLayoutQuality(built.layout) };
           clientDiagnostics.info('TAG_POSITIONS_SAVED', {
             objectId, sessionId: scanSessionId, nodes: built.layout.nodes.map((node) => `${node.nodeId}${node.confirmed ? '' : '?'}`).join(','),
@@ -1456,8 +1463,14 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
   useEffect(() => () => { if (tagRetryTimer.current !== null) clearTimeout(tagRetryTimer.current); }, []);
   /* Tags confirmed during the live scan appear on the result for this scan; saved registration / geometry markers keep their nodes. */
   const resultSensorMarkers = useMemo(
-    () => durableViewport ? mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, scanFrameAnchors) : [],
-    [durableViewport, sensorPlacementScene, scanFrameAnchors],
+    () => {
+      if (!durableViewport) return [];
+      const live = mergeLiveTagAnchorMarkers(sensorPlacementScene.markers, scanFrameAnchors);
+      /* Live anchors belong to a scan just made; a scan that came back from the ESP32 shows the layout saved for it. */
+      return scanFrameAnchors.length === 0 && savedTagView !== null && savedTagView.scan_frame_id === scanDurability.durableId
+        ? mergeSavedLayoutMarkers(live, savedTagView) : live;
+    },
+    [durableViewport, sensorPlacementScene, scanFrameAnchors, savedTagView, scanDurability.durableId],
   );
   /* Distances between the devices recalculated from the scan: only from a registration that applies to the scan on screen. */
   const distanceRefinement = useMemo(

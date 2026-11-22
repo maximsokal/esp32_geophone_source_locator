@@ -538,6 +538,24 @@ describe('a continuation inherits the saved tag layout of A (issues #37, #38)', 
     return encodeTagPositions(tagPositionsFromLayout(built.layout, baseId, 1));
   }
 
+  it('draws the sensors from the saved layout when a scan comes back from the ESP32, with no live anchors (phone run 2026-11-22: no sensors in the viewport)', async () => {
+    const bytes = encodeScanArtifact(makeValidScanSnapshot());
+    const baseId = scanId(bytes);
+    device.scan = bytes;
+    h.loadTags.mockResolvedValue(savedLayoutFor(baseId, [MAIN, G1, G2, G3]));
+    await mount(null);
+    const markers = (h.viewportProps as { sensorMarkers: Array<{ node: string; positionScanM: readonly number[] | null; tagId: number | null }> }).sensorMarkers;
+    const placed = markers.filter((marker) => marker.positionScanM !== null);       /* an unplaced channel-sounding entry may stand beside them */
+    expect(placed.map((marker) => marker.node).sort()).toEqual(['G1', 'G2', 'G3', 'MAIN']);
+    expect(placed.every((marker) => marker.positionScanM!.every(Number.isFinite))).toBe(true);
+    /* a layout saved for ANOTHER scan must not put sensors into this one */
+    h.loadTags.mockResolvedValue(savedLayoutFor('scan-crc32:deadbeef', [MAIN, G1, G2, G3]));
+    for (const renderer of [...mounted]) act(() => renderer.unmount());
+    mounted.length = 0;
+    await mount(null);
+    expect((h.viewportProps as { sensorMarkers: Array<{ positionScanM: unknown }> }).sensorMarkers.filter((marker) => marker.positionScanM !== null)).toEqual([]);
+  });
+
   it('a staged scan reopened from the workflow brings its saved tags to the scanner as re-lock anchors (audit 2026-11-22)', async () => {
     const bytes = encodeScanArtifact(makeValidScanSnapshot());
     const baseId = scanId(bytes);
