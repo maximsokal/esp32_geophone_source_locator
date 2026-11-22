@@ -152,6 +152,40 @@ static void unobserved_or_degenerate_layouts_are_not_geometry(void)
     assert(seismic_recorder_geometry_apply_tag_layout(&part, &exact, &cs, &out, NULL) == ESP_ERR_INVALID_SIZE);
 }
 
+static void the_triangle_is_judged_by_the_coordinates_not_by_the_files_claim(void)
+{
+    const unsigned all[] = {1U, 2U, 3U, 4U};
+    const seismic_recorder_session_participation_t part = session(4U);
+    const object_store_geometry_t cs = cs_geometry(4U);
+    object_store_geometry_t out;
+
+    /* Every remote on one line through MAIN: the file still CLAIMS a healthy 400 mm triangle. */
+    seismic_recorder_tag_layout_t line = layout_of(all, 4U);
+    for (unsigned node = 1U; node <= 4U; ++node) {
+        line.nodes[node].x_mm = (int32_t)(node * 500);
+        line.nodes[node].y_mm = 0;
+        line.nodes[node].z_mm = 0;
+    }
+    assert(line.weakest_main_triangle_height_mm == 400);
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &line, &cs, &out, NULL) == ESP_ERR_NOT_FOUND);
+
+    /* Nearly on a line, three remotes: the best triangle (MAIN, 2, 3) is 29 mm high, one millimetre under the gate; 31 mm is accepted. */
+    const unsigned three[] = {1U, 2U, 3U};
+    const seismic_recorder_session_participation_t part3 = session(3U);
+    const object_store_geometry_t cs3 = cs_geometry(3U);
+    seismic_recorder_tag_layout_t almost = layout_of(three, 3U);
+    almost.nodes[1].x_mm = 500;  almost.nodes[1].y_mm = 0;  almost.nodes[1].z_mm = 0;
+    almost.nodes[2].x_mm = 1000; almost.nodes[2].y_mm = 0;  almost.nodes[2].z_mm = 0;
+    almost.nodes[3].x_mm = 2000; almost.nodes[3].y_mm = 58; almost.nodes[3].z_mm = 0;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part3, &almost, &cs3, &out, NULL) == ESP_ERR_NOT_FOUND);
+    almost.nodes[3].y_mm = 62;
+    assert(seismic_recorder_geometry_apply_tag_layout(&part3, &almost, &cs3, &out, NULL) == ESP_OK);
+
+    /* The honest layout of the other tests is untouched by the new check. */
+    seismic_recorder_tag_layout_t good = layout_of(all, 4U);
+    assert(seismic_recorder_geometry_apply_tag_layout(&part, &good, &cs, &out, NULL) == ESP_OK);
+}
+
 static void only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position(void)
 {
     const unsigned three[] = {1U, 2U, 4U};
@@ -277,6 +311,7 @@ int main(int argc, char **argv)
         {"a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone", a_full_layout_becomes_the_geometry_and_leaves_the_stored_one_alone},
         {"a_preliminary_tag_is_used_like_a_confirmed_one", a_preliminary_tag_is_used_like_a_confirmed_one},
         {"unobserved_or_degenerate_layouts_are_not_geometry", unobserved_or_degenerate_layouts_are_not_geometry},
+        {"the_triangle_is_judged_by_the_coordinates_not_by_the_files_claim", the_triangle_is_judged_by_the_coordinates_not_by_the_files_claim},
         {"a_layout_for_another_geometry_epoch_is_not_placement_evidence", a_layout_for_another_geometry_epoch_is_not_placement_evidence},
         {"only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position", only_tagged_remotes_take_part_and_none_borrows_a_channel_sounding_position},
         {"a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used", a_layout_that_covers_fewer_remotes_than_channel_sounding_is_not_used},

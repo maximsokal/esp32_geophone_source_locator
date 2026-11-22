@@ -1,5 +1,6 @@
 #include "seismic_recorder_geometry_policy.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -546,6 +547,31 @@ esp_err_t seismic_recorder_geometry_apply_tag_layout(
             if (dx * dx + dy * dy + dz * dz < 100.0) return ESP_ERR_INVALID_ARG;
         }
     }
+
+    /*
+     * Issue #35: the file's own claim of its weakest triangle is not evidence. The geometry that is actually adopted must contain a triangle through
+     * MAIN (the origin) and two used remotes whose smallest altitude reaches the gate, computed from the coordinates themselves: three sensors on a line,
+     * or a file whose claimed height does not match its nodes, cannot fix a source.
+     */
+    double best_height_mm = 0.0;
+    for (size_t a = 0U; a < OBJECT_STORE_POD_COUNT; ++a) {
+        if (!candidate.pods[a].computed) continue;
+        for (size_t b = a + 1U; b < OBJECT_STORE_POD_COUNT; ++b) {
+            if (!candidate.pods[b].computed) continue;
+            const double ax = candidate.pods[a].x_mm, ay = candidate.pods[a].y_mm, az = candidate.pods[a].z_mm;
+            const double bx = candidate.pods[b].x_mm, by = candidate.pods[b].y_mm, bz = candidate.pods[b].z_mm;
+            const double cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+            const double twice_area = sqrt(cx * cx + cy * cy + cz * cz);
+            const double side_a = sqrt(ax * ax + ay * ay + az * az);
+            const double side_b = sqrt(bx * bx + by * by + bz * bz);
+            const double side_ab = sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by) + (az - bz) * (az - bz));
+            double longest = side_a > side_b ? side_a : side_b;
+            if (side_ab > longest) longest = side_ab;
+            const double height = longest > 0.0 ? twice_area / longest : 0.0;
+            if (height > best_height_mm) best_height_mm = height;
+        }
+    }
+    if (!(best_height_mm >= (double)SEISMIC_RECORDER_TAG_LAYOUT_MIN_TRIANGLE_HEIGHT_MM)) return ESP_ERR_NOT_FOUND;
 
     candidate.anchored = true;
     *out = candidate;
