@@ -8,6 +8,21 @@ import type { TagCameraFrame } from '../../src/xr/fiducial/tagDetectorClient';
 import { activeXrPerformancePressure, activeXrRenderPolicy, recordActiveXrPerformanceMetric } from '../../src/xr/xrPerformanceProfiler';
 import { deferred, FakeWakeLock, FakeXrLayer, FakeXrSession, FakeXrSystem } from './support/xrFakes';
 
+const liveMeshWorkerBox=vi.hoisted(()=>({failNext:0,created:0,requests:0}));
+vi.mock('../../src/xr/liveMeshWorker?worker&inline',async()=>{
+  const{buildLiveMesh}=await import('../../src/xr/liveMeshCore');
+  return{default:class{
+    onmessage:((event:{data:unknown})=>void)|null=null;onerror:((event:unknown)=>void)|null=null;terminated=false;
+    constructor(){liveMeshWorkerBox.created+=1;}
+    postMessage(request:{requestId:number;input:Parameters<typeof buildLiveMesh>[0]}):void{
+      liveMeshWorkerBox.requests+=1;
+      if(liveMeshWorkerBox.failNext>0){liveMeshWorkerBox.failNext-=1;this.onmessage?.({data:{type:'error',requestId:request.requestId,message:'worker failed'}});return;}
+      this.onmessage?.({data:{type:'result',requestId:request.requestId,result:buildLiveMesh(request.input),elapsedMs:1}});
+    }
+    terminate():void{this.terminated=true;}
+  }};
+});
+
 const runtimes:WebXrRuntime[]=[];
 let xr:FakeXrSystem;
 let wakeLock:FakeWakeLock;
@@ -604,5 +619,185 @@ describe('XRReferenceSpace reset inside a running session (issue #36)',()=>{
     expect(runtime.getState().originReset).toBe(false);
     next.driveNextFrame(16,evidenceFrame(next));
     expect(runtime.getState().depthFrameCount).toBe(1);
+  });
+});
+
+describe('the live mesh across every setting (mode x pressure x session state)',()=>{
+  type Pressure='low'|'medium'|'high';type Mode='auto'|'on'|'off';
+  const BASE=LIVE_MESH_MIN_INTERVAL_MS;
+  /** Interval between builds per mode and pressure, as promised to the operator: Always on ignores pressure, Auto slows down as the phone gets busier, Off never builds. */
+  const INTERVAL:Record<Mode,Record<Pressure,number|null>>={
+    off:{low:null,medium:null,high:null},
+    on:{low:BASE,medium:BASE,high:BASE},
+    auto:{low:BASE,medium:BASE*2,high:BASE*3.5},
+  };
+
+  let clock=0;
+  function plane():{positions:Float32Array;normals:Float32Array;confidence:Float32Array;voxelSizeMeters:number}{
+    const points:number[]=[];const normals:number[]=[];
+    for(let i=0;i<30;i+=1)for(let j=0;j<30;j+=1){points.push(i*0.04,j*0.04,0.8);normals.push(0,0,1);}
+    return{positions:Float32Array.from(points),normals:Float32Array.from(normals),confidence:new Float32Array(900).fill(0.9),voxelSizeMeters:0.04};
+  }
+  interface Rig{session:FakeXrSession;runtime:WebXrRuntime;internals:{originResetPaused:boolean;liveMeshOff:boolean;livePerformancePressure:()=>string;pointCloud:{liveMeshInput:()=>unknown}};renderer:{update:ReturnType<typeof vi.fn>;render:ReturnType<typeof vi.fn>;clear:ReturnType<typeof vi.fn>;dispose:ReturnType<typeof vi.fn>;triangleCount:number};pressure:{value:Pressure};info:ReturnType<typeof vi.spyOn>;warn:ReturnType<typeof vi.spyOn>}
+  async function rig(mode:Mode,pressureValue:Pressure):Promise<Rig>{
+    liveMeshWorkerBox.failNext=0;liveMeshWorkerBox.created=0;liveMeshWorkerBox.requests=0;clock=1_000_000;
+    vi.spyOn(performance,'now').mockImplementation(()=>clock);
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+    const internals=runtime as unknown as Rig['internals'];
+    const pressure={value:pressureValue};
+    vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockImplementation(()=>pressure.value);
+    internals.pointCloud.liveMeshInput=()=>plane();
+    const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
+    (runtime as unknown as {liveMeshRenderer:unknown}).liveMeshRenderer=renderer;
+    const info=vi.spyOn(clientDiagnostics,'info');const warn=vi.spyOn(clientDiagnostics,'warn');
+    info.mockClear();warn.mockClear();                                                           /* spies are shared across rigs: count only this one */
+    runtime.setLiveMeshMode(mode);
+    return{session,runtime,internals,renderer,pressure,info,warn};
+  }
+  /** Drives frames every 100 ms for `ms` and returns how many times the worker was asked for a mesh. */
+  async function run(r:Rig,ms:number):Promise<number>{
+    const before=liveMeshWorkerBox.requests;
+    for(let elapsed=0;elapsed<ms;elapsed+=100){clock+=100;r.session.driveNextFrame(clock,fakeFrame(r.session,()=>emptyPose()));await flushMicrotasks();}
+    return liveMeshWorkerBox.requests-before;
+  }
+
+  const modes:Mode[]=['off','on','auto'];const pressures:Pressure[]=['low','medium','high'];
+  for(const mode of modes)for(const pressure of pressures){
+    it(`${mode} / ${pressure} pressure: ${INTERVAL[mode][pressure]===null?'never builds and never draws':`builds every ${INTERVAL[mode][pressure]} ms and draws a mesh made from the live surface`}`,async()=>{
+      const r=await rig(mode,pressure);
+      const builds=await run(r,20_000);
+      const interval=INTERVAL[mode][pressure];
+      if(interval===null){
+        expect(builds).toBe(0);expect(liveMeshWorkerBox.created).toBe(0);expect(r.renderer.update).not.toHaveBeenCalled();expect(r.renderer.render).not.toHaveBeenCalled();
+        return;
+      }
+      /* frames at 100 ms steps from the first one: builds at 0, interval, 2 x interval, ... */
+      expect(builds).toBe(Math.floor((20_000-100)/interval)+1);
+      expect(r.renderer.update).toHaveBeenCalled();
+      const [triangles,count]=r.renderer.update.mock.calls.at(-1) as [Float32Array,number];
+      expect(count,'a real mesh of the 30 x 30 plane').toBeGreaterThan(300);
+      expect(triangles.length).toBeGreaterThanOrEqual(count*9);
+      for(let v=0;v<count*3;v+=1)expect(triangles[v*3+1],'WebXR Y is the plane height').toBeCloseTo(0.8,4);
+      expect(r.renderer.render).toHaveBeenCalled();
+      expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(1);
+      expect(r.info.mock.calls.find((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')![1]).toMatchObject({mode});
+      expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_MODE_SET').map((call)=>(call[1] as {mode:string}).mode)).toEqual([mode]);
+    });
+  }
+
+  it('the mode is logged once per change, whatever it is switched to, so a phone log always says which setting ran',async()=>{
+    const r=await rig('auto','low');
+    for(const mode of ['on','off','off','auto','on'] as Mode[])r.runtime.setLiveMeshMode(mode);
+    expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_MODE_SET').map((call)=>(call[1] as {mode:string}).mode)).toEqual(['auto','on','off','auto','on']);
+  });
+
+  it('switching Off -> On -> Off in the middle of a scan starts and stops the mesh at once, and the old mesh never lingers',async()=>{
+    const r=await rig('off','low');
+    expect(await run(r,5000)).toBe(0);
+    r.runtime.setLiveMeshMode('on');
+    expect(await run(r,5000)).toBeGreaterThan(0);
+    expect(r.renderer.update).toHaveBeenCalled();
+    r.runtime.setLiveMeshMode('off');
+    expect(r.renderer.clear).toHaveBeenCalled();
+    const drawn=r.renderer.render.mock.calls.length;
+    expect(await run(r,5000)).toBe(0);
+    expect(r.renderer.render.mock.calls.length).toBe(drawn);
+  });
+
+  it('Auto follows the pressure as it changes during a scan: faster when the phone recovers, slower when it gets busy',async()=>{
+    const r=await rig('auto','low');
+    const quiet=await run(r,20_000);
+    r.pressure.value='high';
+    const busy=await run(r,20_000);
+    r.pressure.value='low';
+    const recovered=await run(r,20_000);
+    expect(quiet).toBe(12);                                                                       /* builds at 0, 1.8 s, ... 19.8 s */
+    expect(busy,'every 6.3 s, counted from the last quiet build').toBeGreaterThanOrEqual(3);expect(busy).toBeLessThanOrEqual(4);
+    expect(recovered,'back to every 1.8 s').toBeGreaterThanOrEqual(11);
+    expect(quiet).toBeGreaterThan(busy);                                                          /* slower under load, but never off */
+  });
+
+  it('builds nothing while the reference space has been reset, and resumes when it is back',async()=>{
+    const r=await rig('on','low');
+    expect(await run(r,5000)).toBeGreaterThan(0);
+    r.internals.originResetPaused=true;
+    expect(await run(r,5000)).toBe(0);
+    r.internals.originResetPaused=false;
+    expect(await run(r,5000)).toBeGreaterThan(0);
+  });
+
+  it('asks for no worker while there is nothing with a measured orientation to mesh',async()=>{
+    const r=await rig('on','low');
+    r.internals.pointCloud.liveMeshInput=()=>null;
+    expect(await run(r,10_000)).toBe(0);
+    expect(liveMeshWorkerBox.created).toBe(0);
+    r.internals.pointCloud.liveMeshInput=()=>plane();
+    expect(await run(r,5000)).toBeGreaterThan(0);                                                 /* it picks up as soon as the surface exists */
+  });
+
+  it('three failed builds in a row switch the live mesh off for the session, say so, and no mode change brings it back',async()=>{
+    for(const mode of ['on','auto'] as Mode[]){
+      const r=await rig(mode,'low');
+      liveMeshWorkerBox.failNext=100;
+      await run(r,60_000);
+      expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(0);
+      expect(r.warn.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_DISABLED')).toHaveLength(1);
+      expect(liveMeshWorkerBox.requests).toBe(3);
+      r.runtime.setLiveMeshMode('off');r.runtime.setLiveMeshMode(mode);
+      liveMeshWorkerBox.failNext=0;
+      expect(await run(r,20_000),'still off for this session').toBe(0);
+      expect(r.runtime.getState().phase).toBe('running');
+    }
+  });
+
+  it('a draw fault latches the live mesh off for the session: no more builds are asked for, not even to a fresh worker',async()=>{
+    const r=await rig('on','low');
+    expect(await run(r,5000)).toBeGreaterThan(0);
+    r.renderer.render.mockImplementation(()=>{throw new Error('mesh draw failed');});
+    await run(r,2000);
+    expect(r.internals.liveMeshOff).toBe(true);
+    const requestsAfterFault=liveMeshWorkerBox.requests;
+    expect(await run(r,20_000)).toBe(0);
+    expect(liveMeshWorkerBox.requests).toBe(requestsAfterFault);
+  });
+
+  it('the SAME runtime starts its next session with the live mesh available again, and logs it as active again',async()=>{
+    const r=await rig('on','low');
+    expect(await run(r,5000)).toBeGreaterThan(0);
+    expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(1);
+    liveMeshWorkerBox.failNext=100;
+    await run(r,60_000);
+    expect(r.internals.liveMeshOff).toBe(true);
+    await r.runtime.stop();                                                                       /* the session ends; the runtime object is kept */
+    expect(r.internals.liveMeshOff).toBe(false);
+    const second=new FakeXrSession();xr.queue(second);await r.runtime.start();
+    liveMeshWorkerBox.failNext=0;r.info.mockClear();
+    (r.runtime as unknown as {liveMeshRenderer:unknown}).liveMeshRenderer=r.renderer;
+    r.runtime.setLiveMeshMode('on');
+    const builds=await run({...r,session:second},5000);
+    expect(builds).toBeGreaterThan(0);
+    expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE'),'logged again for the new session').toHaveLength(1);
+  });
+
+  it('a healthy first session is logged as active, and so is the next session of the same runtime (the log of each scan says what its mesh did)',async()=>{
+    const r=await rig('auto','low');
+    await run(r,5000);
+    expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(1);
+    await r.runtime.stop();
+    const second=new FakeXrSession();xr.queue(second);await r.runtime.start();
+    r.info.mockClear();
+    (r.runtime as unknown as {liveMeshRenderer:unknown}).liveMeshRenderer=r.renderer;
+    await run({...r,session:second},5000);
+    expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(1);
+  });
+
+  it('a new session starts with the live mesh available again, even after one that disabled it',async()=>{
+    const first=await rig('on','low');
+    liveMeshWorkerBox.failNext=100;
+    await run(first,60_000);
+    expect((first.runtime as unknown as {liveMeshOff:boolean}).liveMeshOff).toBe(true);
+    await first.runtime.dispose();
+    const second=await rig('on','low');
+    expect(await run(second,5000)).toBeGreaterThan(0);
   });
 });
