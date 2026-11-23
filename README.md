@@ -1,5 +1,7 @@
 # ESP32 Geophone Source Locator
 
+![Concept render of the ESP32 Geophone Source Locator main controller and remote sensor nodes](assets/esp32-geophone-source-locator.webp)
+
 ESP32-S3 diploma prototype for seismic search under rubble. The firmware acquires multiple geophone channels simultaneously, stores object/measurement data on microSD, exposes a local web interface, provides a local TFT UI, and now contains a reusable 3D TDOA geometry solver for the later localization pipeline.
 
 The project targets **ESP-IDF v5.5.4** on an ESP32-S3 N16R8 board.
