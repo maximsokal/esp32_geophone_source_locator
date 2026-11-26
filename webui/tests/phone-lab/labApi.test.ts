@@ -111,14 +111,79 @@ describe('phone lab fake device API', () => {
     expect(readdirSync(storeDir)).toEqual([]);
   });
 
-  it('accepts the real scan ids sent by the phone (scan-crc32:xxxxxxxx) for occupancy and preview artifacts', async () => {
-    const { call, storeDir } = await start();
-    const id = 'scan-crc32%3A732740d9'; // exactly what the scanner sent in the phone run that exposed this
-    for (const kind of ['occupancy', 'preview']) {
-      expect((await call(`/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=${kind}&scan_id=${id}`, { method: 'POST', body: 'x' })).status).toBe(200);
-    }
-    expect(readdirSync(storeDir).sort()).toEqual(['OBJ_0001__staging__occupancy__scan-crc32_732740d9.bin', 'OBJ_0001__staging__preview__scan-crc32_732740d9.bin']);
-    expect((await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=..%2F..%2Fx', { method: 'POST', body: 'x' })).status).toBe(400);
+  /* The firmware contract (components/web_server/web_scan_store.c): the file of an artifact depends on object, session and KIND only; `scan_id` is an identity
+     CHECK on save (it must name the scan stored now) and on load. It is never part of the file name. */
+  describe('derived artifacts follow the firmware contract (VOX-01, 02, 04, 15, 16)', () => {
+    const scanQuery = 'object_id=OBJ_0001&session_id=staging';
+    const idOf = async (call: (path: string, init?: RequestInit) => Promise<Response>, q = scanQuery): Promise<string> => (await (await call(`/api/control?scan=info&${q}`, { method: 'POST' })).json()).id as string;
+    const bytes = (seed: number, length = 600): Buffer => Buffer.from(Array.from({ length }, (_, i) => (i * 7 + seed) & 0xff));
+
+    it('VOX-01/02: occupancy and preview saved with the real scan id load back byte for byte WITHOUT a scan id (the phone-lab 404 of 2026-11-26)', async () => {
+      const { call, storeDir } = await start();
+      await call(`/api/control?scan=save&${scanQuery}`, { method: 'POST', body: bytes(1, 4000) });
+      const id = await idOf(call);
+      expect(id).toMatch(/^scan-crc32:[0-9a-f]{8}$/);
+      const occupancy = bytes(2); const preview = bytes(3, 300);
+      expect((await call(`/api/control?scan=save&${scanQuery}&kind=occupancy&scan_id=${encodeURIComponent(id)}`, { method: 'POST', body: occupancy })).status).toBe(200);
+      expect((await call(`/api/control?scan=save&${scanQuery}&kind=preview&scan_id=${encodeURIComponent(id)}`, { method: 'POST', body: preview })).status).toBe(200);
+      expect(readdirSync(storeDir).sort(), 'no scan id in any file name').toEqual(['OBJ_0001__staging__occupancy.bin', 'OBJ_0001__staging__preview.bin', 'OBJ_0001__staging__scan.bin']);
+      const loadedOccupancy = await call(`/api/control?scan=load&${scanQuery}&kind=occupancy`, { method: 'POST' });
+      const loadedPreview = await call(`/api/control?scan=load&${scanQuery}&kind=preview`, { method: 'POST' });
+      expect(loadedOccupancy.status).toBe(200); expect(loadedPreview.status).toBe(200);
+      expect(Buffer.from(await loadedOccupancy.arrayBuffer()).equals(occupancy)).toBe(true);
+      expect(Buffer.from(await loadedPreview.arrayBuffer()).equals(preview)).toBe(true);
+      const info = await (await call(`/api/control?scan=info&${scanQuery}&kind=occupancy`, { method: 'POST' })).json();
+      expect(info).toMatchObject({ ok: true, bytes: 600, source_id: id });
+    });
+
+    it('VOX-04: a derivative that names ANOTHER scan than the one stored is refused and nothing is written', async () => {
+      const { call, storeDir } = await start();
+      await call(`/api/control?scan=save&${scanQuery}`, { method: 'POST', body: bytes(1, 4000) });
+      const response = await call(`/api/control?scan=save&${scanQuery}&kind=occupancy&scan_id=scan-crc32%3Adeadbeef`, { method: 'POST', body: bytes(2) });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ ok: false, error: 'ESP_ERR_INVALID_STATE' });
+      expect(readdirSync(storeDir)).toEqual(['OBJ_0001__staging__scan.bin']);
+    });
+
+    it('a derivative cannot be saved for a scan that is not stored at all', async () => {
+      const { call, storeDir } = await start();
+      const response = await call(`/api/control?scan=save&${scanQuery}&kind=preview&scan_id=scan-crc32%3A732740d9`, { method: 'POST', body: bytes(2) });
+      expect(response.status).toBe(409);
+      expect(readdirSync(storeDir)).toEqual([]);
+    });
+
+    it('VOX-16: after the scan is replaced the old derivative reports the OLD scan as its source, so no consumer can take it for the new one', async () => {
+      const { call } = await start();
+      await call(`/api/control?scan=save&${scanQuery}`, { method: 'POST', body: bytes(1, 4000) });
+      const first = await idOf(call);
+      await call(`/api/control?scan=save&${scanQuery}&kind=occupancy&scan_id=${encodeURIComponent(first)}`, { method: 'POST', body: bytes(2) });
+      await call(`/api/control?scan=save&${scanQuery}`, { method: 'POST', body: bytes(9, 5000) });
+      const second = await idOf(call);
+      expect(second).not.toBe(first);
+      const info = await (await call(`/api/control?scan=info&${scanQuery}&kind=occupancy`, { method: 'POST' })).json();
+      expect(info.source_id).toBe(second);                                                       /* the lab derives it from the scan stored NOW, like the firmware's info */
+      const stale = await call(`/api/control?scan=load&${scanQuery}&kind=occupancy&scan_id=${encodeURIComponent(first)}`, { method: 'POST' });
+      expect(stale.status, 'a load that names the old scan is refused').toBe(409);
+    });
+
+    it('VOX-15: artifacts of another object or session are never returned', async () => {
+      const { call } = await start();
+      await call('/api/control?scan=save&object_id=OBJ_0001&session_id=S000001', { method: 'POST', body: bytes(1, 4000) });
+      const id = await idOf(call, 'object_id=OBJ_0001&session_id=S000001');
+      await call(`/api/control?scan=save&object_id=OBJ_0001&session_id=S000001&kind=occupancy&scan_id=${encodeURIComponent(id)}`, { method: 'POST', body: bytes(2) });
+      for (const other of ['object_id=OBJ_0002&session_id=S000001', 'object_id=OBJ_0001&session_id=S000002', 'object_id=OBJ_0001&session_id=staging']) {
+        expect((await call(`/api/control?scan=load&${other}&kind=occupancy`, { method: 'POST' })).status).toBe(404);
+        expect((await call(`/api/control?scan=load&${other}&kind=occupancy&scan_id=${encodeURIComponent(id)}`, { method: 'POST' })).status).toBe(404);
+      }
+    });
+
+    it('rejects unsafe scan ids everywhere', async () => {
+      const { call } = await start();
+      for (const kind of ['occupancy', 'preview']) {
+        expect((await call(`/api/control?scan=save&${scanQuery}&kind=${kind}&scan_id=..%2F..%2Fx`, { method: 'POST', body: 'x' })).status).toBe(400);
+        expect((await call(`/api/control?scan=load&${scanQuery}&kind=${kind}&scan_id=..%2F..%2Fx`, { method: 'POST' })).status).toBe(400);
+      }
+    });
   });
 
   it('reports has_scan like the firmware: false with nothing saved, true once a scan is saved for the active object, false again after it is deleted (the Back button depends on it)', async () => {
@@ -138,7 +203,8 @@ describe('phone lab fake device API', () => {
   it('starts a run with an empty fake device: the saved scans of the previous run are gone, so the first page is a fresh start (phone run 2026-11-26 22:37 opened the last scan)', async () => {
     const first = await start();
     await first.call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging', { method: 'POST', body: 'scan-bytes' });
-    await first.call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=scan-crc32:3cea7897', { method: 'POST', body: 'occ' });
+    const scanId = (await (await first.call('/api/control?scan=info&object_id=OBJ_0001&session_id=staging', { method: 'POST' })).json()).id as string;
+    await first.call(`/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=${encodeURIComponent(scanId)}`, { method: 'POST', body: 'occ' });
     writeFileSync(join(first.storeDir, 'notes.txt'), 'not an artifact');
     expect(readdirSync(first.storeDir).filter((name) => name.endsWith('.bin'))).toHaveLength(2);
     expect(resetDeviceStore(first.storeDir, true), 'keep carries the store over on purpose').toBe(0);

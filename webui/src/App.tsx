@@ -1679,6 +1679,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
                 display={display}
                 mode={scanMode}
                 esp32Voxels={esp32VoxelView}
+                voxelsSelected={representation !== 'mesh'}
                 sensorMarkers={resultSensorMarkers}
                 sensorGeometry={durableViewport ? localizationGeometry : null}
                 registrationArtifact={viewerRegistration}

@@ -114,12 +114,21 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
 
   function artifactPath(objectId, sessionId, kind, scanId) {
     if (!ID.test(objectId) || !ID.test(sessionId) || !KINDS.has(kind) || (scanId !== null && !SCAN_ID.test(scanId))) return null;
-    return join(storeDir, `${objectId}__${sessionId}__${kind}${scanId === null ? '' : `__${scanId.replace(/:/g, '_')}`}.bin`);
+    /* Like the firmware: the file depends on object, session and kind only. `scan_id` is an identity check (see handleScan), never part of the name. */
+    return join(storeDir, `${objectId}__${sessionId}__${kind}.bin`);
   }
 
   async function scanIdOf(bytes) {
     const mod = await loadModule('/src/xr/scanIdentity.ts');
     return mod.createScanIdentity(new Uint8Array(bytes)).frameId;
+  }
+
+  /** The identity check of web_scan_store.c: a derivative that names a scan must name the scan that is stored NOW for the same object and session. */
+  async function scanIdentityMismatch(objectId, sessionId, requestedScanId) {
+    if (requestedScanId === null) return false;
+    const scanPath = artifactPath(objectId, sessionId, 'scan', null);
+    if (scanPath === null || !existsSync(scanPath)) return true;
+    return (await scanIdOf(readFileSync(scanPath))) !== requestedScanId;
   }
 
   async function handleScan(req, res, url, send) {
@@ -128,8 +137,11 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
     const kind = q.get('kind') ?? 'scan';
     const path = artifactPath(q.get('object_id') ?? '', q.get('session_id') ?? '', kind, q.get('scan_id'));
     if (path === null) return send(400, { ok: false, error: 'ESP_ERR_INVALID_ARG' });
+    const derived = kind === 'occupancy' || kind === 'preview';
+    const requestedScanId = derived ? q.get('scan_id') : null;
     if (action === 'save') {
       const body = await readBody(req, MAX_ARTIFACT_BYTES);
+      if (derived && await scanIdentityMismatch(q.get('object_id'), q.get('session_id'), requestedScanId)) return send(409, { ok: false, error: 'ESP_ERR_INVALID_STATE' });
       writeFileSync(path, body);
       const copy = `${stamp().replace(/[:.]/g, '-')}_${kind}_${body.length}.bin`;
       writeFileSync(join(runDir, 'saves', copy), body);
@@ -147,6 +159,7 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
     }
     if (action === 'load') {
       if (!existsSync(path)) return send(404, { ok: false, error: 'ESP_ERR_NOT_FOUND' });
+      if (derived && await scanIdentityMismatch(q.get('object_id'), q.get('session_id'), requestedScanId)) return send(409, { ok: false, error: 'ESP_ERR_INVALID_STATE' });
       const bytes = readFileSync(path);
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': bytes.length, 'cache-control': 'no-store' });
       return res.end(bytes);

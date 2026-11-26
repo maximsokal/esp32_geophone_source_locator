@@ -233,6 +233,30 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); });
   });
 
+  it('VOX-09/10/11/12: choosing a voxel representation tells the viewport at once (even while its data is loading or missing), Mesh restores it, and a late answer of a representation that is no longer chosen is not drawn', async () => {
+    const { renderer } = await openSavedBase();
+    const choose = async (value: string) => { await act(async () => { renderer.root.findByType('select').props.onChange({ target: { value } }); }); await flush(); };
+    expect(h.viewportProps.voxelsSelected).toBe(false);
+    expect(h.viewportProps.esp32Voxels ?? null).toBeNull();
+    await choose('esp32-preview');
+    expect(h.viewportProps.voxelsSelected, 'the device holds no preview: the canvas must not keep drawing the mesh').toBe(true);
+    expect(h.viewportProps.esp32Voxels ?? null).toBeNull();
+    await choose('esp32-solver');
+    expect(h.viewportProps.voxelsSelected).toBe(true);
+    await choose('mesh');
+    expect(h.viewportProps.voxelsSelected).toBe(false);
+    expect(h.viewportProps.esp32Voxels ?? null).toBeNull();
+    /* rapid switching: the last choice wins */
+    await act(async () => {
+      const select = renderer.root.findByType('select');
+      select.props.onChange({ target: { value: 'esp32-preview' } });
+      select.props.onChange({ target: { value: 'esp32-solver' } });
+      select.props.onChange({ target: { value: 'mesh' } });
+    });
+    await flush();
+    expect(h.viewportProps.voxelsSelected).toBe(false);
+  });
+
   it('offers the mesh computed for the saved scan on screen to the scanner, and none for another scan (Continue draws it over the camera)', async () => {
     const { baseSnapshot } = await openSavedBase();
     expect(h.props.getReferenceMesh()).toBeNull();                                                 /* the mesh of this scan was never computed */

@@ -60,6 +60,7 @@ function render(
     sensorGeometry?: LocalizationSessionGeometry | null;
     registrationArtifact?: RegistrationArtifact | null;
     esp32Voxels?: Esp32VoxelView | null;
+    voxelsSelected?: boolean;
   } = {},
   locale: I18nLocale = 'en',
 ): string {
@@ -217,6 +218,16 @@ describe('in-canvas camera controls (issue #41)', () => {
       expect(html).toContain(translate(locale, 'scan.solver.unknown_note'));
       expect(html).toContain('data-voxel-kind="solver"');
       expect(html).toContain('data-voxel-status="saved"');
+    });
+
+    it('VOX-09: with a voxel representation SELECTED but no voxel data (loading, missing), the scan layers are not drawn and the mesh is not passed off as voxels', () => {
+      const withMesh = render(scanViewForMode('mesh'), snapshot());
+      expect(withMesh).toContain('scan-mesh-overlay');
+      expect(withMesh).toContain('scan-mode-overlay');
+      const html = render(scanViewForMode('mesh'), snapshot(), 'perspective', { esp32Voxels: null, voxelsSelected: true });
+      expect(html).not.toContain('scan-mesh-overlay');                                            /* no mesh status line */
+      expect(html).not.toContain('scan-mode-overlay');                                            /* no surface-mode label */
+      expect(html).not.toContain('data-voxel-status');                                            /* and no invented voxel status either */
     });
 
     it('without the voxels the viewport is unchanged: the usual mode label and no voxel details', () => {

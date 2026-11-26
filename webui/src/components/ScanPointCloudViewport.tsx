@@ -67,6 +67,8 @@ export type { Esp32VoxelStatus, Esp32VoxelView } from './Esp32VoxelLayers';
 
 interface ScanPointCloudViewportProps {
   esp32Voxels?: Esp32VoxelView | null;
+  /** A voxel representation is the one selected (even while its data loads or is missing): the scan layers are not drawn, so the canvas never passes the surface mesh off as voxels. */
+  voxelsSelected?: boolean;
   snapshot: ScanPointCloudSnapshot;
   viewCommand: ViewCommand;
   display: ScanDisplayOptions;
@@ -366,6 +368,7 @@ export function ScanPointCloudViewport({
   display: displayProp,
   mode,
   esp32Voxels = null,
+  voxelsSelected = false,
   sensorMarkers = NO_SENSOR_MARKERS,
   onMeshReady,
   selectedSensorNode,
@@ -384,9 +387,10 @@ export function ScanPointCloudViewport({
   const { locale } = useLocale();
   const t = useT();
   /* With the ESP32 voxels on screen the scan layers are hidden and none of their work (points, TSDF mesh) is requested. */
-  const display = useMemo<ScanDisplayOptions>(() => esp32Voxels === null ? displayProp : {
+  const voxelMode = esp32Voxels !== null || voxelsSelected;
+  const display = useMemo<ScanDisplayOptions>(() => !voxelMode ? displayProp : {
     ...displayProp, goodPoints: false, badPoints: false, mesh: false, freeAir: false, unknownSpace: false, manualPoints: false,
-  }, [displayProp, esp32Voxels === null]);
+  }, [displayProp, voxelMode]);
   const controlsOwner = useOrbitControlsOwner();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [panMode, setPanMode] = useState(false);
@@ -704,9 +708,9 @@ export function ScanPointCloudViewport({
         {run.method_name} · {t(currency === 'history_previous_scan' ? 'scan.source_history.previous_scan' : 'scan.source_history.scan_unknown')}
       </span>)}
     </div>}
-    {esp32Voxels === null
+    {esp32Voxels === null && !voxelsSelected
       ? <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
-      : <Esp32VoxelOverlay view={esp32Voxels} picked={pickedVoxel} />}
+      : esp32Voxels !== null ? <Esp32VoxelOverlay view={esp32Voxels} picked={pickedVoxel} /> : null}
     {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
     {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
     {selectedMarker !== null && <section className="scan-sensor-details" aria-label={t('scan.selected_sensor_details')} data-sensor-status={selectedMarker.status}>

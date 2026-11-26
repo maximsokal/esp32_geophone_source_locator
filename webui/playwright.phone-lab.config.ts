@@ -6,7 +6,7 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests/phone-lab',
-  testMatch: 'phone-lab.spec.ts',
+  testMatch: ['phone-lab.spec.ts', 'voxels.spec.ts'],
   forbidOnly: true,
   fullyParallel: false,
   workers: 1,

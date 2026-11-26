@@ -194,6 +194,7 @@ export default function WorkflowScanView({ objectId, sessionId, finished }: Prop
             display={DISPLAY}
             mode="mesh"
             esp32Voxels={representation === 'mesh' ? null : voxels.view}
+            voxelsSelected={representation !== 'mesh'}
             sensorMarkers={markers}
             registrationArtifact={loaded.registration}
             localizationRuns={loaded.runs}
