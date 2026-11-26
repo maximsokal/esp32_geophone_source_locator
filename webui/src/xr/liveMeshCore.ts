@@ -2,12 +2,13 @@
  * The translucent surface drawn over the camera while a scan runs (phone run 2026-11-22: "show where the mesh is already forming"). Pure: a bounded set of
  * the live surface points in, WebXR-frame triangles out.
  *
- * Every measured point becomes a small oriented patch (two triangles, a few centimetres wide, lying in the plane given by the point's measured normal).
- * Neighbouring patches overlap, so measured surface reads as one translucent skin and unmeasured space stays empty. An earlier version triangulated the
- * points like the post-scan preview does; on live data, which is sparse and still settling, that kept only fragments of components and left the
- * surface as unconnected islands (phone run 2026-11-26: 31 to 56 islands covering 26 to 44% of the points). Patches drop nothing, need no neighbour
- * search and cost milliseconds, so the preview stays cheap on a phone that is busy with depth fusion.
+ * The surface is a connected triangle mesh from naive surface nets over the points (liveSurfaceNets.ts): milliseconds to build, one skin that hugs the
+ * measured points. Two earlier attempts failed on the phone: triangulating the points like the post-scan preview left 31 to 56 unconnected islands
+ * (2026-11-26 first run), and one patch per point filled the screen with overlapping squares (2026-11-26 second run). A real TSDF reconstruction was
+ * measured at 0.8 to 4 s on a desktop, far too slow to repeat while the phone is also fusing depth.
  */
+import { buildSurfaceNets } from './liveSurfaceNets';
+
 export interface LiveMeshInput {
   /** Project frame (Z up), metres. */
   positions: Float32Array;
@@ -21,17 +22,21 @@ export interface LiveMeshResult {
   trianglesXr: Float32Array;
   triangleCount: number;
   sourcePointCount: number;
-  /** Points that became a patch (a point without a usable normal does not). */
+  /** Lattice cells that hold measured points (the skin is built around them). */
   acceptedPointCount: number;
 }
 
 export const LIVE_MESH_MAX_POINTS = 4000;
-/** Two triangles per patch. */
-export const LIVE_MESH_MAX_TRIANGLES = LIVE_MESH_MAX_POINTS * 2;
+export const LIVE_MESH_MAX_TRIANGLES = 20000;
 /** Fewer points than this is not a surface yet. */
 export const LIVE_MESH_MIN_POINTS = 16;
-/** Half the side of a patch, in voxels: a patch is a little wider than the spacing of the points, so neighbours overlap. */
-export const LIVE_MESH_PATCH_HALF_VOXELS = 0.75;
+/** Lattice spacing in voxels of the scan (a 4 cm voxel gives 8 cm cells), kept within a sensible range. */
+export const LIVE_MESH_CELL_VOXELS = 2;
+export const LIVE_MESH_MIN_CELL_METERS = 0.06;
+export const LIVE_MESH_MAX_CELL_METERS = 0.1;
+/** When the mesh would exceed the triangle budget the cells are made coarser, up to this many times (never cut: a cut leaves bands). */
+export const LIVE_MESH_COARSEN_FACTOR = 1.3;
+export const LIVE_MESH_MAX_COARSENINGS = 4;
 
 /** Even subsample of at most `limit` points, keeping the three arrays aligned. */
 export function limitLiveMeshInput(input: LiveMeshInput, limit = LIVE_MESH_MAX_POINTS): LiveMeshInput {
@@ -51,37 +56,21 @@ export function limitLiveMeshInput(input: LiveMeshInput, limit = LIVE_MESH_MAX_P
 export function buildLiveMesh(input: LiveMeshInput, maxTriangles = LIVE_MESH_MAX_TRIANGLES): LiveMeshResult {
   const limited = limitLiveMeshInput(input);
   const count = limited.confidence.length;
-  const half = Math.min(0.06, Math.max(0.015, Math.abs(limited.voxelSizeMeters) * LIVE_MESH_PATCH_HALF_VOXELS || 0.03));
-  const capacity = Math.min(count, Math.floor(Math.max(0, maxTriangles) / 2));
-  const out = new Float32Array(capacity * 18);
-  let patches = 0;
-  if (count >= LIVE_MESH_MIN_POINTS) {
-    for (let i = 0; i < count && patches < capacity; i += 1) {
-      const px = limited.positions[i * 3]; const py = limited.positions[i * 3 + 1]; const pz = limited.positions[i * 3 + 2];
-      let nx = limited.normals[i * 3]; let ny = limited.normals[i * 3 + 1]; let nz = limited.normals[i * 3 + 2];
-      const length = Math.hypot(nx, ny, nz);
-      if (![px, py, pz, length].every(Number.isFinite) || length < 1e-6) continue;
-      nx /= length; ny /= length; nz /= length;
-      /* two tangents: cross the normal with the axis it is least aligned with */
-      const ax = Math.abs(nx); const ay = Math.abs(ny); const az = Math.abs(nz);
-      const ux = ax <= ay && ax <= az ? 1 : 0; const uy = ay < ax && ay <= az ? 1 : 0; const uz = ux === 0 && uy === 0 ? 1 : 0;
-      let t1x = ny * uz - nz * uy; let t1y = nz * ux - nx * uz; let t1z = nx * uy - ny * ux;
-      const t1 = Math.hypot(t1x, t1y, t1z);
-      t1x = t1x / t1 * half; t1y = t1y / t1 * half; t1z = t1z / t1 * half;
-      const t2x = ny * t1z - nz * t1y; const t2y = nz * t1x - nx * t1z; const t2z = nx * t1y - ny * t1x;      /* n x t1: already `half` long */
-      const corners = [
-        [px - t1x - t2x, py - t1y - t2y, pz - t1z - t2z], [px + t1x - t2x, py + t1y - t2y, pz + t1z - t2z],
-        [px + t1x + t2x, py + t1y + t2y, pz + t1z + t2z], [px - t1x + t2x, py - t1y + t2y, pz - t1z + t2z],
-      ];
-      /* project (x, y, z) -> WebXR local floor (x, z, -y) */
-      const triangles = [[0, 1, 2], [0, 2, 3]];
-      for (let t = 0; t < 2; t += 1) for (let c = 0; c < 3; c += 1) {
-        const corner = corners[triangles[t][c]];
-        const o = patches * 18 + t * 9 + c * 3;
-        out[o] = corner[0]; out[o + 1] = corner[2]; out[o + 2] = -corner[1];
-      }
-      patches += 1;
-    }
+  const empty: LiveMeshResult = { trianglesXr: new Float32Array(0), triangleCount: 0, sourcePointCount: count, acceptedPointCount: 0 };
+  if (count < LIVE_MESH_MIN_POINTS) return empty;
+  let cell = Math.min(LIVE_MESH_MAX_CELL_METERS, Math.max(LIVE_MESH_MIN_CELL_METERS, Math.abs(limited.voxelSizeMeters) * LIVE_MESH_CELL_VOXELS || LIVE_MESH_MIN_CELL_METERS));
+  const budget = Math.max(0, Math.floor(maxTriangles));
+  let nets = buildSurfaceNets({ positions: limited.positions, pointCount: count, cellMeters: cell });
+  for (let attempt = 0; attempt < LIVE_MESH_MAX_COARSENINGS && nets.triangleCount > budget; attempt += 1) {
+    cell *= LIVE_MESH_COARSEN_FACTOR;
+    nets = buildSurfaceNets({ positions: limited.positions, pointCount: count, cellMeters: cell });
   }
-  return { trianglesXr: out.slice(0, patches * 18), triangleCount: patches * 2, sourcePointCount: count, acceptedPointCount: patches };
+  const triangleCount = Math.min(nets.triangleCount, budget);
+  const trianglesXr = new Float32Array(triangleCount * 9);
+  for (let vertex = 0; vertex < triangleCount * 3; vertex += 1) {
+    const o = vertex * 3;
+    /* project (x, y, z) -> WebXR local floor (x, z, -y) */
+    trianglesXr[o] = nets.triangles[o]; trianglesXr[o + 1] = nets.triangles[o + 2]; trianglesXr[o + 2] = -nets.triangles[o + 1];
+  }
+  return { trianglesXr, triangleCount, sourcePointCount: count, acceptedPointCount: nets.occupiedCells };
 }

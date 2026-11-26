@@ -67,6 +67,22 @@ export function sanitizeLabEvent(raw, runId) {
  * runDir: per-run log directory. storeDir: persistent fake "device storage" (saved scans survive a server restart).
  * loadModule(path): loads a project TS module through Vite (fixtures, scan identity).
  */
+/**
+ * A new phone-lab run starts with an EMPTY fake device, like a freshly flashed board: the saved scans of the previous run used to stay in the store and the
+ * app restored the last scan on the very first page of the next test (phone run 2026-11-26 22:37). Only the artifact files this lab writes are removed.
+ * Set `keep` to carry the store over deliberately (PHONE_LAB_KEEP_STORE=1). Returns how many files were removed.
+ */
+export function resetDeviceStore(storeDir, keep = false) {
+  if (keep || !existsSync(storeDir)) return 0;
+  let removed = 0;
+  for (const name of readdirSync(storeDir)) {
+    if (!/^[A-Za-z0-9_-]+__[A-Za-z0-9_-]+__[a-z]+(__[A-Za-z0-9_-]+)?\.bin$/.test(name)) continue;
+    unlinkSync(join(storeDir, name));
+    removed += 1;
+  }
+  return removed;
+}
+
 export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () => new Date() }) {
   mkdirSync(runDir, { recursive: true });
   mkdirSync(storeDir, { recursive: true });

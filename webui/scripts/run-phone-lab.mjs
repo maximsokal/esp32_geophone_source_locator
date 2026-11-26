@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import { pickLanAddress } from './phone-lab/lan.mjs';
 import { ensureLeafCert, findOpenssl } from './phone-lab/cert.mjs';
-import { phoneLabPlugin } from './phone-lab/plugin.mjs';
+import { phoneLabPlugin, resetDeviceStore } from './phone-lab/plugin.mjs';
 import { renderQrLines } from './phone-lab/qr-terminal.mjs';
 
 const PORT = Number(process.env.PHONE_LAB_PORT ?? 5443);
@@ -46,6 +46,9 @@ try {
   say(`[phone-lab] ERROR certificate: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
+
+const removedFromStore = resetDeviceStore(join(labRoot, 'device-store'), process.env.PHONE_LAB_KEEP_STORE === '1');
+say(removedFromStore > 0 ? `[phone-lab] fresh device: ${removedFromStore} saved file(s) of the previous run removed (PHONE_LAB_KEEP_STORE=1 keeps them)` : '[phone-lab] device store: ' + (process.env.PHONE_LAB_KEEP_STORE === '1' ? 'kept from the previous run' : 'empty'));
 
 let lab = null;
 const vite = await createViteServer({

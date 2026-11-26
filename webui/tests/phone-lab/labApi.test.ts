@@ -1,9 +1,9 @@
-import { mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs dev scripts without type declarations
-import { createPhoneLab, peerGuard, sanitizeLabEvent } from '../../scripts/phone-lab/plugin.mjs';
+import { createPhoneLab, peerGuard, resetDeviceStore, sanitizeLabEvent } from '../../scripts/phone-lab/plugin.mjs';
 
 const webuiRoot = resolve(import.meta.dirname, '../..');
 const base = resolve(webuiRoot, '../.test-build/phone-lab-api-test');
@@ -133,6 +133,28 @@ describe('phone lab fake device API', () => {
     expect(await hasScan()).toBe(false);
     await call('/api/control?scan=save&object_id=OBJ_0002&session_id=staging', { method: 'POST', body: 'other-object' });
     expect(await hasScan(), 'a scan of another object is not the scan of this object').toBe(false);
+  });
+
+  it('starts a run with an empty fake device: the saved scans of the previous run are gone, so the first page is a fresh start (phone run 2026-11-26 22:37 opened the last scan)', async () => {
+    const first = await start();
+    await first.call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging', { method: 'POST', body: 'scan-bytes' });
+    await first.call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=scan-crc32:3cea7897', { method: 'POST', body: 'occ' });
+    writeFileSync(join(first.storeDir, 'notes.txt'), 'not an artifact');
+    expect(readdirSync(first.storeDir).filter((name) => name.endsWith('.bin'))).toHaveLength(2);
+    expect(resetDeviceStore(first.storeDir, true), 'keep carries the store over on purpose').toBe(0);
+    expect(readdirSync(first.storeDir).filter((name) => name.endsWith('.bin'))).toHaveLength(2);
+    expect(resetDeviceStore(first.storeDir)).toBe(2);
+    expect(readdirSync(first.storeDir)).toEqual(['notes.txt']);                                   /* only the artifacts the lab wrote */
+    expect(resetDeviceStore(join(first.storeDir, 'missing'))).toBe(0);
+    const status = await (await first.call('/api/status')).json();
+    expect(status.workflow.has_scan).toBe(false);
+  });
+
+  it('the lab launcher resets the device store before the server starts, and only PHONE_LAB_KEEP_STORE=1 keeps it', () => {
+    const launcher = readFileSync(join(webuiRoot, 'scripts/run-phone-lab.mjs'), 'utf8');
+    const reset = launcher.indexOf("resetDeviceStore(join(labRoot, 'device-store'), process.env.PHONE_LAB_KEEP_STORE === '1')");
+    expect(reset).toBeGreaterThan(0);
+    expect(reset).toBeLessThan(launcher.indexOf('createViteServer({'));
   });
 
   it('keeps bytes the phone captures (the real cloud of a rejected Continue) beside the run saves, under a safe name only', async () => {

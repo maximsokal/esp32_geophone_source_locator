@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { DepthPointCloudAccumulator } from '../../src/xr/depthPointCloudV2';
-import { buildLiveMesh, limitLiveMeshInput, LIVE_MESH_MAX_POINTS, LIVE_MESH_MAX_TRIANGLES, LIVE_MESH_PATCH_HALF_VOXELS } from '../../src/xr/liveMeshCore';
+import {
+  buildLiveMesh, limitLiveMeshInput, LIVE_MESH_CELL_VOXELS, LIVE_MESH_MAX_CELL_METERS, LIVE_MESH_MAX_POINTS, LIVE_MESH_MAX_TRIANGLES, LIVE_MESH_MIN_CELL_METERS,
+} from '../../src/xr/liveMeshCore';
 import {
   LiveMeshClient, LIVE_MESH_MAX_CONSECUTIVE_FAILURES, LIVE_MESH_MIN_INTERVAL_MS,
   type LiveMeshWorkerLike,
@@ -20,103 +22,105 @@ function plane(side: number, spacing: number, z = 0.8): LiveMeshInput {
 }
 
 describe('the live mesh core', () => {
-  it('turns every measured point of a plane into a patch lying on the plane, in the WebXR frame (x, z, -y)', () => {
-    const input = plane(24, 0.04, 0.8);
-    const result = buildLiveMesh(input);
-    expect(result.acceptedPointCount, 'nothing is dropped as an island').toBe(24 * 24);
-    expect(result.triangleCount).toBe(24 * 24 * 2);
+  const cellOf = (voxel: number): number => Math.min(LIVE_MESH_MAX_CELL_METERS, Math.max(LIVE_MESH_MIN_CELL_METERS, voxel * LIVE_MESH_CELL_VOXELS));
+
+  it('hands a measured plane over as one skin in the WebXR frame (x, z, -y), near the plane', () => {
+    const result = buildLiveMesh(plane(24, 0.04, 0.8));
+    const cell = cellOf(0.04);
+    expect(result.triangleCount).toBeGreaterThan(100);
     expect(result.trianglesXr.length).toBe(result.triangleCount * 9);
-    const half = 0.04 * LIVE_MESH_PATCH_HALF_VOXELS;
+    expect(result.acceptedPointCount, 'occupied lattice cells').toBeGreaterThan(50);
     for (let v = 0; v < result.triangleCount * 3; v += 1) {
-      expect(result.trianglesXr[v * 3 + 1]).toBeCloseTo(0.8, 5);                                  /* project Z (height) is WebXR Y */
-      expect(result.trianglesXr[v * 3 + 2]).toBeLessThanOrEqual(half + 1e-6);                     /* project Y in [0, 0.92] is WebXR -Z, a patch wide */
-      expect(result.trianglesXr[v * 3 + 2]).toBeGreaterThanOrEqual(-(0.92 + half) - 1e-6);
-      expect(result.trianglesXr[v * 3]).toBeGreaterThanOrEqual(-half - 1e-6);
-      expect(result.trianglesXr[v * 3]).toBeLessThanOrEqual(0.92 + half + 1e-6);
+      expect(Math.abs(result.trianglesXr[v * 3 + 1] - 0.8), 'project Z (height) is WebXR Y').toBeLessThanOrEqual(cell);
+      expect(result.trianglesXr[v * 3 + 2]).toBeLessThanOrEqual(cell + 1e-6);                     /* project Y in [0, 0.92] is WebXR -Z */
+      expect(result.trianglesXr[v * 3 + 2]).toBeGreaterThanOrEqual(-(0.92 + cell) - 1e-6);
+      expect(result.trianglesXr[v * 3]).toBeGreaterThanOrEqual(-cell - 1e-6);
+      expect(result.trianglesXr[v * 3]).toBeLessThanOrEqual(0.92 + cell + 1e-6);
     }
   });
 
-  it('orients each patch by the measured normal: a wall point gets a vertical patch of the right size, centred on the point', () => {
+  it('puts a wall where it is: a vertical surface stays vertical, at the right distance, after the frame change', () => {
     const points: number[] = []; const normals: number[] = [];
-    for (let i = 0; i < 20; i += 1) { points.push(1 + i * 0.04, 2, 0.5); normals.push(0, 1, 0); }                 /* a wall facing +Y (project) */
-    const result = buildLiveMesh({ positions: Float32Array.from(points), normals: Float32Array.from(normals), confidence: new Float32Array(20).fill(0.9), voxelSizeMeters: 0.04 });
-    const half = 0.04 * LIVE_MESH_PATCH_HALF_VOXELS;
-    for (let patch = 0; patch < 20; patch += 1) {
-      const xs: number[] = []; const ys: number[] = []; const zs: number[] = [];
-      for (let k = 0; k < 6; k += 1) { const o = patch * 18 + k * 3; xs.push(result.trianglesXr[o]); ys.push(result.trianglesXr[o + 1]); zs.push(result.trianglesXr[o + 2]); }
-      expect(Math.max(...zs) - Math.min(...zs), 'flat along the normal (WebXR -Z is project Y)').toBeLessThan(1e-6);
-      expect(zs[0]).toBeCloseTo(-2, 5);
-      expect((Math.max(...xs) + Math.min(...xs)) / 2).toBeCloseTo(1 + patch * 0.04, 5);
-      expect((Math.max(...ys) + Math.min(...ys)) / 2).toBeCloseTo(0.5, 5);
-      expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(2 * half, 5);
-      expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2 * half, 5);
+    for (let i = 0; i < 30; i += 1) for (let k = 0; k < 20; k += 1) { points.push(1 + i * 0.04, 2, 0.2 + k * 0.04); normals.push(0, 1, 0); }
+    const result = buildLiveMesh({ positions: Float32Array.from(points), normals: Float32Array.from(normals), confidence: new Float32Array(600).fill(0.9), voxelSizeMeters: 0.04 });
+    expect(result.triangleCount).toBeGreaterThan(50);
+    const cell = cellOf(0.04);
+    let lowY = Infinity; let highY = -Infinity;
+    for (let v = 0; v < result.triangleCount * 3; v += 1) {
+      expect(Math.abs(-result.trianglesXr[v * 3 + 2] - 2), 'WebXR -Z is project Y: the wall is at Y = 2').toBeLessThanOrEqual(cell);
+      lowY = Math.min(lowY, result.trianglesXr[v * 3 + 1]); highY = Math.max(highY, result.trianglesXr[v * 3 + 1]);
     }
+    expect(lowY).toBeLessThan(0.2 + cell); expect(highY).toBeGreaterThan(0.2 + 19 * 0.04 - cell);       /* spans the wall's height (WebXR Y) */
   });
 
-  it('draws a tilted patch in the plane of its normal, whatever the direction of the normal', () => {
-    const directions: Array<[number, number, number]> = [[1, 0, 0], [0, 0, 1], [1, 1, 1], [-0.3, 0.2, 0.9], [0, -1, 0], [0.7, -0.7, 0]];
-    for (const direction of directions) {
-      const length = Math.hypot(...direction);
-      const n = direction.map((v) => v / length) as [number, number, number];
-      const points: number[] = []; const normals: number[] = [];
-      for (let i = 0; i < 16; i += 1) { points.push(i, 0, 0); normals.push(...n); }
-      const result = buildLiveMesh({ positions: Float32Array.from(points), normals: Float32Array.from(normals), confidence: new Float32Array(16).fill(0.9), voxelSizeMeters: 0.04 });
-      for (let v = 0; v < 6; v += 1) {
-        const o = v * 3;
-        const project = [result.trianglesXr[o], -result.trianglesXr[o + 2], result.trianglesXr[o + 1]];             /* back to the project frame */
-        const offset = [project[0] - 0, project[1] - 0, project[2] - 0];
-        expect(offset[0] * n[0] + offset[1] * n[1] + offset[2] * n[2], `corner lies in the plane of the point for normal ${direction}`).toBeCloseTo(0, 5);
-      }
-    }
-  });
-
-  it('never exceeds the point and triangle budgets, however many points arrive', () => {
+  it('never exceeds the point and triangle budgets, however many points arrive: it coarsens the cells instead of cutting', () => {
     const big = plane(120, 0.03);                                                                /* 14,400 points */
     const limited = limitLiveMeshInput(big);
     expect(limited.positions.length / 3).toBe(LIVE_MESH_MAX_POINTS);
     expect(limited.normals.length / 3).toBe(LIVE_MESH_MAX_POINTS);
     expect(limited.confidence.length).toBe(LIVE_MESH_MAX_POINTS);
-    expect(buildLiveMesh(big).triangleCount).toBeLessThanOrEqual(LIVE_MESH_MAX_TRIANGLES);
-    const capped = buildLiveMesh(plane(24, 0.04), 100);                                          /* the triangle cap itself, with a small cap */
-    expect(capped.triangleCount).toBe(100);
-    expect(capped.trianglesXr.length).toBe(900);
+    const roomy = buildLiveMesh(big);
+    expect(roomy.triangleCount).toBeLessThanOrEqual(LIVE_MESH_MAX_TRIANGLES);
+    const tight = buildLiveMesh(big, 1500);
+    expect(tight.triangleCount).toBeLessThanOrEqual(1500);
+    expect(tight.triangleCount, 'a coarser skin over the whole plane, not the first 1500 triangles of a finer one').toBeGreaterThan(300);
+    const extent = (soup: Float32Array, axis: number): number => { let lo = Infinity; let hi = -Infinity; for (let i = axis; i < soup.length; i += 3) { lo = Math.min(lo, soup[i]); hi = Math.max(hi, soup[i]); } return hi - lo; };
+    expect(extent(tight.trianglesXr, 0)).toBeGreaterThan(0.8 * extent(roomy.trianglesXr, 0));
+    expect(extent(tight.trianglesXr, 2)).toBeGreaterThan(0.8 * extent(roomy.trianglesXr, 2));
+    const capped = buildLiveMesh(plane(24, 0.04), 100);                                          /* last resort when even the coarsest cell does not fit */
+    expect(capped.triangleCount).toBeLessThanOrEqual(100);
   });
 
-  it('gives nothing for too few points, and skips the points without a usable normal instead of drawing them wrongly', () => {
+  it('gives nothing for too few points or non-finite ones, and never a non-finite coordinate', () => {
     expect(buildLiveMesh(plane(2, 0.04)).triangleCount).toBe(0);
-    const flat = plane(20, 0.04);
-    flat.normals.fill(0);
-    expect(buildLiveMesh(flat).triangleCount).toBe(0);
-    const mixed = plane(20, 0.04);
-    for (let i = 0; i < 100; i += 1) mixed.normals.set([0, 0, 0], i * 3);
-    mixed.positions[5] = Number.NaN;                                                             /* a damaged point */
-    const result = buildLiveMesh(mixed);
-    expect(result.acceptedPointCount).toBe(400 - 100);
+    const damaged = plane(20, 0.04);
+    damaged.positions[5] = Number.NaN;
+    damaged.positions[30] = Infinity;
+    const result = buildLiveMesh(damaged);
+    expect(result.triangleCount).toBeGreaterThan(100);
     expect(Array.from(result.trianglesXr).every(Number.isFinite)).toBe(true);
   });
 });
 
 const SAVES = resolve(__dirname, '../../../logs/phone-lab/2026-11-22_163311/saves');
 describe.skipIf(!existsSync(SAVES))('the live mesh on the real scan of phone run 2026-11-22 16:33', () => {
-  it('builds a mesh from the real surface points, inside the scan bounds and fast enough for a worker every 2 seconds', () => {
+  it('is one connected skin over almost all measured points, built in milliseconds (the earlier versions: 31 to 56 islands, or a screen of squares)', () => {
     const scan = decodeScanArtifact(new Uint8Array(readFileSync(resolve(SAVES, readdirSync(SAVES).find((f) => f.includes('_scan_'))!))));
     const started = performance.now();
     const result = buildLiveMesh({ positions: scan.positions, normals: scan.normals, confidence: scan.confidence, voxelSizeMeters: scan.voxelSizeMeters });
     const elapsed = performance.now() - started;
-    expect(result.triangleCount, 'two triangles for each point that has a measured normal').toBe(result.acceptedPointCount * 2);
-    expect(result.acceptedPointCount, 'almost all of the 4,000 points the budget keeps').toBeGreaterThan(3500);
+    expect(result.triangleCount).toBeGreaterThan(3000);
     expect(result.triangleCount).toBeLessThanOrEqual(LIVE_MESH_MAX_TRIANGLES);
-    expect(elapsed, 'milliseconds, not the seconds a triangulation takes; a phone is several times slower').toBeLessThan(200);
-    /* every patch lies within a patch width of a measured point */
-    let lo = [Infinity, Infinity, Infinity]; let hi = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < scan.positions.length; i += 3) for (let k = 0; k < 3; k += 1) { lo[k] = Math.min(lo[k], scan.positions[i + k]); hi[k] = Math.max(hi[k], scan.positions[i + k]); }
-    const margin = 0.1;
-    for (let v = 0; v < result.triangleCount * 3; v += 1) {
-      const x = result.trianglesXr[v * 3]; const y = -result.trianglesXr[v * 3 + 2]; const z = result.trianglesXr[v * 3 + 1];            /* back to the project frame */
-      expect(x).toBeGreaterThanOrEqual(lo[0] - margin); expect(x).toBeLessThanOrEqual(hi[0] + margin);
-      expect(y).toBeGreaterThanOrEqual(lo[1] - margin); expect(y).toBeLessThanOrEqual(hi[1] + margin);
-      expect(z).toBeGreaterThanOrEqual(lo[2] - margin); expect(z).toBeLessThanOrEqual(hi[2] + margin);
+    expect(elapsed, 'a phone is several times slower; the interval is seconds').toBeLessThan(200);
+    /* back to the project frame for the geometry checks */
+    const project = new Float32Array(result.trianglesXr.length);
+    for (let v = 0; v < result.triangleCount * 3; v += 1) { project[v * 3] = result.trianglesXr[v * 3]; project[v * 3 + 1] = -result.trianglesXr[v * 3 + 2]; project[v * 3 + 2] = result.trianglesXr[v * 3 + 1]; }
+    const ids = new Map<string, number>(); const parent: number[] = [];
+    const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const id = (o: number): number => { const k = `${project[o].toFixed(4)},${project[o + 1].toFixed(4)},${project[o + 2].toFixed(4)}`; let v = ids.get(k); if (v === undefined) { v = ids.size; ids.set(k, v); parent.push(v); } return v; };
+    const first: number[] = [];
+    for (let t = 0; t < result.triangleCount; t += 1) { const a = id(t * 9); const b = id(t * 9 + 3); const c = id(t * 9 + 6); parent[find(a)] = find(b); parent[find(b)] = find(c); first.push(a); }
+    const sizes = new Map<number, number>();
+    for (const f of first) sizes.set(find(f), (sizes.get(find(f)) ?? 0) + 1);
+    const largest = Math.max(...sizes.values());
+    expect(largest / result.triangleCount, 'one main connected surface').toBeGreaterThan(0.85);
+    expect(sizes.size, 'not dozens of islands').toBeLessThan(25);
+    /* coverage: the share of the (thinned) measured points that have a mesh vertex within two cells */
+    const limited = limitLiveMeshInput({ positions: scan.positions, normals: scan.normals, confidence: scan.confidence, voxelSizeMeters: scan.voxelSizeMeters });
+    const cell = Math.min(LIVE_MESH_MAX_CELL_METERS, Math.max(LIVE_MESH_MIN_CELL_METERS, scan.voxelSizeMeters * LIVE_MESH_CELL_VOXELS));
+    const grid = new Map<string, number[]>();
+    for (let v = 0; v < result.triangleCount * 3; v += 1) { const k = `${Math.floor(project[v * 3] / cell)},${Math.floor(project[v * 3 + 1] / cell)},${Math.floor(project[v * 3 + 2] / cell)}`; const l = grid.get(k); if (l) l.push(v); else grid.set(k, [v]); }
+    let covered = 0; const n = limited.confidence.length;
+    for (let i = 0; i < n; i += 1) {
+      const x = limited.positions[i * 3]; const y = limited.positions[i * 3 + 1]; const z = limited.positions[i * 3 + 2];
+      let hit = false;
+      for (let dx = -2; dx <= 2 && !hit; dx += 1) for (let dy = -2; dy <= 2 && !hit; dy += 1) for (let dz = -2; dz <= 2 && !hit; dz += 1) {
+        const l = grid.get(`${Math.floor(x / cell) + dx},${Math.floor(y / cell) + dy},${Math.floor(z / cell) + dz}`); if (!l) continue;
+        for (const v of l) if (Math.hypot(project[v * 3] - x, project[v * 3 + 1] - y, project[v * 3 + 2] - z) <= 2 * cell) { hit = true; break; }
+      }
+      if (hit) covered += 1;
     }
+    expect(covered / n).toBeGreaterThan(0.9);
   });
 });
 

@@ -675,9 +675,9 @@ describe('the live mesh across every setting (mode x pressure x session state)',
       expect(builds).toBe(Math.floor((20_000-100)/interval)+1);
       expect(r.renderer.update).toHaveBeenCalled();
       const [triangles,count]=r.renderer.update.mock.calls.at(-1) as [Float32Array,number];
-      expect(count,'a real mesh of the 30 x 30 plane').toBeGreaterThan(300);
+      expect(count,'a real skin over the 30 x 30 plane').toBeGreaterThan(300);
       expect(triangles.length).toBeGreaterThanOrEqual(count*9);
-      for(let v=0;v<count*3;v+=1)expect(triangles[v*3+1],'WebXR Y is the plane height').toBeCloseTo(0.8,4);
+      for(let v=0;v<count*3;v+=1)expect(Math.abs(triangles[v*3+1]-0.8),'WebXR Y stays within a cell of the plane height').toBeLessThanOrEqual(0.1);
       expect(r.renderer.render).toHaveBeenCalled();
       expect(r.info.mock.calls.filter((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')).toHaveLength(1);
       expect(r.info.mock.calls.find((call)=>call[0]==='XR_LIVE_MESH_ACTIVE')![1]).toMatchObject({mode});
