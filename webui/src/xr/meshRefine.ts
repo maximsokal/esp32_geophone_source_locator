@@ -21,6 +21,8 @@ export interface MeshRefineOptions {
   maxSmoothingDisplacementMeters: number;
   /** Vertices closer than this are one vertex when the soup is welded. */
   weldMeters: number;
+  /** A triangle with an edge shorter than this has collapsed to a sliver and is dropped (4 mm: below the resolution of a depth camera). */
+  minEdgeMeters: number;
 }
 
 export interface MeshRefineResult {
@@ -47,6 +49,7 @@ export function defaultMeshRefineOptions(voxelSizeMeters: number): MeshRefineOpt
     smoothingStrength: 0.5,
     maxSmoothingDisplacementMeters: voxel * 0.25,
     weldMeters: Math.max(0.002, voxel * 0.10),
+    minEdgeMeters: 0.004,
   };
 }
 
@@ -207,15 +210,59 @@ export function refineScanMesh(soup: Float32Array, voxelSizeMeters: number, over
   if (mesh.triangles.length === 0) return unchanged();
   const holes = fillHoles(mesh, options);
   const smoothing = smooth(mesh, options);
-  const out = new Float32Array(mesh.triangles.length * 9);
-  mesh.triangles.forEach((t, index) => {
+  const kept = mesh.triangles.filter((t) => [0, 1, 2].every((corner) => len(sub(mesh.vertices[t[corner]], mesh.vertices[t[(corner + 1) % 3]])) >= Math.max(options.minEdgeMeters, options.weldMeters)));      /* never shorter than the weld: re-welding the output cannot collapse anything further */
+  const out = new Float32Array(kept.length * 9);
+  kept.forEach((t, index) => {
     for (let corner = 0; corner < 3; corner += 1) {
       const v = mesh.vertices[t[corner]];
       out[index * 9 + corner * 3] = v[0]; out[index * 9 + corner * 3 + 1] = v[1]; out[index * 9 + corner * 3 + 2] = v[2];
     }
   });
   return {
-    trianglePositions: out, triangleCount: mesh.triangles.length, holesFilled: holes.holes, holeTrianglesAdded: holes.added,
+    trianglePositions: out, triangleCount: kept.length, holesFilled: holes.holes, holeTrianglesAdded: holes.added,
     openLoopsLeft: holes.open, openReasons: holes.reasons, smoothedVertices: smoothing.moved, maxDisplacementMeters: smoothing.maxDisplacement,
+  };
+}
+
+export interface MeshTopologyStats {
+  triangles: number;
+  weldedVertices: number;
+  components: number;
+  /** The largest ten components, biggest first, in triangles. */
+  componentSizes: number[];
+  largestComponentRatio: number;
+  boundaryEdges: number;
+  boundaryEdgeLengthMeters: number;
+  nonManifoldEdges: number;
+  degenerateTriangles: number;
+}
+
+/** The topology of a finished soup, measured on the welded mesh; this is what the viewer shows, so it is what the diagnostics report. */
+export function analyzeMeshTopology(soup: Float32Array, weldMeters: number): MeshTopologyStats {
+  const triangleCount = Math.floor(soup.length / 9);
+  const mesh = weld(soup, weldMeters);
+  const degenerate = triangleCount - mesh.triangles.length;
+  const parent = mesh.vertices.map((_, index) => index);
+  const find = (a: number): number => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+  const edges = new Map<string, number>();
+  for (const t of mesh.triangles) {
+    parent[find(t[0])] = find(t[1]); parent[find(t[1])] = find(t[2]);
+    for (let e = 0; e < 3; e += 1) { const key = edgeKey(t[e], t[(e + 1) % 3]); edges.set(key, (edges.get(key) ?? 0) + 1); }
+  }
+  const sizes = new Map<number, number>();
+  for (const t of mesh.triangles) sizes.set(find(t[0]), (sizes.get(find(t[0])) ?? 0) + 1);
+  const ordered = [...sizes.values()].sort((a, b) => b - a);
+  let boundary = 0; let boundaryLength = 0; let nonManifold = 0;
+  for (const [key, uses] of edges) {
+    if (uses === 1) {
+      boundary += 1;
+      const [a, b] = key.split('_').map(Number);
+      boundaryLength += len(sub(mesh.vertices[a], mesh.vertices[b]));
+    } else if (uses > 2) nonManifold += 1;
+  }
+  return {
+    triangles: mesh.triangles.length, weldedVertices: mesh.vertices.length, components: ordered.length, componentSizes: ordered.slice(0, 10),
+    largestComponentRatio: mesh.triangles.length === 0 ? 0 : ordered[0] / mesh.triangles.length, boundaryEdges: boundary,
+    boundaryEdgeLengthMeters: boundaryLength, nonManifoldEdges: nonManifold, degenerateTriangles: degenerate,
   };
 }

@@ -14,6 +14,8 @@ export interface SparseTsdfInput {
   maxInputPoints?: number;
   maxNodes?: number;
   maxTriangles?: number;
+  /** Internal: how many times the field is coarser than the requested voxel because the triangle budget would otherwise cut the surface. */
+  coarseningScale?: number;
 }
 
 export interface SparseTsdfMesh {
@@ -268,7 +270,7 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     const built = buildSparseTsdfMeshOnce(current);
     if (!built.budgetReached || attempt >= SPARSE_TSDF_MAX_COARSENINGS) return { ...built.mesh, coarsenings: attempt };
     attempt += 1;
-    current = { ...current, voxelSizeMeters: current.voxelSizeMeters * SPARSE_TSDF_COARSEN_FACTOR };
+    current = { ...current, coarseningScale: (current.coarseningScale ?? 1) * SPARSE_TSDF_COARSEN_FACTOR };
   }
 }
 
@@ -286,11 +288,12 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     voxelSizeMeters: input.voxelSizeMeters,
     minimumConfidence: MIN_SURFACE_CONFIDENCE,
   });
+  /* The scale is applied AFTER the clamp: the clamp's upper bound used to swallow every retry once the voxel reached it (0.075 m). */
   const voxelSizeMeters = clamp(
     Number.isFinite(input.voxelSizeMeters) ? input.voxelSizeMeters * 1.15 : 0.046,
     0.035,
     0.075,
-  );
+  ) * (Number.isFinite(input.coarseningScale) && (input.coarseningScale ?? 1) >= 1 ? input.coarseningScale! : 1);
   const truncationMeters = voxelSizeMeters * 2.75;
   const tangentRadiusMeters = voxelSizeMeters * 2.25;
   const tangentSigmaMeters = voxelSizeMeters * 1.15;

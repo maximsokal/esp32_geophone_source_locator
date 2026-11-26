@@ -2,7 +2,7 @@
 
 import {
   finalizeDirectionalTsdfPlan,
-  prepareDirectionalTsdfPlan,
+  prepareHybridTsdfPlan,
   type DirectionalTsdfPlanSummary,
 } from './directionalTsdf';
 import { buildSparseTsdfMesh, type SparseTsdfInput } from './sparseTsdf';
@@ -27,7 +27,7 @@ self.addEventListener('message', (event: MessageEvent<PlanMessage>) => {
   const message = event.data;
   if (message?.type !== 'plan') return;
 
-  const plan = prepareDirectionalTsdfPlan(message.input, true);
+  const plan = prepareHybridTsdfPlan(message.input, true);
   const { channelInputs, ...summary } = plan;
 
   // Flat/single-family scans are common. Finish them in the planner Worker so

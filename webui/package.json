@@ -29,6 +29,7 @@
     "phone-lab": "node scripts/run-phone-lab.mjs",
     "test:phone-lab": "node ./node_modules/vitest/vitest.mjs run tests/phone-lab --exclude **/*.spec.ts",
     "test:phone-lab:e2e": "node ./node_modules/@playwright/test/cli.js test --config playwright.phone-lab.config.ts",
+    "test:real-scan": "node ./node_modules/vitest/vitest.mjs run --config vitest.realscan.config.ts",
     "test:xr": "node ./node_modules/vitest/vitest.mjs run tests/xr",
     "build:wasm": "python ../tools/build_localization_wasm.py --embed src/wasm/localizationKernelBinary.generated.ts",
     "test:wasm": "node ./node_modules/vitest/vitest.mjs run tests/wasm",

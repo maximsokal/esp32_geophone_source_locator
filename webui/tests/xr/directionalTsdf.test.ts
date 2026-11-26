@@ -4,6 +4,7 @@ import {
   buildDirectionalTsdfMesh,
   finalizeDirectionalTsdfPlan,
   prepareDirectionalTsdfPlan,
+  prepareHybridTsdfPlan,
 } from '../../src/xr/directionalTsdf';
 import { buildSparseTsdfMesh } from '../../src/xr/sparseTsdf';
 
@@ -35,13 +36,16 @@ function appendTinyPatch(
   }
 }
 
+/* The tests of this describe are about the six-channel directional pass itself: they call it directly. The hybrid pipeline has its own describe below. */
+const directionalOnly = (input: Parameters<typeof buildDirectionalTsdfMesh>[0]) => buildDirectionalTsdfMesh(input, { hybrid: false });
+
 describe('directional TSDF', () => {
   it('keeps orthogonal box faces in separate directional channels and sanitizes the merged mesh', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendPlane(positions, normals, confidence, 0, 0, [1, 0, 0]);
     appendPlane(positions, normals, confidence, 1, 0, [0, 1, 0]);
     appendPlane(positions, normals, confidence, 2, 0, [0, 0, 1]);
-    const mesh = buildDirectionalTsdfMesh({
+    const mesh = directionalOnly({
       positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence),
       voxelSizeMeters: 0.04, maxTriangles: 12000,
     });
@@ -61,7 +65,7 @@ describe('directional TSDF', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendPlane(positions, normals, confidence, 0, -0.035, [-1, 0, 0]);
     appendPlane(positions, normals, confidence, 0, 0.035, [1, 0, 0]);
-    const mesh = buildDirectionalTsdfMesh({
+    const mesh = directionalOnly({
       positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence),
       voxelSizeMeters: 0.035, maxTriangles: 10000,
     });
@@ -75,7 +79,7 @@ describe('directional TSDF', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendPlane(positions, normals, confidence, 0, 0, [1, 0, 0]);
     appendPlane(positions, normals, confidence, 1, 0, [0, 1, 0]);
-    const mesh = buildDirectionalTsdfMesh({
+    const mesh = directionalOnly({
       positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence),
       voxelSizeMeters: 0.04, maxTriangles: 600,
     });
@@ -95,7 +99,7 @@ describe('directional TSDF', () => {
       voxelSizeMeters: 0.04,
       maxTriangles: 12000,
     };
-    const sequential = buildDirectionalTsdfMesh({
+    const sequential = directionalOnly({
       ...input,
       positions: input.positions.slice(),
       normals: input.normals.slice(),
@@ -153,7 +157,7 @@ describe('directional TSDF', () => {
   it('does not build a directional mesh from many points on a physically tiny patch', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendTinyPatch(positions, normals, confidence);
-    const mesh = buildDirectionalTsdfMesh({
+    const mesh = directionalOnly({
       positions: Float32Array.from(positions),
       normals: Float32Array.from(normals),
       confidence: Float32Array.from(confidence),
@@ -175,7 +179,7 @@ describe('directional TSDF', () => {
       normals.push(1, 0, 0);
       confidence.push(0.92);
     }
-    const mesh = buildDirectionalTsdfMesh({
+    const mesh = directionalOnly({
       positions: Float32Array.from(positions),
       normals: Float32Array.from(normals),
       confidence: Float32Array.from(confidence),
@@ -188,5 +192,55 @@ describe('directional TSDF', () => {
     expect(mesh.rejectedComponentPoints).toBeGreaterThanOrEqual(20);
     expect(mesh.rawTriangleCount).toBeGreaterThanOrEqual(mesh.triangleCount);
     expect(mesh.triangleCount).toBeGreaterThan(0);
+  });
+});
+
+describe('hybrid reconstruction: scalar surface first, directional pass only for what it left uncovered', () => {
+  const planes = (spec: Array<[0 | 1 | 2, number, readonly [number, number, number]]>) => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    for (const [axis, value, normal] of spec) appendPlane(positions, normals, confidence, axis, value, normal);
+    return { positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence), voxelSizeMeters: 0.04, maxTriangles: 12000 };
+  };
+
+  it('is the default of buildDirectionalTsdfMesh, and an explicit plan -> channels -> finalize gives the very same mesh as the wrapper', () => {
+    const input = planes([[0, 0, [1, 0, 0]], [1, 0, [0, 1, 0]], [2, 0, [0, 0, 1]]]);
+    const wrapped = buildDirectionalTsdfMesh({ ...input, positions: input.positions.slice(), normals: input.normals.slice(), confidence: input.confidence.slice() });
+    const plan = prepareHybridTsdfPlan(input, true);
+    const { channelInputs, ...summary } = plan;
+    const planned = finalizeDirectionalTsdfPlan(summary, channelInputs.map((channelInput) => buildSparseTsdfMesh(channelInput)));
+    expect(planned.triangleCount).toBe(wrapped.triangleCount);
+    expect(Array.from(planned.trianglePositions)).toEqual(Array.from(wrapped.trianglePositions));
+    expect(planned.directionalFallbackPoints).toBe(wrapped.directionalFallbackPoints);
+    expect(plan.baseMesh).toBeDefined();
+  });
+
+  it('a surface the scalar field covers is not handed to the directional pass at all', () => {
+    const input = planes([[0, 0, [1, 0, 0]], [1, 0, [0, 1, 0]], [2, 0, [0, 0, 1]]]);
+    const plan = prepareHybridTsdfPlan(input, false);
+    expect(plan.mode).toBe('base-only');
+    expect(plan.channelInputs).toHaveLength(0);
+    expect(plan.baseMesh!.triangleCount).toBeGreaterThan(300);
+    expect(plan.directionalFallbackPoints ?? 0).toBeLessThan(60);
+  });
+
+  it('a thin board measured from both sides (opposite normals cancel in a scalar field) is rescued by the directional pass and keeps both layers', () => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    for (const [z, n] of [[0.01, 1], [-0.01, -1]] as const) for (let a = 0; a <= 32; a += 1) for (let b = 0; b <= 32; b += 1) { positions.push(a * 0.05, b * 0.05, z); normals.push(0, 0, n); confidence.push(0.92); }
+    const input = { positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence), voxelSizeMeters: 0.048, maxTriangles: 40000 };
+    expect(buildSparseTsdfMesh(input).triangleCount, 'the scalar field alone loses the board').toBe(0);
+    const mesh = buildDirectionalTsdfMesh(input);
+    expect(mesh.triangleCount).toBeGreaterThan(1000);
+    expect(mesh.directionalFallbackPoints).toBeGreaterThanOrEqual(60);
+    const heights = new Set<number>();
+    for (let i = 2; i < mesh.trianglePositions.length; i += 3) heights.add(Math.sign(mesh.trianglePositions[i]));
+    expect(heights.has(1) && heights.has(-1), 'a layer on each side of the board').toBe(true);
+  });
+
+  it('describes the mesh as DISPLAYED: the reported components are those after the last geometry change', () => {
+    const mesh = buildDirectionalTsdfMesh(planes([[0, 0, [1, 0, 0]], [1, 0, [0, 1, 0]]]));
+    expect(mesh.finalTopology).toBeDefined();
+    expect(mesh.meshTopologyComponentCount).toBe(mesh.finalTopology!.components);
+    expect(mesh.finalTopology!.triangles).toBe(mesh.triangleCount);
+    expect(mesh.finalTopology!.degenerateTriangles).toBe(0);
   });
 });

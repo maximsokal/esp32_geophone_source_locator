@@ -1,5 +1,5 @@
 import { sanitizeMeshTopology } from './meshTopologySanity';
-import { refineScanMesh } from './meshRefine';
+import { analyzeMeshTopology, defaultMeshRefineOptions, refineScanMesh, type MeshTopologyStats } from './meshRefine';
 import {
   buildSparseTsdfMesh,
   type Point3,
@@ -10,13 +10,17 @@ import {
 export interface MeshRefineSummary { holesFilled: number; holeTrianglesAdded: number; openLoopsLeft: number; smoothedVertices: number; maxDisplacementMm: number }
 
 export interface DirectionalTsdfMesh extends SparseTsdfMesh {
+  /** The topology of the mesh as the viewer shows it, measured after the last operation that changes geometry. */
+  finalTopology?: MeshTopologyStats;
+  /** Points the scalar pass left without surface, handed to the directional pass (hybrid reconstruction); 0 when the scalar surface covered everything. */
+  directionalFallbackPoints?: number;
   /** What the final cosmetic pass did (small holes closed, a little smoothing); absent when it was not run. */
   meshRefine?: MeshRefineSummary;
   directionalChannelCount: number;
   channelTriangleCounts: readonly number[];
 }
 
-export type DirectionalTsdfPlanMode = 'scalar' | 'single' | 'multi';
+export type DirectionalTsdfPlanMode = 'scalar' | 'single' | 'multi' | 'base-only';
 
 export interface DirectionalTsdfPlanSummary {
   mode: DirectionalTsdfPlanMode;
@@ -26,6 +30,9 @@ export interface DirectionalTsdfPlanSummary {
   totalTriangleBudget: number;
   inputVoxelSizeMeters: number;
   directionalChannelCount: number;
+  /** Hybrid reconstruction: the scalar surface already built from all the points; the channels only add what it did not cover. */
+  baseMesh?: SparseTsdfMesh;
+  directionalFallbackPoints?: number;
 }
 
 export interface DirectionalTsdfPlan extends DirectionalTsdfPlanSummary {
@@ -153,6 +160,75 @@ function maximumMeshReadiness(meshes: readonly SparseTsdfMesh[]): number {
   return maximum;
 }
 
+/** A point the scalar surface leaves without mesh within this many voxels is handed to the directional pass. */
+const HYBRID_COVERAGE_VOXELS = 1.25;
+export const HYBRID_MIN_UNCOVERED_POINTS = 60;
+export const HYBRID_MIN_EXTRA_TRIANGLES = 200;
+
+/** Indices of the points that have no mesh sample within `radius`. */
+function uncoveredPointIndices(input: SparseTsdfInput, soup: Float32Array, radius: number): number[] {
+  const count = Math.min(Math.floor(input.positions.length / 3), Math.floor(input.normals.length / 3), input.confidence.length);
+  const grid = new Map<string, number[]>();
+  const add = (x: number, y: number, z: number): void => {
+    const k = `${Math.floor(x / radius)},${Math.floor(y / radius)},${Math.floor(z / radius)}`;
+    const list = grid.get(k);
+    if (list) list.push(x, y, z); else grid.set(k, [x, y, z]);
+  };
+  for (let t = 0; t + 8 < soup.length; t += 9) {
+    for (const [a, b, c] of MESH_SAMPLE_WEIGHTS) {
+      add(a * soup[t] + b * soup[t + 3] + c * soup[t + 6], a * soup[t + 1] + b * soup[t + 4] + c * soup[t + 7], a * soup[t + 2] + b * soup[t + 5] + c * soup[t + 8]);
+    }
+  }
+  const uncovered: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const x = input.positions[i * 3]; const y = input.positions[i * 3 + 1]; const z = input.positions[i * 3 + 2];
+    if (![x, y, z].every(Number.isFinite)) continue;
+    const gx = Math.floor(x / radius); const gy = Math.floor(y / radius); const gz = Math.floor(z / radius);
+    let near = false;
+    for (let dx = -1; dx <= 1 && !near; dx += 1) for (let dy = -1; dy <= 1 && !near; dy += 1) for (let dz = -1; dz <= 1 && !near; dz += 1) {
+      const list = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+      if (list === undefined) continue;
+      for (let k = 0; k < list.length; k += 3) if (Math.hypot(list[k] - x, list[k + 1] - y, list[k + 2] - z) <= radius) { near = true; break; }
+    }
+    if (!near) uncovered.push(i);
+  }
+  return uncovered;
+}
+const MESH_SAMPLE_WEIGHTS: ReadonlyArray<readonly [number, number, number]> = [[1 / 3, 1 / 3, 1 / 3], [1, 0, 0], [0, 1, 0], [0, 0, 1], [.5, .5, 0], [0, .5, .5], [.5, 0, .5]];
+
+/**
+ * Hybrid reconstruction (measured on public scenes and on the real scan of 2026-11-26): ONE scalar TSDF over all the points builds the surface; the
+ * six-channel directional pass then runs ONLY on the points that surface left uncovered. The scalar field is robust on curved and noisy geometry,
+ * where the channel-by-channel mesh collapsed to zero triangles (a sphere, two objects, a noisy corner) and produced hundreds of self-intersections;
+ * the directional pass is what keeps a thin board measured from both sides (opposite normals cancel in a scalar field). Each is used where it is right.
+ */
+export function prepareHybridTsdfPlan(input: SparseTsdfInput, transferSafeChannels = false): DirectionalTsdfPlan {
+  const count = Math.min(Math.floor(input.positions.length / 3), Math.floor(input.normals.length / 3), input.confidence.length);
+  const totalTriangleBudget = Math.max(1, Math.floor(input.maxTriangles ?? 50000));
+  const base = buildSparseTsdfMesh({ ...input, maxTriangles: totalTriangleBudget });
+  const radius = Math.max(0.05, Math.abs(input.voxelSizeMeters) * HYBRID_COVERAGE_VOXELS);
+  const uncovered = uncoveredPointIndices(input, base.trianglePositions, radius);
+  /* The budget is one budget: what the scalar surface left, the directional pass may only add within what is left of it. */
+  const remainingBudget = totalTriangleBudget - base.triangleCount;
+  if (uncovered.length < HYBRID_MIN_UNCOVERED_POINTS || remainingBudget < HYBRID_MIN_EXTRA_TRIANGLES) {
+    return {
+      mode: 'base-only', sourcePointCount: count, skippedLowConfidence: base.skippedLowConfidence, rejectedUndersizedChannelPoints: 0, totalTriangleBudget,
+      inputVoxelSizeMeters: input.voxelSizeMeters, directionalChannelCount: 0, baseMesh: base, directionalFallbackPoints: uncovered.length, channelInputs: [],
+    };
+  }
+  const positions = new Float32Array(uncovered.length * 3); const normals = new Float32Array(uncovered.length * 3); const confidence = new Float32Array(uncovered.length);
+  uncovered.forEach((source, target) => {
+    positions.set(input.positions.subarray(source * 3, source * 3 + 3), target * 3);
+    normals.set(input.normals.subarray(source * 3, source * 3 + 3), target * 3);
+    confidence[target] = input.confidence[source];
+  });
+  const plan = prepareDirectionalTsdfPlan({
+    ...input, positions, normals, confidence, maxInputPoints: Math.min(uncovered.length, input.maxInputPoints ?? uncovered.length),
+    maxTriangles: remainingBudget,
+  }, transferSafeChannels);
+  return { ...plan, sourcePointCount: count, baseMesh: base, directionalFallbackPoints: uncovered.length };
+}
+
 /**
  * Partition one post-scan physical surfel cloud into signed dominant-normal
  * families. The work here is deterministic and intentionally independent of
@@ -258,13 +334,12 @@ function summaryOf(refined: ReturnType<typeof refineScanMesh>): MeshRefineSummar
   };
 }
 
-/** The cosmetic pass for the scalar and single-channel results, which skip the cross-channel merge. */
-function refinedSparse(mesh: SparseTsdfMesh): DirectionalTsdfMesh {
-  const refined = refineScanMesh(mesh.trianglePositions, mesh.voxelSizeMeters);
-  return { ...mesh, trianglePositions: refined.trianglePositions, triangleCount: refined.triangleCount, meshRefine: summaryOf(refined), directionalChannelCount: 0, channelTriangleCounts: [refined.triangleCount] };
+/** A scalar or single-channel result as a directional mesh, before the final refinement. */
+function asDirectional(mesh: SparseTsdfMesh): DirectionalTsdfMesh {
+  return { ...mesh, directionalChannelCount: 0, channelTriangleCounts: [mesh.triangleCount] };
 }
 
-export function finalizeDirectionalTsdfPlan(
+function finalizeChannels(
   plan: DirectionalTsdfPlanSummary,
   meshes: readonly SparseTsdfMesh[],
   totalComputeMs?: number,
@@ -272,12 +347,12 @@ export function finalizeDirectionalTsdfPlan(
   if (meshes.length === 0) throw new Error('Directional TSDF finalization requires at least one channel mesh.');
 
   if (plan.mode === 'scalar') {
-    const scalar = refinedSparse(meshes[0]);
+    const scalar = asDirectional(meshes[0]);
     return { ...scalar, directionalChannelCount: 0, channelTriangleCounts: [scalar.triangleCount] };
   }
 
   if (plan.mode === 'single') {
-    const scalar = refinedSparse(meshes[0]);
+    const scalar = asDirectional(meshes[0]);
     return {
       ...scalar,
       sourcePointCount: plan.sourcePointCount,
@@ -309,11 +384,9 @@ export function finalizeDirectionalTsdfPlan(
   const finalTopology = sanitizeMeshTopology(Float32Array.from(combined), voxelSizeMeters);
   const channelHotspotCount = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotCount, 0);
   const channelHotspotTriangles = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotTriangleCount, 0);
-  const refined = refineScanMesh(finalTopology.trianglePositions, voxelSizeMeters);
   return {
-    meshRefine: summaryOf(refined),
-    trianglePositions: refined.trianglePositions,
-    triangleCount: refined.triangleCount,
+    trianglePositions: finalTopology.trianglePositions,
+    triangleCount: finalTopology.triangleCount,
     rawTriangleCount: finalTopology.sourceTriangleCount,
     quarantinedTriangleCount:
       finalTopology.quarantinedTriangleCount +
@@ -360,6 +433,60 @@ export function finalizeDirectionalTsdfPlan(
   };
 }
 
+/** The base surface and the directional additions as one soup (they cover different points, so nothing is deduplicated), counts added. */
+function combineBaseAndChannels(base: SparseTsdfMesh, extra: DirectionalTsdfMesh | null, plan: DirectionalTsdfPlanSummary): DirectionalTsdfMesh {
+  if (extra === null) return { ...asDirectional(base), sourcePointCount: plan.sourcePointCount, directionalFallbackPoints: plan.directionalFallbackPoints ?? 0 };
+  const soup = new Float32Array(base.trianglePositions.length + extra.trianglePositions.length);
+  soup.set(base.trianglePositions, 0); soup.set(extra.trianglePositions, base.trianglePositions.length);
+  return {
+    ...extra,
+    trianglePositions: soup, triangleCount: base.triangleCount + extra.triangleCount, rawTriangleCount: base.rawTriangleCount + extra.rawTriangleCount,
+    quarantinedTriangleCount: base.quarantinedTriangleCount + extra.quarantinedTriangleCount,
+    topologyDiscardedTriangleCount: base.topologyDiscardedTriangleCount + extra.topologyDiscardedTriangleCount,
+    nonManifoldEdgeCount: base.nonManifoldEdgeCount + extra.nonManifoldEdgeCount,
+    nonManifoldRepairTriangleCount: base.nonManifoldRepairTriangleCount + extra.nonManifoldRepairTriangleCount,
+    orientationRepairCount: base.orientationRepairCount + extra.orientationRepairCount,
+    orientationConflictCount: base.orientationConflictCount + extra.orientationConflictCount,
+    meshTopologyComponentCount: base.meshTopologyComponentCount + extra.meshTopologyComponentCount,
+    selfIntersectionPairCount: base.selfIntersectionPairCount + extra.selfIntersectionPairCount,
+    selfIntersectionAffectedTriangleCount: base.selfIntersectionAffectedTriangleCount + extra.selfIntersectionAffectedTriangleCount,
+    localNoiseHotspotCount: base.localNoiseHotspotCount + extra.localNoiseHotspotCount,
+    localNoiseHotspotTriangleCount: base.localNoiseHotspotTriangleCount + extra.localNoiseHotspotTriangleCount,
+    meshNoiseScore: Math.max(base.meshNoiseScore, extra.meshNoiseScore),
+    sourcePointCount: plan.sourcePointCount,
+    integratedPointCount: base.integratedPointCount + extra.integratedPointCount,
+    componentCount: base.componentCount + extra.componentCount,
+    eligibleComponentCount: base.eligibleComponentCount + extra.eligibleComponentCount,
+    nodeCount: base.nodeCount + extra.nodeCount,
+    computeMs: base.computeMs + extra.computeMs,
+    coarsenings: Math.max(base.coarsenings ?? 0, extra.coarsenings ?? 0),
+    directionalFallbackPoints: plan.directionalFallbackPoints ?? 0,
+  };
+}
+
+/** The last operation that changes geometry, then the measurement of what is left: the diagnostics describe the displayed mesh. */
+function refineAndMeasure(mesh: DirectionalTsdfMesh): DirectionalTsdfMesh {
+  const refined = refineScanMesh(mesh.trianglePositions, mesh.voxelSizeMeters);
+  const weld = defaultMeshRefineOptions(mesh.voxelSizeMeters).weldMeters;
+  const topology = analyzeMeshTopology(refined.trianglePositions, weld);
+  return {
+    ...mesh,
+    trianglePositions: refined.trianglePositions, triangleCount: refined.triangleCount, meshRefine: summaryOf(refined), finalTopology: topology,
+    meshTopologyComponentCount: topology.components,
+  };
+}
+
+export function finalizeDirectionalTsdfPlan(
+  plan: DirectionalTsdfPlanSummary,
+  meshes: readonly SparseTsdfMesh[],
+  totalComputeMs?: number,
+): DirectionalTsdfMesh {
+  const base = plan.baseMesh;
+  if (base === undefined) return refineAndMeasure(finalizeChannels(plan, meshes, totalComputeMs));
+  const extra = meshes.length === 0 ? null : finalizeChannels(plan, meshes, totalComputeMs);
+  return refineAndMeasure(combineBaseAndChannels(base, extra, plan));
+}
+
 /**
  * Directional TSDF wrapper: locally opposite/orthogonal surfaces never share a
  * scalar field. Each signed dominant-normal family is fused independently and
@@ -374,9 +501,9 @@ export function finalizeDirectionalTsdfPlan(
  * channel merge we sanitize once again: valid faces from two channels can still
  * overlap or create a non-manifold edge at a directional boundary.
  */
-export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
+export function buildDirectionalTsdfMesh(input: SparseTsdfInput, options: { hybrid?: boolean } = {}): DirectionalTsdfMesh {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const plan = prepareDirectionalTsdfPlan(input, false);
+  const plan = options.hybrid === false ? prepareDirectionalTsdfPlan(input, false) : prepareHybridTsdfPlan(input, false);
   const meshes = plan.channelInputs.map((channelInput) => buildSparseTsdfMesh(channelInput));
   const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
   return finalizeDirectionalTsdfPlan(plan, meshes, plan.mode === 'multi' ? elapsed : undefined);

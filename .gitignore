@@ -80,3 +80,6 @@ kicad/esp32_geophone_source_locator/.history/
 
 # Host tests max132_e2e_localization / max132_d3_dimensionality_persistence use a stub storage root "s/g" relative to the working directory
 /s/
+
+# Private real-scan replay manifest (SHA-256 of the originals under logs/): local only, never committed
+webui/tests/realscan/manifest.local.json
