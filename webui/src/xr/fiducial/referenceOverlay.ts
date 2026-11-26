@@ -21,8 +21,8 @@ export const REFERENCE_OVERLAY_MAX_POINTS = 6000;
 /** Confidence given to every overlay point (the existing point shader colours by it). */
 export const REFERENCE_OVERLAY_CONFIDENCE = 0.5;
 
-/** Triangles the reference mesh draws at most. */
-export const REFERENCE_MESH_MAX_TRIANGLES = 12000;
+/** Triangles the reference mesh draws at most. Thinning triangles evenly leaves a pinwheel of holes (phone run 2026-11-26 had 23k and the old cap of 12k halved it), so the cap sits above any mesh the scan produces (40k is the ceiling of the post-scan reconstruction). */
+export const REFERENCE_MESH_MAX_TRIANGLES = 40000;
 
 export interface ReferenceMeshOverlay {
   /** WebXR local-floor triangle soup of the current session, 9 floats per triangle. */

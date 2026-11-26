@@ -41,6 +41,11 @@ describe('the saved scan A MESH drawn over the live camera of B', () => {
     expect(Array.from(identity.trianglesXr.slice(0, 3))).toEqual([1, 0.5, -2]);
   });
 
+  it('draws every triangle of a mesh the scan can produce: no thinning below the cap (23,169 triangles in the 2026-11-26 run)', () => {
+    const overlay = buildReferenceMeshOverlay(soup(23_169), { yaw: 0, tx: 0, ty: 0, tz: 0 })!;
+    expect(overlay.triangleCount).toBe(23_169);
+  });
+
   it('thins an oversized mesh evenly to the cap, keeping whole triangles', () => {
     const overlay = buildReferenceMeshOverlay(soup(REFERENCE_MESH_MAX_TRIANGLES * 3 + 7), { yaw: 0, tx: 0, ty: 0, tz: 0 })!;
     expect(overlay.triangleCount).toBeLessThanOrEqual(REFERENCE_MESH_MAX_TRIANGLES);

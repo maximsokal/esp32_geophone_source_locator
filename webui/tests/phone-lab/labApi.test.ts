@@ -121,6 +121,20 @@ describe('phone lab fake device API', () => {
     expect((await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=occupancy&scan_id=..%2F..%2Fx', { method: 'POST', body: 'x' })).status).toBe(400);
   });
 
+  it('reports has_scan like the firmware: false with nothing saved, true once a scan is saved for the active object, false again after it is deleted (the Back button depends on it)', async () => {
+    const { call } = await start();
+    const hasScan = async () => (await (await call('/api/status')).json()).workflow.has_scan;
+    expect(await hasScan()).toBe(false);
+    await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging', { method: 'POST', body: 'scan-bytes' });
+    expect(await hasScan()).toBe(true);
+    await call('/api/control?scan=save&object_id=OBJ_0001&session_id=staging&kind=preview', { method: 'POST', body: 'preview-bytes' });
+    expect(await hasScan(), 'a derivative alone is not a scan').toBe(true);
+    await call('/api/control?scan=delete&object_id=OBJ_0001&session_id=staging', { method: 'POST' });
+    expect(await hasScan()).toBe(false);
+    await call('/api/control?scan=save&object_id=OBJ_0002&session_id=staging', { method: 'POST', body: 'other-object' });
+    expect(await hasScan(), 'a scan of another object is not the scan of this object').toBe(false);
+  });
+
   it('keeps bytes the phone captures (the real cloud of a rejected Continue) beside the run saves, under a safe name only', async () => {
     const { call, runDir } = await start();
     const bytes = new Uint8Array([1, 2, 3, 4, 5]);

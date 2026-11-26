@@ -153,6 +153,9 @@ export function createPhoneLab({ runDir, runId, storeDir, loadModule, now = () =
       res.writeHead(204); return res.end();
     }
     const state = await ensureStatus();
+    /* Like the firmware, the workflow reports whether a scan is saved for the active object (staged or in a session): the phone's Back and Continue
+       decisions depend on it (phone runs of 2026-11-22 and 2026-11-26: the lab always said false, so Back sent the operator to "start a 3D scan?"). */
+    state.workflow.has_scan = readdirSync(storeDir).some((name) => name.startsWith(`${state.workflow.object_id}__`) && name.endsWith('__scan.bin'));
     if (method === 'GET' && path === '/api/status') return send(200, state);
     if (method === 'GET' && path === '/api/localization/runs') {
       if (url.searchParams.get('job') === 'settings') return send(200, { ok: true, settings: null, presets: [], standard_processing: {} });
