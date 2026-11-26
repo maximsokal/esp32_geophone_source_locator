@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:ui:live-mesh": "node ./node_modules/@playwright/test/cli.js test --config playwright.livemesh.config.ts",
     "test:ui:graphics": "node ./node_modules/@playwright/test/cli.js test --config playwright.graphics.config.ts",
     "test:ui:graphics:contracts": "node ./node_modules/vitest/vitest.mjs run tests/xr/webxrRuntimeLifecycle.test.ts tests/xr/scanDecodeClient.test.ts tests/xr/scanEncodeClient.test.ts tests/xr/sparseTsdfClientLifecycle.test.ts tests/xr/postScanAdmission.test.ts tests/xr/liveCoverageRenderer.test.ts tests/xr/webGlStateGuard.test.ts tests/xr/webGlPixelReadback.test.ts tests/xr/meshReconstructionPreflight.test.ts",
     "test:ui:firmware-pages": "node ./node_modules/@playwright/test/cli.js test --config playwright.firmware-pages.config.ts",

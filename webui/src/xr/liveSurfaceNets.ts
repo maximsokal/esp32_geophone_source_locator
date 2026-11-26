@@ -69,7 +69,7 @@ export function buildSurfaceNets(input: SurfaceNetsInput): SurfaceNetsResult {
 
   /* crossing edges: an inside lattice point next to an outside one (an edge has exactly one inside end, so each is found once) */
   const sums = new Map<number, [number, number, number, number]>();       /* cube (by its minimum corner) -> sum of crossing midpoints + count */
-  const edges: Array<[number, number, number, number]> = [];
+  const edges: Array<[number, number, number, number, number]> = [];          /* [x, y, z, axis, sign]: sign is the direction from the inside point to the outside one */
   for (const k of occupied) {
     const [x, y, z] = decode(k);
     for (let axis = 0; axis < 3; axis += 1) for (const sign of [-1, 1]) {
@@ -77,7 +77,7 @@ export function buildSurfaceNets(input: SurfaceNetsInput): SurfaceNetsResult {
       const nx = x + sign * a[0]; const ny = y + sign * a[1]; const nz = z + sign * a[2];
       if (occupied.has(key(nx, ny, nz))) continue;
       const lx = sign < 0 ? nx : x; const ly = sign < 0 ? ny : y; const lz = sign < 0 ? nz : z;
-      edges.push([lx, ly, lz, axis]);
+      edges.push([lx, ly, lz, axis, sign]);
       const mx = lx + a[0] / 2; const my = ly + a[1] / 2; const mz = lz + a[2] / 2;
       const [b, c] = OTHER[axis];
       for (let u = 0; u < 2; u += 1) for (let v = 0; v < 2; v += 1) {
@@ -97,14 +97,15 @@ export function buildSurfaceNets(input: SurfaceNetsInput): SurfaceNetsResult {
   }
   const triangles = new Float32Array(edges.length * 18);
   let count = 0;
-  for (const [lx, ly, lz, axis] of edges) {
+  for (const [lx, ly, lz, axis, sign] of edges) {
     const [b, c] = OTHER[axis];
     const corner = (u: number, v: number): number => {
       const q: [number, number, number] = [lx, ly, lz];
       q[b] -= u; q[c] -= v;
       return cubeIndex.get(key(q[0], q[1], q[2]))! * 3;
     };
-    const quad = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+    /* the order (0,0) (1,0) (1,1) (0,1) is counter-clockwise seen from +axis: right for an outside neighbour at +axis, reversed for one at -axis, so every face points outward */
+    const quad = sign > 0 ? [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)] : [corner(0, 0), corner(0, 1), corner(1, 1), corner(1, 0)];
     for (const tri of [[0, 1, 2], [0, 2, 3]]) {
       for (let k = 0; k < 3; k += 1) {
         const o = quad[tri[k]];

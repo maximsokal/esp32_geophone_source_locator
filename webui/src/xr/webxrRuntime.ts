@@ -885,7 +885,7 @@ export class WebXrRuntime{
     const mesh=this.referenceMesh;
     if(mesh===null||this.originResetPaused||this.gl===null)return;
     try{
-      if(this.referenceMeshRenderer===null)this.referenceMeshRenderer=new LiveMeshRenderer(this.gl,REFERENCE_MESH_STYLE);
+      if(this.referenceMeshRenderer===null)this.referenceMeshRenderer=new LiveMeshRenderer(this.gl,{style:REFERENCE_MESH_STYLE,depthBias:true});
       if(this.referenceMeshDirty){this.referenceMeshRenderer.update(mesh.trianglesXr,mesh.triangleCount);this.referenceMeshDirty=false;}
       this.referenceMeshRenderer.render(layer as never,views);
     }catch(error){

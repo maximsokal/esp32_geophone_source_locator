@@ -7,14 +7,23 @@ import {
 
 type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
 
-/** Fill of the translucent live mesh; low enough that the camera image and the point guide stay readable through it. */
-export const LIVE_MESH_ALPHA = 0.30;
+/**
+ * Fill of the translucent live mesh. With the single-layer pass below this IS the opacity of the mesh at every pixel, however many shells overlap there;
+ * 0.10 keeps the camera image, texture and AprilTags readable (phone run 2026-11-26: 0.30 per layer summed to 51% for two layers and 94% for eight).
+ */
+export const LIVE_MESH_ALPHA = 0.10;
+/** The most opaque the meshes may make any pixel when the saved scan's mesh (amber) and the live mesh (blue) are both drawn. */
+export const MESH_OVERLAY_OPACITY_BUDGET = 0.25;
 
 export interface LiveMeshStyle { color: readonly [number, number, number]; alpha: number }
 /** The mesh being built now: cool blue. */
 export const LIVE_MESH_STYLE: LiveMeshStyle = { color: [0.30, 0.78, 1.0], alpha: LIVE_MESH_ALPHA };
 /** The mesh of the saved scan drawn over a Continue: warm amber, fainter, so it reads as "already there" next to the blue one being built. */
-export const REFERENCE_MESH_STYLE: LiveMeshStyle = { color: [1.0, 0.72, 0.28], alpha: 0.22 };
+export const REFERENCE_MESH_STYLE: LiveMeshStyle = { color: [1.0, 0.72, 0.28], alpha: 0.08 };
+
+/** 'single-layer': a depth-only pass, then ONE blended fragment per pixel (the nearest). 'accumulate': every shell blends in (the old look; kept for comparison tests). */
+export type LiveMeshBlendMode = 'single-layer' | 'accumulate';
+export interface LiveMeshRendererOptions { style?: LiveMeshStyle; mode?: LiveMeshBlendMode; /** Push this mesh slightly back so that it yields to a coincident mesh drawn before it. */ depthBias?: boolean }
 
 function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
   const webGl2 = isWebGl2(gl);
@@ -22,8 +31,10 @@ function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
   const vertexSource = webGl2
     ? `#version 300 es
       precision highp float; in vec3 a_position; uniform mat4 u_view_projection;
+      invariant gl_Position;
       void main() { gl_Position = u_view_projection * vec4(a_position, 1.0); }`
     : `precision highp float; attribute vec3 a_position; uniform mat4 u_view_projection;
+      invariant gl_Position;
       void main() { gl_Position = u_view_projection * vec4(a_position, 1.0); }`;
   const fragmentSource = webGl2
     ? `#version 300 es
@@ -59,8 +70,15 @@ export class LiveMeshRenderer {
   private vertexCount = 0;
   private lastDrawMs = Number.NEGATIVE_INFINITY;
 
-  constructor(private readonly gl: GlContext, readonly style: LiveMeshStyle = LIVE_MESH_STYLE) {
-    this.program = createProgram(gl, style);
+  readonly style: LiveMeshStyle;
+  readonly mode: LiveMeshBlendMode;
+  private readonly depthBias: boolean;
+
+  constructor(private readonly gl: GlContext, options: LiveMeshRendererOptions = {}) {
+    this.style = options.style ?? LIVE_MESH_STYLE;
+    this.mode = options.mode ?? 'single-layer';
+    this.depthBias = options.depthBias ?? false;
+    this.program = createProgram(gl, this.style);
     const buffer = gl.createBuffer();
     const matrix = gl.getUniformLocation(this.program, 'u_view_projection');
     this.positionLocation = gl.getAttribLocation(this.program, 'a_position');
@@ -96,10 +114,14 @@ export class LiveMeshRenderer {
     const gl = this.gl;
     const previous = captureWebGlDrawState(gl, [this.positionLocation]);
     try {
+      const offsetWasOn = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
+      const offsetFactor = gl.getParameter(gl.POLYGON_OFFSET_FACTOR) as number;
+      const offsetUnits = gl.getParameter(gl.POLYGON_OFFSET_UNITS) as number;
       gl.useProgram(this.program);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(false);
+      gl.enable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);
+      if (this.depthBias) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1); }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.enableVertexAttribArray(this.positionLocation);
       gl.vertexAttribPointer(this.positionLocation, 3, gl.FLOAT, false, 0, 0);
@@ -109,7 +131,21 @@ export class LiveMeshRenderer {
         if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
         if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
         gl.uniformMatrix4fv(this.matrixLocation, false, this.viewProjection);
-        gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+        if (this.mode === 'single-layer') {
+          /* Pass 1: depth only, against whatever is already there (LESS), so the nearest shell of this mesh is the only one left standing at each pixel. */
+          gl.colorMask(false, false, false, false); gl.depthMask(true); gl.depthFunc(gl.LESS);
+          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+          /* Pass 2: colour only where the depth equals that nearest shell: one blended fragment per pixel, so overlap cannot add up. */
+          gl.colorMask(true, true, true, true); gl.depthMask(false); gl.depthFunc(gl.EQUAL);
+          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+        } else {
+          gl.depthMask(false); gl.depthFunc(gl.LEQUAL);
+          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+        }
+      }
+      if (this.depthBias) {
+        if (!offsetWasOn) gl.disable(gl.POLYGON_OFFSET_FILL);
+        gl.polygonOffset(offsetFactor, offsetUnits);
       }
     } finally { restoreWebGlDrawState(gl, previous); }
   }
