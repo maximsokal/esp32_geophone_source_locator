@@ -1,4 +1,5 @@
 import { sanitizeMeshTopology } from './meshTopologySanity';
+import { TSDF_BLOCK_SHIFT, TSDF_BLOCK_SIDE, TSDF_BLOCK_VOXELS, TsdfBlockGrid, type TsdfBlock } from './tsdfBlockGrid';
 import { analyzeSurfaceComponents } from './surfaceComponents';
 
 export type Point3 = readonly [number, number, number];
@@ -53,14 +54,6 @@ export interface SparseTsdfMesh {
   voxelSizeMeters: number;
   truncationMeters: number;
   computeMs: number;
-}
-
-interface TsdfNode {
-  x: number;
-  y: number;
-  z: number;
-  weightedValue: number;
-  weight: number;
 }
 
 interface Sample {
@@ -295,14 +288,13 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     0.075,
   ) * (Number.isFinite(input.coarseningScale) && (input.coarseningScale ?? 1) >= 1 ? input.coarseningScale! : 1);
   const truncationMeters = voxelSizeMeters * 2.75;
-  const P = ((globalThis as any).__tsdf ??= {}); const T = (k: string, from: number) => { P[k] = (P[k] ?? 0) + performance.now() - from; }; let t = performance.now();
   const tangentRadiusMeters = voxelSizeMeters * 2.25;
   const tangentSigmaMeters = voxelSizeMeters * 1.15;
   const maxInputPoints = Math.max(1, Math.floor(input.maxInputPoints ?? DEFAULT_MAX_INPUT_POINTS));
   const maxNodes = Math.max(1000, Math.floor(input.maxNodes ?? DEFAULT_MAX_NODES));
   const maxTriangles = Math.max(1, Math.floor(input.maxTriangles ?? DEFAULT_MAX_TRIANGLES));
   const freeIndex = buildFreeIndex(input.freeSpacePositions, input.freeSpaceVoxelSizeMeters);
-  const nodes = new Map<string, TsdfNode>();
+  const nodes = new TsdfBlockGrid(maxNodes);
   const eligibleIndices: number[] = [];
   let skippedLowConfidence = 0;
   let rejectedComponentPoints = 0;
@@ -319,7 +311,6 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     eligibleIndices.push(index);
   }
 
-  T('prepare', t); t = performance.now();
   let integratedPointCount = 0;
   const stride = Math.max(1, Math.ceil(eligibleIndices.length / maxInputPoints));
   const radiusNodes = Math.ceil(truncationMeters / voxelSizeMeters);
@@ -333,69 +324,66 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     const cy = grid(sample.position[1], voxelSizeMeters);
     const cz = grid(sample.position[2], voxelSizeMeters);
 
+    /* The innermost loop of the integration: plain numbers only, no arrays per voxel. The arithmetic and its order are those of subtract() and dot(). */
+    const px = sample.position[0]; const py = sample.position[1]; const pz = sample.position[2];
+    const normalX = sample.normal[0]; const normalY = sample.normal[1]; const normalZ = sample.normal[2];
+    const squaredConfidence = sample.confidence * sample.confidence;
     for (let dx = -radiusNodes; dx <= radiusNodes; dx += 1) {
+      const ix = cx + dx;
+      const deltaX = ix * voxelSizeMeters - px;
       for (let dy = -radiusNodes; dy <= radiusNodes; dy += 1) {
+        const iy = cy + dy;
+        const deltaY = iy * voxelSizeMeters - py;
         for (let dz = -radiusNodes; dz <= radiusNodes; dz += 1) {
-          const ix = cx + dx;
-          const iy = cy + dy;
           const iz = cz + dz;
-          const nodePosition: Point3 = [
-            ix * voxelSizeMeters,
-            iy * voxelSizeMeters,
-            iz * voxelSizeMeters,
-          ];
-          const delta = subtract(nodePosition, sample.position);
-          const signedMeters = dot(sample.normal, delta);
+          const deltaZ = iz * voxelSizeMeters - pz;
+          const signedMeters = normalX * deltaX + normalY * deltaY + normalZ * deltaZ;
           if (Math.abs(signedMeters) > truncationMeters) continue;
-          const squaredDistance = dot(delta, delta);
+          const squaredDistance = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
           const tangentSquared = Math.max(0, squaredDistance - signedMeters * signedMeters);
           if (tangentSquared > tangentRadiusMeters * tangentRadiusMeters) continue;
 
           const tangentWeight = Math.exp(-0.5 * tangentSquared / (tangentSigmaMeters * tangentSigmaMeters));
           const truncationWeight = 1 - 0.30 * Math.abs(signedMeters) / truncationMeters;
-          const observationWeight = sample.confidence * sample.confidence * tangentWeight * truncationWeight;
+          const observationWeight = squaredConfidence * tangentWeight * truncationWeight;
           if (observationWeight < 0.01) continue;
-          const normalizedDistance = clamp(signedMeters / truncationMeters, -1, 1);
-          const nodeKey = key(ix, iy, iz);
-          const existing = nodes.get(nodeKey);
-          if (existing === undefined) {
-            if (nodes.size >= maxNodes) continue;
-            nodes.set(nodeKey, {
-              x: ix, y: iy, z: iz,
-              weightedValue: normalizedDistance * observationWeight,
-              weight: observationWeight,
-            });
-          } else {
-            existing.weightedValue += normalizedDistance * observationWeight;
-            existing.weight += observationWeight;
-          }
+          nodes.add(ix, iy, iz, clamp(signedMeters / truncationMeters, -1, 1), observationWeight);
         }
       }
     }
   }
 
-  T('integrate', t); t = performance.now(); P.nodes = (P.nodes ?? 0) + nodes.size; P.samples = (P.samples ?? 0) + integratedPointCount;
   const triangles: number[] = [];
   let budgetReached = false;
   const minimumTriangleArea = voxelSizeMeters * voxelSizeMeters * MIN_TRIANGLE_AREA_FACTOR;
-  outer: for (const origin of nodes.values()) {
-    const cubeNodes: TsdfNode[] = [];
-    const cubePositions: Point3[] = [];
-    const cubeValues: number[] = [];
+  const cubeValues = [0, 0, 0, 0, 0, 0, 0, 0];
+  const cubeCorners: Point3[] = CUBE_OFFSETS.map(() => [0, 0, 0] as [number, number, number]);
+  const around = new Map<number, Array<TsdfBlock | undefined | null>>();   /* per block: its neighbours towards +x, +y, +z, looked up once */
+  outer: for (let n = 0; n < nodes.voxelCount; n += 1) {
+    const slot = nodes.voxelAt(n);
+    const home = nodes.blocks[(slot / TSDF_BLOCK_VOXELS) | 0];
+    const position = slot % TSDF_BLOCK_VOXELS;
+    const lx = position >> (2 * TSDF_BLOCK_SHIFT); const ly = (position >> TSDF_BLOCK_SHIFT) & (TSDF_BLOCK_SIDE - 1); const lz = position & (TSDF_BLOCK_SIDE - 1);
+    let neighbours = around.get(home.index);
+    if (neighbours === undefined) { neighbours = [home, null, null, null, null, null, null, null]; around.set(home.index, neighbours); }
     let minimumWeight = Number.POSITIVE_INFINITY;
-    for (const [ox, oy, oz] of CUBE_OFFSETS) {
-      const candidate = nodes.get(key(origin.x + ox, origin.y + oy, origin.z + oz));
-      if (candidate === undefined || candidate.weight < MIN_NODE_WEIGHT) continue outer;
-      cubeNodes.push(candidate);
-      cubePositions.push([
-        (origin.x + ox) * voxelSizeMeters,
-        (origin.y + oy) * voxelSizeMeters,
-        (origin.z + oz) * voxelSizeMeters,
-      ]);
-      cubeValues.push(candidate.weightedValue / candidate.weight);
-      minimumWeight = Math.min(minimumWeight, candidate.weight);
+    for (let corner = 0; corner < 8; corner += 1) {
+      const offset = CUBE_OFFSETS[corner];
+      let x = lx + offset[0]; let y = ly + offset[1]; let z = lz + offset[2];
+      let side = 0;
+      if (x === TSDF_BLOCK_SIDE) { side |= 4; x = 0; }
+      if (y === TSDF_BLOCK_SIDE) { side |= 2; y = 0; }
+      if (z === TSDF_BLOCK_SIDE) { side |= 1; z = 0; }
+      let block = neighbours[side];
+      if (block === null) { block = nodes.block(home.x + (side >> 2), home.y + ((side >> 1) & 1), home.z + (side & 1)); neighbours[side] = block; }
+      if (block === undefined) continue outer;
+      const at = (((x << TSDF_BLOCK_SHIFT) | y) << TSDF_BLOCK_SHIFT) | z;
+      const weight = block.weight[at];
+      if (!(weight >= MIN_NODE_WEIGHT)) continue outer;
+      cubeValues[corner] = block.weightedValue[at] / weight;
+      minimumWeight = Math.min(minimumWeight, weight);
     }
-    if (cubeNodes.length !== 8 || minimumWeight < MIN_NODE_WEIGHT) continue;
+    if (minimumWeight < MIN_NODE_WEIGHT) continue;
     let negative = false;
     let positive = false;
     for (const value of cubeValues) {
@@ -403,6 +391,13 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
       else positive = true;
     }
     if (!negative || !positive) continue;
+
+    const originX = home.x * TSDF_BLOCK_SIDE + lx; const originY = home.y * TSDF_BLOCK_SIDE + ly; const originZ = home.z * TSDF_BLOCK_SIDE + lz;
+    const cubePositions: Point3[] = cubeCorners;
+    for (let corner = 0; corner < 8; corner += 1) {
+      const offset = CUBE_OFFSETS[corner];
+      cubePositions[corner] = [(originX + offset[0]) * voxelSizeMeters, (originY + offset[1]) * voxelSizeMeters, (originZ + offset[2]) * voxelSizeMeters];
+    }
 
     for (const tetra of TETRAHEDRA) {
       const p: [Point3, Point3, Point3, Point3] = [
@@ -419,9 +414,7 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     }
   }
 
-  T('polygonize', t); t = performance.now();
   const topology = sanitizeMeshTopology(Float32Array.from(triangles), voxelSizeMeters);
-  T('sanitizeTopology', t); t = performance.now(); P.calls = (P.calls ?? 0) + 1;
   const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const mesh: SparseTsdfMesh = {
     trianglePositions: topology.trianglePositions,
@@ -450,7 +443,7 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     componentCount: componentAnalysis.componentCount,
     eligibleComponentCount: componentAnalysis.eligibleComponentCount,
     meshReadiness: componentAnalysis.bestMeshComponent?.meshReadiness ?? 0,
-    nodeCount: nodes.size,
+    nodeCount: nodes.voxelCount,
     voxelSizeMeters,
     truncationMeters,
     computeMs: ended - started,
