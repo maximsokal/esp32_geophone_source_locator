@@ -1,0 +1,31 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * PocketBeagle 2 Rev A0 (TI AM6232) UART2 Device Tree Overlay
+ * Verified against official PB2 A0 expansion table (04-expansion.html):
+ *   P2.02 -> Ball U22 -> MODE 4 = UART2_RXD (PADCONFIG offset 0x00B4 = (0x1D4 - 0x120) or AM62X_IOPAD(0x0B4, PIN_INPUT, 4))
+ *   P2.04 -> Ball V24 -> MODE 4 = UART2_TXD (PADCONFIG offset 0x00B8 = AM62X_IOPAD(0x0B8, PIN_OUTPUT, 4))
+ *
+ * NOTE: Verify exact target kernel DTS node (&main_uart2) and padconf offsets
+ * on the physical Debian 13.3 A0 image before installing via PB2: Install Overlay.
+ */
+
+/ {
+    compatible = "beagle,am6232-pocketbeagle2", "ti,am625";
+};
+
+&main_pmx0 {
+    pb2_uart2_pins_default: pb2-uart2-default-pins {
+        pinctrl-single,pins = <
+            0x00b4 0x00050004 /* P2.02 U22: UART2_RXD MODE4 | INPUT | PULLUP */
+            0x00b8 0x00010004 /* P2.04 V24: UART2_TXD MODE4 | OUTPUT */
+        >;
+    };
+};
+
+&main_uart2 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&pb2_uart2_pins_default>;
+    status = "okay";
+};

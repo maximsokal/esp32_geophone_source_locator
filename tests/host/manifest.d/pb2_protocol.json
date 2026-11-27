@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "pb2_protocol",
+      "sources": [
+        "components/pb2_protocol/pb2_cobs.c",
+        "components/pb2_protocol/pb2_crc32c.c",
+        "components/pb2_protocol/pb2_protocol.c",
+        "components/pb2_protocol/tests/pb2_protocol_test.c"
+      ],
+      "include_dirs": [
+        "components/pb2_protocol/include"
+      ]
+    }
+  ]
+}

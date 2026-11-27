@@ -1,0 +1,35 @@
+menu "PocketBeagle 2 UART Bridge (Phase 2)"
+
+    config PB2_UART_BRIDGE_ENABLE
+        bool "Enable PocketBeagle 2 UART bridge (disabled until physical DevKit revision verified)"
+        default n
+        help
+            Enable non-blocking UART preview/status bridge to PocketBeagle 2 A0.
+            Keep disabled until ESP32-S3 DevKitC board revision (v1.0 vs v1.1) and
+            electrical backfeed protection are physically verified.
+
+    choice PB2_UART_DEVKIT_PROFILE
+        prompt "ESP32-S3 DevKitC UART pin profile"
+        depends on PB2_UART_BRIDGE_ENABLE
+        default PB2_UART_PROFILE_DEVKITC_V1_1
+
+        config PB2_UART_PROFILE_DEVKITC_V1_0
+            bool "DevKitC v1.0 (TX=GPIO7, RX=GPIO38)"
+
+        config PB2_UART_PROFILE_DEVKITC_V1_1
+            bool "DevKitC v1.1 (TX=GPIO7, RX=GPIO48)"
+    endchoice
+
+    config PB2_UART_BAUD_RATE
+        int "UART baud rate"
+        depends on PB2_UART_BRIDGE_ENABLE
+        default 115200
+        range 9600 921600
+
+    config PB2_UART_PREVIEW_TARGET_HZ
+        int "Target preview stream rate per channel (Hz)"
+        depends on PB2_UART_BRIDGE_ENABLE
+        default 125
+        range 25 250
+
+endmenu
