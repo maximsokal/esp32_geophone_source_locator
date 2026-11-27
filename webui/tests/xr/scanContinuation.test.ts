@@ -663,9 +663,50 @@ describe('saved 3D scan continuation', () => {
       const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, wrong);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.reason).toContain('alignment rejected');
+        expect(result.reason, 'refused by the overlap check or by the spread of what matched, never merged').toMatch(/alignment rejected|too little horizontal spread/);
         expect(result.diagnostics?.runtimeOperations?.yawHypotheses).toBe(0);
       }
+    });
+
+    it('CONT-05/08 a tag alignment 0.11 m off (just beyond what the overlap may refine), where the overlap clearly prefers another pose, is refused as a disagreement (the overlap may refine the tags, never overrule them silently)', () => {
+      const fixture = partialOverlapPair(0);
+      const wrong = { yaw: fixture.yaw, tx: fixture.translation[0] + 0.11, ty: fixture.translation[1], tz: fixture.translation[2] };
+      const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, wrong);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics?.rejectionReason).toBe('seed_overlap_disagreement');
+        expect(result.diagnostics?.seedAgreement?.refinedInliers).toBeGreaterThan((result.diagnostics?.seedAgreement?.seedInliers ?? 0) * 1.15);
+        expect(result.reason).toContain('different alignment than the tags');
+      }
+    });
+
+    it('a seeded overlap that is only a narrow strip is refused for its spread, however well the seed fits (a strip fixes neither yaw nor sliding)', () => {
+      const strip = new Float32Array(144 * 3);
+      for (let index = 0; index < 144; index += 1) { strip[index * 3] = index * 0.02; strip[index * 3 + 1] = 0.4; strip[index * 3 + 2] = 0.02 * Math.sin(index * 0.4); }
+      const result = registerAndMergeScanContinuation(snapshot(strip), snapshot(strip), undefined, { yaw: 0, tx: 0, ty: 0, tz: 0 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.diagnostics?.rejectionReason).toBe('insufficient_conditioning');
+    });
+
+    it('an RMS of 8 cm is not proof of a tag-fixed alignment: the same noisy pair that the unseeded limit (11 cm) would let through is refused when the tags fix the pose', () => {
+      const fixture = partialOverlapPair(0);
+      const noisy = new Float32Array(fixture.extension.positions);
+      for (let i = 0; i < noisy.length; i += 1) { const v = Math.sin(i * 12.9898) * 43758.5453; noisy[i] += (v - Math.floor(v) - 0.5) * 2 * 0.12; }
+      const truth = { yaw: fixture.yaw, tx: fixture.translation[0], ty: fixture.translation[1], tz: fixture.translation[2] };
+      const result = registerAndMergeScanContinuation(fixture.base, snapshot(noisy), undefined, truth);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics!.rmsMeters).toBeGreaterThan(0.07);
+        expect(result.diagnostics!.rmsMeters).toBeLessThan(0.11);
+        expect(result.diagnostics!.inliers, 'enough matches: the RMS is what refuses it').toBeGreaterThanOrEqual(30);
+        expect(result.reason).toContain('alignment rejected');
+      }
+    });
+
+    it('CONT-09 no overlap at all: refused with the matches and overlap it had', () => {
+      const fixture = partialOverlapPair(0, 0.2, [30, 30, 0]);
+      const result = registerAndMergeScanContinuation(fixture.base, fixture.extension, undefined, { yaw: 0, tx: 0, ty: 0, tz: 0 });
+      expect(result.ok).toBe(false);
     });
 
     it('a null seed is the old behaviour exactly', () => {

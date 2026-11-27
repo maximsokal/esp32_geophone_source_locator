@@ -248,6 +248,29 @@ describe('DeviceConsoleApp scanner chunk boundary', () => {
     expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(52);
   });
 
+  it('TASK 05: how a Continue ended is shown on the workflow page after the scanner was left (a rejection as an alert, success shows nothing)', async () => {
+    stubBrowser();
+    const scanning = deviceStatus(false);
+    scanning.workflow = { step: 'SCANNING', generation: 51, allowed_actions: ['BACK'], object_id: 'OBJ_0001', session_id: null } as DeviceStatus['workflow'];
+    api.fetchDeviceStatus.mockResolvedValue(scanning);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, workflow: { step: 'SCAN_CHOICE', generation: 52, progress: null, allowed_actions: ['SCAN_START', 'SCAN_SKIP', 'BACK'], object_id: 'OBJ_0001' },
+    }), { status: 200 })));
+    const renderer = await mountConsole();
+    const host = renderer.root.findByType(ScannerFeatureHost);
+    await act(async () => {
+      host.props.onContinuationOutcome({ state: 'rejected', code: 'tags_not_found', messageKey: 'scan.error.continue_requires_tags', params: { detail: 'Only 1 of 3 saved tags were recognised again.' } });
+      renderer.root.findByProps({ className: 'console-floating-back' }).props.onClick();
+      await settleReact();
+      await settleReact();
+    });
+    const notice = renderer.root.findByProps({ 'data-testid': 'continuation-outcome' });
+    expect(notice.props.role).toBe('alert');
+    expect(notice.props['data-state']).toBe('rejected');
+    expect(JSON.stringify(renderer.toJSON())).toContain('Only 1 of 3 saved tags were recognised again.');
+    expect(JSON.stringify(renderer.toJSON())).toContain('The saved scan is unchanged');
+  });
+
   it('Back from a scanner that already holds a saved scan accepts the scan (SCAN_COMPLETE) instead of landing on "start a 3D scan?" again', async () => {
     stubBrowser();
     const scanning = deviceStatus(false);

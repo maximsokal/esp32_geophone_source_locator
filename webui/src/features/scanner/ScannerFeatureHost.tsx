@@ -1,6 +1,7 @@
 import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode } from 'react';
 import { useT } from '../../i18n';
 import type { DeviceStatus } from '../../domain/device';
+import type { ContinuationOutcome } from '../../xr/continuationOutcome';
 
 export const SCANNER_MAX_IN_PLACE_RETRIES = 3;
 export const SCANNER_RELOAD_SESSION_KEY = 'geolocator.scanner.chunkReloadAttempted';
@@ -10,6 +11,8 @@ export interface ScannerFeatureProps {
   sessionId: string | null;
   status: DeviceStatus | null;
   onScanSaved?: () => void | Promise<void>;
+  /** The terminal state of every Continue scan, whether or not the scanner is still on screen. */
+  onContinuationOutcome?: (outcome: ContinuationOutcome) => void;
 }
 
 export interface ScannerSessionStorage {
@@ -87,6 +90,7 @@ export default function ScannerFeatureHost({
   sessionId,
   status,
   onScanSaved,
+  onContinuationOutcome,
   onBack,
   onDashboard,
   loadScanner = loadScannerModule,
@@ -159,7 +163,7 @@ export default function ScannerFeatureHost({
   return (
     <ScannerLoadBoundary key={attempt} fallback={failureUi}>
       <Suspense fallback={<main className="console-loading">{t('console.loading_xr')}</main>}>
-        <ScannerFeature objectId={objectId} sessionId={sessionId} status={status} onScanSaved={onScanSaved} />
+        <ScannerFeature objectId={objectId} sessionId={sessionId} status={status} onScanSaved={onScanSaved} onContinuationOutcome={onContinuationOutcome} />
       </Suspense>
     </ScannerLoadBoundary>
   );

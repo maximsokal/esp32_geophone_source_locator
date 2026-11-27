@@ -240,7 +240,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
-    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null,relock:null});
     expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][0]).toBeNull();expect(tagResult.mock.calls[0][1]).toBe(true);
     const warnings=renderer.root.findAll((node)=>node.props.className==='xr-overlay-warning').map(textOf).join(' ');
     expect(warnings).not.toContain(translate('en','xr.tag.error.geometry_unavailable'));
@@ -458,7 +458,7 @@ describe('XrRuntimePanel lifecycle',()=>{
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     registration.mockClear();ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
-    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null,relock:null});
     expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);expect(tagResult.mock.calls[0][0]).toMatchObject({schema:1,scan_frame_id:null});
     expect(ready.mock.invocationCallOrder[0]).toBeLessThan(tagResult.mock.invocationCallOrder[0]);
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();expect(registration).not.toHaveBeenCalled();unmount(renderer);
@@ -538,7 +538,7 @@ describe('XrRuntimePanel lifecycle',()=>{
       await act(async()=>{await settleReact();expect(tagButton(renderer).props['aria-pressed']).toBe(true);});/* tags start by themselves with the scan */const worker=panelHarness.workers[0];
       runtime.emitTagFrame(tagFrame());
       await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
-      expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null});expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
+      expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null,relock:null});expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
       await act(async()=>{await vi.advanceTimersByTimeAsync(2999);await settleReact();});expect(tagResult).not.toHaveBeenCalled();
       await act(async()=>{await vi.advanceTimersByTimeAsync(2);await settleReact();});
       expect(worker.terminated).toBe(1);expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);
@@ -981,14 +981,14 @@ describe('tag-locked Continue (issue #45)',()=>{
     unmount(renderer);
   });
 
-  it('hands the scan over whether or not the tags locked: a lock seeds the merge, no lock leaves it to the overlap search (phone run 2026-11-22 lost a whole scan by withholding it)',async()=>{
+  it('hands the scan over whether or not the tags locked: a lock seeds the merge, no lock carries the lock summary so the App can reject it with a concrete reason (phone run 2026-11-22 lost a whole scan by withholding it)',async()=>{
     const ready=vi.fn();
     let started=await startContinue({onPointCloudReady:ready});
     expect(ready.mock.calls).toEqual([[null]]);                                     /* only the startup notice */
     await act(async()=>{started.runtime.setPhase('ended',{pointCount:50});await settleReact();});
     expect(ready).toHaveBeenCalledTimes(2);
     expect(ready.mock.calls[1][0]).not.toBeNull();
-    expect(ready.mock.calls[1][1]).toEqual({relockTransform:null});                 /* nothing locked: no seed */
+    expect(ready.mock.calls[1][1]).toEqual({relockTransform:null,relock:{baseTags:3,found:0,needed:3,reason:'need_more_tags'}});   /* nothing locked: no seed, and the reason travels with the scan (the App rejects it with that reason) */
     expect(hint(started.renderer,'never-locked')).toHaveLength(0);
     unmount(started.renderer);
 

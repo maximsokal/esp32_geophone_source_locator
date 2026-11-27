@@ -38,7 +38,14 @@ export interface ScanContinuationDiagnostics {
     translationSeparationMeters: number;
     yawSeparationRadians: number;
   } | null;
-  rejectionReason?: 'ambiguous_overlap' | 'insufficient_conditioning' | 'merged_budget_exceeded';
+  rejectionReason?: 'ambiguous_overlap' | 'insufficient_conditioning' | 'merged_budget_exceeded' | 'seed_overlap_disagreement';
+  /** Seeded registration only: how the overlap, left alone, would have moved the tag alignment (it may refine it, never replace it). */
+  seedAgreement?: {
+    refinedShiftMeters: number;
+    refinedTurnRadians: number;
+    seedInliers: number;
+    refinedInliers: number;
+  };
   mergedBudgetEstimate?: {
     estimatedBytes: number;
     limitBytes: number;
@@ -649,6 +656,14 @@ function registerExtension(
 /** With a lock from known tags the overlap only has to CONFIRM the alignment, so the bars are lower than for a search over every pose. */
 const SEEDED_MIN_INLIERS = 30;
 const SEEDED_MIN_OVERLAP = 0.05;
+/** The tags fix the pose, so the overlap has to confirm it tightly: a residual of 9-11 cm fits many wrong poses (TASK 05: an RMS of 97 mm is not proof). */
+const SEEDED_MAX_RMS_METERS = 0.07;
+/** The overlap may prefer another pose than the tags by this much more inliers before the tag alignment is distrusted (outside the refinement bounds). */
+const SEEDED_DISAGREEMENT_INLIER_GAIN = 1.15;
+/** Half the spread an unseeded search needs: the tags already fix the pose, the inliers must still be spread over more than a strip. */
+const SEEDED_MIN_HORIZONTAL_BASELINE_METERS = REGISTRATION_MIN_HORIZONTAL_BASELINE_METERS / 2;
+const SEEDED_MIN_HORIZONTAL_MINOR_VARIANCE_METERS2 = REGISTRATION_MIN_HORIZONTAL_MINOR_VARIANCE_METERS2 / 4;
+const SEEDED_MIN_HORIZONTAL_CONDITION_RATIO = REGISTRATION_MIN_HORIZONTAL_CONDITION_RATIO / 2;
 /** The refinement may polish the tag alignment, not replace it: further than this from the seed, the seed is kept. */
 const SEEDED_MAX_REFINE_SHIFT_METERS = 0.1;
 const SEEDED_MAX_REFINE_YAW_RADIANS = 0.05;
@@ -683,8 +698,10 @@ function registerExtensionWithSeed(
   }
   const shift = Math.hypot(refined.tx - seed.tx, refined.ty - seed.ty, refined.tz - seed.tz);
   const turn = yawSeparation(refined.yaw, seed.yaw);
-  const transform = shift <= SEEDED_MAX_REFINE_SHIFT_METERS && turn <= SEEDED_MAX_REFINE_YAW_RADIANS ? refined : seed;
+  const withinBounds = shift <= SEEDED_MAX_REFINE_SHIFT_METERS && turn <= SEEDED_MAX_REFINE_YAW_RADIANS;
+  const transform = withinBounds ? refined : seed;
   const scored = scoreTransform(extensionPoints, targetHash, transform, denominator, operations, features);
+  const freeScored = withinBounds ? scored : scoreTransform(extensionPoints, targetHash, refined, denominator, operations, features);
   const diagnostics: ScanContinuationDiagnostics = {
     yawRadians: transform.yaw,
     translation: [transform.tx, transform.ty, transform.tz],
@@ -695,6 +712,7 @@ function registerExtensionWithSeed(
     extensionSampleCount: extensionPoints.length,
     conditioning: horizontalConditioning(scored.matches),
     secondBestMargin: null,
+    seedAgreement: { refinedShiftMeters: shift, refinedTurnRadians: turn, seedInliers: scored.matches.length, refinedInliers: freeScored.matches.length },
     runtimeOperations: {
       yawHypotheses: operations.yawHypotheses,
       translationVotes: operations.translationVotes,
@@ -712,6 +730,13 @@ function registerExtensionWithSeed(
       descriptorScratchBytes: FEATURE_DESCRIPTOR_SCRATCH_BYTES,
     },
   };
+  const conditioning = diagnostics.conditioning!;
+  if (
+    conditioning.horizontalBaselineMeters < SEEDED_MIN_HORIZONTAL_BASELINE_METERS ||
+    conditioning.horizontalMinorVarianceMeters2 < SEEDED_MIN_HORIZONTAL_MINOR_VARIANCE_METERS2 ||
+    conditioning.horizontalConditionRatio < SEEDED_MIN_HORIZONTAL_CONDITION_RATIO
+  ) diagnostics.rejectionReason = 'insufficient_conditioning';
+  else if (!withinBounds && freeScored.matches.length > scored.matches.length * SEEDED_DISAGREEMENT_INLIER_GAIN) diagnostics.rejectionReason = 'seed_overlap_disagreement';
   return { transform, diagnostics };
 }
 
@@ -1542,10 +1567,17 @@ export function registerAndMergeScanContinuation(
       diagnostics,
     };
   }
+  if (diagnostics.rejectionReason === 'seed_overlap_disagreement') {
+    return {
+      ok: false,
+      reason: 'The overlap of the two scans points to a different alignment than the tags do (parallel or repeating surfaces, a moved tag, or a changed scene). Nothing was merged; old saved scan was kept.',
+      diagnostics,
+    };
+  }
   if (
     diagnostics.inliers < (seeded ? SEEDED_MIN_INLIERS : REGISTRATION_MIN_INLIERS) ||
     diagnostics.overlapRatio < (seeded ? SEEDED_MIN_OVERLAP : REGISTRATION_MIN_OVERLAP) ||
-    diagnostics.rmsMeters > REGISTRATION_MAX_RMS_METERS
+    diagnostics.rmsMeters > (seeded ? SEEDED_MAX_RMS_METERS : REGISTRATION_MAX_RMS_METERS)
   ) {
     return {
       ok: false,

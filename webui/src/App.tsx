@@ -69,7 +69,8 @@ import {
   type ScanContinuationPhase,
   type RigidTransform,
 } from './xr/scanContinuation';
-import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient } from './xr/continuationClient';
+import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient, ContinuationTimeoutError } from './xr/continuationClient';
+import { ContinuationLedger, continuationGate, type ContinuationOutcome, type RelockSummary } from './xr/continuationOutcome';
 import {
   ScanEncodeClient,
   ScanEncodeCancelledError,
@@ -145,6 +146,8 @@ interface AppProps {
   sessionId: string | null;
   status: DeviceStatus | null;
   onScanSaved?: () => void | Promise<void>;
+  /** Every Continue ends in exactly one observable terminal state; the host shows it wherever the operator is (TASK 05). */
+  onContinuationOutcome?: (outcome: ContinuationOutcome) => void;
 }
 
 /** Build the React identity for the result viewport from the durable scan ID or provisional generation. */
@@ -274,8 +277,12 @@ function persistedScanStorageLabel(
 const TAG_UPLOAD_MAX_RETRIES = 3;
 const TAG_UPLOAD_RETRY_BASE_MS = 5000;
 
-export default function App({ objectId, sessionId, status, onScanSaved }: AppProps) {
+export default function App({ objectId, sessionId, status, onScanSaved, onContinuationOutcome }: AppProps) {
   const { locale } = useLocale();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const onContinuationOutcomeRef = useRef(onContinuationOutcome);
+  onContinuationOutcomeRef.current = onContinuationOutcome;
   const t = useT();
   const scanSessionId = scanPersistenceSessionId(sessionId);
   const storageActionsDisabled = scannerStorageActionsDisabled(status);
@@ -416,17 +423,48 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       scanDecodePreviousPhase.current = null;
     }
   }, []);
+  const continuationLedger = useRef<ContinuationLedger | null>(null);
+  if (continuationLedger.current === null) {
+    continuationLedger.current = new ContinuationLedger((outcome) => {
+      try { onContinuationOutcomeRef.current?.(outcome); }
+      catch { /* The host's notice can never change the operation's result. */ }
+    });
+  }
+  /* The B cloud of the Continue in flight, kept only until its terminal state so that the diagnostic copy can be taken whatever the outcome. */
+  const continuationIncoming = useRef<{ snapshot: ScanPointCloudSnapshot; seed: { yaw: number; tx: number; ty: number; tz: number } | null; relock: RelockSummary | null } | null>(null);
+  /** The ONE place where a Continue ends: logs its event, takes the bounded diagnostic copy of B and tells the host. Stale or repeated calls are dropped. */
+  const settleContinuation = useCallback((token: number | null, outcome: ContinuationOutcome, diagnostics?: unknown): boolean => {
+    const ledger = continuationLedger.current!;
+    const settled = token === null ? ledger.settleActive(outcome) : ledger.settle(token, outcome);
+    if (!settled) return false;
+    const incoming = continuationIncoming.current;
+    continuationIncoming.current = null;
+    if (outcome.state === 'cancelled') clientDiagnostics.warn('SCAN_CONTINUATION_CANCELLED', { objectId, code: outcome.code });
+    else if (outcome.state === 'error') clientDiagnostics.warn('SCAN_CONTINUATION_FAILED', { objectId, code: outcome.code });
+    if (incoming !== null) {
+      /* Phone Lab only (no hook in the production bundle): B and what the registration knew, whatever the outcome; bounded to the cloud and a small JSON. */
+      capturePhoneLabBytes(outcome.state === 'success' ? 'continuation_b_merged' : 'continuation_b_rejected', () => encodeScanArtifact(incoming.snapshot));
+      capturePhoneLabBytes('continuation_seed_json', () => new TextEncoder().encode(JSON.stringify({
+        state: outcome.state, code: outcome.code, reason: outcome.params?.reason ?? outcome.code, seed: incoming.seed, relock: incoming.relock, diagnostics: diagnostics ?? null,
+      }).slice(0, 8192)));
+    }
+    void clientDiagnostics.flush();
+    return true;
+  }, [objectId]);
+  const settleContinuationRef = useRef(settleContinuation);
+  settleContinuationRef.current = settleContinuation;
   const cancelContinuation = useCallback((reason: string, notify = false): void => {
     continuationOwnerGeneration.current += 1;
     const active = continuationActive.current;
     continuationClient.current?.cancel(reason);
     if (!active) return;
+    settleContinuation(null, { state: 'cancelled', code: 'cancelled', messageKey: 'scan.continuation.cancelled' });
     continuationActive.current = false;
     setScanStoragePhase(continuationPreviousPhase.current ?? 'loaded');
     continuationPreviousPhase.current = null;
     setContinuationPhase(null);
     if (notify) setScanStorageError(TranslatedError.fromKey('scan.continuation.cancelled'));
-  }, []);
+  }, [settleContinuation]);
   const scanPersistenceController = useRef<ScanPersistenceController | null>(null);
   if (scanPersistenceController.current === null) {
     scanPersistenceController.current = new ScanPersistenceController({
@@ -490,6 +528,8 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     scanEncodeClient.current = null;
     scanEncodePreviousPhase.current = null;
     continuationOwnerGeneration.current += 1;
+    /* The scanner is closed while a merge runs: the operation ends here, visibly (cancelled), never in silence (TASK 05). */
+    settleContinuationRef.current(null, { state: 'cancelled', code: 'viewer_closed', messageKey: 'scan.continuation.cancelled_viewer_closed' });
     continuationClient.current?.dispose();
     continuationClient.current = null;
     continuationActive.current = false;
@@ -984,9 +1024,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
 
   /* The B -> A transform the tags of the finished Continue gave (issue #45); it is the registration of the merge. */
   const relockSeed = useRef<{ yaw: number; tx: number; ty: number; tz: number } | null>(null);
-  const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null, meta?: { relockTransform: { yaw: number; tx: number; ty: number; tz: number } | null }): void => {
+  const relockSummaryRef = useRef<RelockSummary | null>(null);
+  const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null, meta?: { relockTransform: { yaw: number; tx: number; ty: number; tz: number } | null; relock?: RelockSummary | null }): void => {
     setScanStorageError(null);
     relockSeed.current = incoming === null ? null : meta?.relockTransform ?? null;
+    relockSummaryRef.current = incoming === null ? null : meta?.relock ?? null;
 
     if (incoming === null) {
       setLiveTagAnchors([]); // a new scanner generation: anchors of the previous scan do not carry over
@@ -1024,13 +1066,36 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       }
 
       const previousPhase = scanStoragePhase;
+      const seed = relockSeed.current;
+      const relockSummary = relockSummaryRef.current;
+      const token = continuationLedger.current!.begin();
+      continuationIncoming.current = { snapshot: incoming, seed, relock: relockSummary };
+      /* Gate: the extension is merged only when three suitable tags tied it to the saved scan. Overlap never replaces a missing lock (issue #43, TASK 05). */
+      const gate = continuationGate(seed, relockSummary);
+      if (!gate.ok) {
+        const detailKey = ({
+          base_tags_insufficient: 'scan.continuation.tags.base_insufficient',
+          tags_not_found: 'scan.continuation.tags.not_found',
+          collinear: 'scan.continuation.tags.collinear',
+          distance_mismatch: 'scan.continuation.tags.distance_mismatch',
+          residual_too_high: 'scan.continuation.tags.residual_too_high',
+          tags_not_locked: 'scan.continuation.tags.not_locked',
+        } as const)[gate.code];
+        const detail = translate(localeRef.current, detailKey, { count: relockSummary?.baseTags ?? 0, found: relockSummary?.found ?? 0, needed: relockSummary?.needed ?? 3 });
+        setScanStorageError(TranslatedError.fromKey('scan.error.continue_requires_tags', { detail }));
+        clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', { objectId, reason: gate.code, relock: relockSummary });
+        settleContinuation(token, { state: 'rejected', code: gate.code, messageKey: 'scan.error.continue_requires_tags', params: { detail } }, { relock: relockSummary });
+        scanIntent.current = 'fresh';
+        /* The saved scan and its registration stay available for another Continue in the same workflow. */
+        rejectedContinuation.current = true;
+        return;
+      }
       const generation = ++continuationOwnerGeneration.current;
       continuationPreviousPhase.current = previousPhase;
       continuationActive.current = true;
       setContinuationPhase('registration');
       setScanStoragePhase('continuing');
       const client = continuationClient.current ?? (continuationClient.current = new ContinuationClient());
-      const seed = relockSeed.current;
       if (seed !== null) clientDiagnostics.info('SCAN_CONTINUATION_SEEDED', { yawDeg: Math.round(seed.yaw * 5729.578) / 100, tx: Math.round(seed.tx * 1000) / 1000, ty: Math.round(seed.ty * 1000) / 1000, tz: Math.round(seed.tz * 1000) / 1000 });
       void client.continue(base, incoming, {
         generation,
@@ -1042,7 +1107,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           if (generation === continuationOwnerGeneration.current) setContinuationPhase(phase);
         },
       }).then((merged) => {
-        if (generation !== continuationOwnerGeneration.current) return;
+        if (generation !== continuationOwnerGeneration.current) return;      /* superseded: whoever superseded it settled it */
         continuationActive.current = false;
         setContinuationPhase(null);
         continuationPreviousPhase.current = null;
@@ -1054,13 +1119,10 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
             reason: merged.reason,
             diagnostics: merged.diagnostics,
           });
-          /* Phone Lab only: keep the real B cloud and the transform the tags gave, so a rejected Continue can be replayed offline. */
-          capturePhoneLabBytes('continuation_b_rejected', () => encodeScanArtifact(incoming));
-          capturePhoneLabBytes('continuation_seed_json', () => new TextEncoder().encode(JSON.stringify({ seed, reason: merged.reason, diagnostics: merged.diagnostics })));
+          settleContinuation(token, { state: 'rejected', code: 'registration_rejected', messageKey: 'scan.error.continue_not_saved', params: { reason: merged.reason } }, merged.diagnostics);
           scanIntent.current = 'fresh';
           /* Keep the durable base and its registration available for another Continue attempt. */
           rejectedContinuation.current = true;
-          void clientDiagnostics.flush();
           return;
         }
         clientDiagnostics.info('SCAN_CONTINUATION_REGISTERED', {
@@ -1073,6 +1135,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           mergedStablePoints: merged.snapshot.pointCount,
           annotationsTruncated: merged.diagnostics.annotationsTruncated ?? false,
         });
+        settleContinuation(token, { state: 'success', code: 'merged', messageKey: null }, merged.diagnostics);
         void clientDiagnostics.flush();
         setTagOwner((owner) => ({ ...owner, frame: merged.extensionToBase }));
         void finalizeScanReady(merged.snapshot, intentAtFinish, merged.extensionToBase);
@@ -1084,15 +1147,19 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         setScanStoragePhase(previousPhase);
         scanIntent.current = 'fresh';
         const message = reason instanceof Error ? reason.message : String(reason);
-        setScanStorageError(reason instanceof ContinuationBudgetExceededError
-          ? TranslatedError.fromKey('scan.continuation.memory_budget_exceeded', {
-            estimate: formatNumber(locale, reason.estimate.estimatedBytes),
-            limit: formatNumber(locale, reason.estimate.limitBytes),
-          })
+        const budgetParams = reason instanceof ContinuationBudgetExceededError
+          ? { estimate: formatNumber(locale, reason.estimate.estimatedBytes), limit: formatNumber(locale, reason.estimate.limitBytes) }
+          : null;
+        const outcome: ContinuationOutcome = budgetParams !== null
+          ? { state: 'rejected', code: 'memory_budget', messageKey: 'scan.continuation.memory_budget_exceeded', params: budgetParams }
           : reason instanceof ContinuationCancelledError
-            ? TranslatedError.fromKey('scan.continuation.cancelled')
-            : TranslatedError.fromKey('scan.error.continue_not_saved', { reason: message }));
+            ? { state: 'cancelled', code: 'cancelled', messageKey: 'scan.continuation.cancelled' }
+            : reason instanceof ContinuationTimeoutError
+              ? { state: 'error', code: 'worker_timeout', messageKey: 'scan.continuation.timeout' }
+              : { state: 'error', code: 'worker_error', messageKey: 'scan.continuation.failed', params: { reason: message } };
+        setScanStorageError(TranslatedError.fromKey(outcome.messageKey as 'scan.continuation.cancelled', outcome.params));
         clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', { objectId, reason: message });
+        settleContinuation(token, outcome, { error: message });
         void clientDiagnostics.flush();
       });
       return;

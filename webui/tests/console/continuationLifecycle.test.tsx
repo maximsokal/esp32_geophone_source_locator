@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   viewportProps: null as any,
   viewportEvents: [] as Array<{ snapshot: any; currentScanId: string | null }>,
   workers: [] as any[],
+  outcomes: [] as any[],
   fetchRuns: vi.fn(), loadScan: vi.fn(), loadReg: vi.fn(), saveReg: vi.fn(), delReg: vi.fn(),
   saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(), saveTags: vi.fn(), delTags: vi.fn(), loadTags: vi.fn(),
 }));
@@ -76,7 +77,7 @@ async function flush(): Promise<void> {
 async function mount(sessionId: string | null = 'S'): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId, status: null })));
+    renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(App, { objectId: 'OBJ', sessionId, status: null, onContinuationOutcome: (outcome: unknown) => { h.outcomes.push(outcome); } })));
   });
   mounted.push(renderer);
   await flush();
@@ -151,10 +152,13 @@ async function openSavedBase(): Promise<{ renderer: ReactTestRenderer; baseSnaps
   return { renderer, baseSnapshot, baseBytes, baseId };
 }
 
+/** A tag lock as the scanner reports it: Continue is merged only through one (TASK 05). */
+const LOCK = { yaw: 0, tx: 0, ty: 0, tz: 0 };
+
 async function startContinue(extension = makeValidScanSnapshot()): Promise<any> {
   await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
   await flush();
-  await act(async () => { h.props.onPointCloudReady(extension); });
+  await act(async () => { h.props.onPointCloudReady(extension, { relockTransform: LOCK }); });
   await flush();
   const worker = h.workers[h.workers.length - 1];
   if (worker === undefined) throw new Error('Continuation did not create a worker.');
@@ -163,7 +167,7 @@ async function startContinue(extension = makeValidScanSnapshot()): Promise<any> 
 }
 
 beforeEach(() => {
-  h.props = null; h.viewportProps = null; h.viewportEvents = []; h.workers = [];
+  h.props = null; h.viewportProps = null; h.viewportEvents = []; h.workers = []; h.outcomes = [];
   device.scan = null; device.occupancy = null; device.preview = null;
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('window', {
@@ -205,7 +209,7 @@ afterEach(() => {
 });
 
 describe('App off-thread continuation lifecycle (MAX-393)', () => {
-  it('hands the tag-derived transform of a locked Continue to the worker as its registration seed, and none without a lock (issue #45)', async () => {
+  it('hands the tag-derived transform of a locked Continue to the worker as its registration seed (issue #45)', async () => {
     const T = { yaw: 0.31, tx: 1.25, ty: -0.5, tz: 0.02 };
     await openSavedBase();
     await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
@@ -214,15 +218,74 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     await flush();
     const locked = h.workers[h.workers.length - 1];
     expect(locked.request.options.seed).toEqual(T);
+  });
 
-    await act(async () => { h.props.onScanIntent('fresh'); });
-    h.workers = [];
+  it('CONT-02/03/12: a Continue that did not lock (one tag, two tags, none) is REJECTED with the concrete reason, creates no worker, keeps A, and ends in exactly one terminal state', async () => {
+    for (const [found, code] of [[0, 'tags_not_found'], [1, 'tags_not_found'], [2, 'tags_not_found']] as const) {
+      h.workers = []; h.outcomes = [];
+      const captured: Array<{ name: string; bytes: Uint8Array }> = [];
+      (globalThis as { __phoneLab?: unknown }).__phoneLab = { capture: (name: string, bytes: Uint8Array) => captured.push({ name, bytes }) };
+      try {
+        const { baseSnapshot } = await openSavedBase();
+        await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+        await flush();
+        await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: null, relock: { baseTags: 4, found, needed: 3, reason: 'need_more_tags' } }); });
+        await flush();
+        expect(h.workers, `${found} tags: no registration by overlap alone`).toHaveLength(0);
+        expect(h.outcomes).toHaveLength(1);
+        expect(h.outcomes[0]).toMatchObject({ state: 'rejected', code, messageKey: 'scan.error.continue_requires_tags' });
+        expect(h.outcomes[0].params.detail).toContain(`${found} of 3`);
+        expect(h.viewportProps.snapshot, 'the saved scan is untouched').toBe(baseSnapshot);
+        expect(h.saveScan).not.toHaveBeenCalled();
+        const cloud = captured.find((entry) => entry.name === 'continuation_b_rejected');
+        expect(cloud, 'a diagnostic copy of B is kept').toBeDefined();
+        expect(JSON.parse(new TextDecoder().decode(captured.find((entry) => entry.name === 'continuation_seed_json')!.bytes))).toMatchObject({ state: 'rejected', code, relock: { found } });
+      } finally { delete (globalThis as { __phoneLab?: unknown }).__phoneLab; }
+      await act(async () => { for (const renderer of [...mounted]) renderer.unmount(); mounted.length = 0; });
+      h.props = null;
+    }
+  });
+
+  it('CONT-04: tags that were found but are geometrically unusable (collinear, moved, poor fit) give their own reason', async () => {
+    for (const reason of ['collinear', 'distance_mismatch', 'residual_too_high'] as const) {
+      h.workers = []; h.outcomes = [];
+      await openSavedBase();
+      await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+      await flush();
+      await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: null, relock: { baseTags: 4, found: 3, needed: 3, reason } }); });
+      await flush();
+      expect(h.workers).toHaveLength(0);
+      expect(h.outcomes).toHaveLength(1);
+      expect(h.outcomes[0]).toMatchObject({ state: 'rejected', code: reason });
+      await act(async () => { for (const renderer of [...mounted]) renderer.unmount(); mounted.length = 0; });
+      h.props = null;
+    }
+  });
+
+  it('a saved scan with fewer than three usable tags cannot be continued: the reason names the saved scan, not the new one', async () => {
+    await openSavedBase();
     await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
     await flush();
-    await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot()); });
+    await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: null, relock: { baseTags: 2, found: 0, needed: 3, reason: 'need_more_tags' } }); });
     await flush();
-    const unlocked = h.workers[h.workers.length - 1];
-    expect(unlocked.request.options).not.toHaveProperty('seed');
+    expect(h.outcomes).toHaveLength(1);
+    expect(h.outcomes[0]).toMatchObject({ state: 'rejected', code: 'base_tags_insufficient' });
+    expect(h.outcomes[0].params.detail).toContain('only 2');
+  });
+
+  it('CONT-16: after a rejection the same workflow can Continue again, and that one merges', async () => {
+    const { renderer } = await openSavedBase();
+    void renderer;
+    await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+    await flush();
+    await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: null, relock: { baseTags: 4, found: 1, needed: 3, reason: 'need_more_tags' } }); });
+    await flush();
+    expect(h.outcomes).toHaveLength(1);
+    const worker = await startContinue();
+    expect(worker.request.options.seed).toEqual(LOCK);
+    await act(async () => { worker.send({ type: 'result', requestId: worker.request.requestId, generation: worker.request.generation, result: workerSuccess(changedSnapshot()) }); });
+    await flush();
+    expect(h.outcomes.map((o) => o.state)).toEqual(['rejected', 'success']);
   });
 
   it('reopens a scan that is still staged (no recording yet) with the saved scan on screen and Continue available (audit 2026-11-22)', async () => {
@@ -312,7 +375,9 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     expect(h.viewportProps.currentScanId).toBe(baseId);
     expect(device.scan).toEqual(baseBytes);
     const rendered = JSON.stringify(renderer.toJSON());
-    expect(rendered).toContain('The scan continuation was not saved: worker failed');
+    expect(rendered).toContain('Scan merge failed: worker failed. The saved scan is unchanged.');
+    expect(h.outcomes).toHaveLength(1);
+    expect(h.outcomes[0]).toMatchObject({ state: 'error', code: 'worker_error' });
     expect(rendered).toContain('3D scan restored from SD · OBJ');
   });
 
@@ -376,6 +441,65 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     expect(worker.terminated).toBe(true);
     expect(request.base.positions.byteLength).toBe(0);
     expect(h.saveScan).not.toHaveBeenCalled();
+  });
+
+  it('CONT-13 / TASK 05: closing the scanner mid-merge ends the Continue as CANCELLED, once, with a diagnostic copy of B (the old code ended it in silence and showed the saved scan)', async () => {
+    const captured: Array<{ name: string }> = [];
+    (globalThis as { __phoneLab?: unknown }).__phoneLab = { capture: (name: string) => captured.push({ name }) };
+    try {
+      const { renderer } = await openSavedBase();
+      const worker = await startContinue();
+      expect(h.outcomes, 'running: no terminal state yet').toHaveLength(0);
+      act(() => { renderer.unmount(); });
+      mounted.splice(mounted.indexOf(renderer), 1);
+      await flush();
+      expect(worker.terminated).toBe(true);
+      expect(h.outcomes).toHaveLength(1);
+      expect(h.outcomes[0]).toMatchObject({ state: 'cancelled', code: 'viewer_closed', messageKey: 'scan.continuation.cancelled_viewer_closed' });
+      expect(captured.map((entry) => entry.name)).toEqual(expect.arrayContaining(['continuation_b_rejected', 'continuation_seed_json']));
+    } finally { delete (globalThis as { __phoneLab?: unknown }).__phoneLab; }
+  });
+
+  it('a newer scan, a deleted scan and an owner change each end the running Continue as cancelled exactly once, and the late worker answer adds nothing', async () => {
+    const { baseSnapshot } = await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { expect(h.props.onScanIntent('fresh')).toBe(true); });
+    await flush();
+    expect(h.outcomes.map((o) => o.state)).toEqual(['cancelled']);
+    /* the cancelled worker answers anyway (stale callback): nothing is added, nothing is saved, the saved scan stays */
+    await act(async () => { worker.send({ type: 'result', requestId: worker.request.requestId, generation: worker.request.generation, result: workerSuccess(changedSnapshot()) }); });
+    await flush();
+    expect(h.outcomes.map((o) => o.state)).toEqual(['cancelled']);
+    expect(h.saveScan).not.toHaveBeenCalled();
+    expect(h.viewportProps.snapshot).toBe(baseSnapshot);
+  });
+
+  it('CONT-15: a worker that never answers is stopped by the timeout and ends the Continue as an ERROR with its reason', async () => {
+    vi.useFakeTimers();
+    try {
+      await openSavedBase();
+      await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+      await flush();
+      await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: LOCK }); });
+      const worker = h.workers[h.workers.length - 1];
+      expect(worker.terminated).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(181_000); });
+      await flush();
+      expect(worker.terminated).toBe(true);
+      expect(h.outcomes).toHaveLength(1);
+      expect(h.outcomes[0]).toMatchObject({ state: 'error', code: 'worker_timeout', messageKey: 'scan.continuation.timeout' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('CONT-24: whatever the terminal state, the saved scan is never written or replaced', async () => {
+    const { baseSnapshot, baseBytes } = await openSavedBase();
+    const worker = await startContinue();
+    await act(async () => { worker.fail('boom'); });
+    await flush();
+    expect(h.outcomes[0]).toMatchObject({ state: 'error' });
+    expect(h.saveScan).not.toHaveBeenCalled();
+    expect(device.scan).toEqual(baseBytes);
+    expect(h.viewportProps.snapshot).toBe(baseSnapshot);
   });
 
   it('keeps A durable and generates no derivatives when merged artifact encoding exceeds 8 MiB', async () => {

@@ -38,6 +38,7 @@ import { estimateTagPose } from '../xr/fiducial/tagPose';
 import { fuseTagObservations, type TagObservation, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
 import { LIVE_MESH_MODES, readLiveMeshMode, writeLiveMeshMode } from '../xr/liveMeshSetting';
 import type { LiveMeshMode } from '../xr/webxrRuntime';
+import type { RelockSummary } from '../xr/continuationOutcome';
 import { evaluateRelock, INITIAL_RELOCK_STATE, recentTagObservations, relockBaseTags, relockLostByJump, relockStillHolds, RELOCK_MIN_OBSERVATIONS, RELOCK_MIN_TAGS, RELOCK_MIN_VIEWS, type RelockBaseTag, type RelockState, type RelockTransform } from '../xr/fiducial/continuationRelocalization';
 import type { TagPositionsArtifact } from '../xr/fiducial/tagPositionsArtifact';
 import { buildReferenceMeshOverlay, buildReferenceOverlay } from '../xr/fiducial/referenceOverlay';
@@ -86,7 +87,7 @@ interface XrRuntimePanelProps {
   onDeleteSavedScan?: () => void;
   onSessionActiveChange?: (active:boolean)=>void;
   /** `meta.relockTransform` is the B -> A transform found from known tags (issue #45) for a Continue that locked, else null. */
-  onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null,meta?:{relockTransform:RelockTransform|null})=>void;
+  onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null,meta?:{relockTransform:RelockTransform|null;relock?:RelockSummary|null})=>void;
   onCapabilitiesChange?: (capabilities:WebXrCapabilities)=>void;
   /** Restores (Continue, only when applicable) or clears the authoritative registration held by the parent. */
   onRegistrationChange?: (artifact:RegistrationArtifact|null)=>void;
@@ -166,7 +167,7 @@ export function XrRuntimePanel({
   const[liveMeshMode,setLiveMeshModeState]=useState<LiveMeshMode>(()=>readLiveMeshMode());
   useEffect(()=>{runtime.setLiveMeshMode(liveMeshMode);},[runtime,liveMeshMode]);
   const[relock,setRelock]=useState<RelockState|null>(null);const[relockAligned,setRelockAligned]=useState(false);
-  const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
+  const relockBaseCountRef=useRef(0);const relockLastRef=useRef<{found:number;reason:string|null}>({found:0,reason:null});const relockArmedRef=useRef(false);const relockBaseRef=useRef<RelockBaseTag[]>([]);const relockTransformRef=useRef<RelockTransform|null>(null);const relockUsedRef=useRef<number[]>([]);
   const getRelockBaseRef=useRef(getRelockBase);getRelockBaseRef.current=getRelockBase;const getReferencePointsRef=useRef(getReferencePoints);getReferencePointsRef.current=getReferencePoints;const getReferenceMeshRef=useRef(getReferenceMesh);getReferenceMeshRef.current=getReferenceMesh;
   const placeReferenceMesh=(transform:RelockTransform|null):void=>{const mesh=getReferenceMeshRef.current?.()??null;runtime.setReferenceMesh(mesh===null||transform===null?null:buildReferenceMeshOverlay(mesh,transform));};
   const disarmRelock=():void=>{relockArmedRef.current=false;relockBaseRef.current=[];relockTransformRef.current=null;relockUsedRef.current=[];runtime.setReferenceOverlay(null);runtime.setReferenceMesh(null);setRelock(null);setRelockAligned(false);};
@@ -174,6 +175,7 @@ export function XrRuntimePanel({
     disarmRelock();
     if(scanIntentRef.current!=='continue')return;
     const base=relockBaseTags(getRelockBaseRef.current?.()??null,baseScanFrameIdRef.current);
+    relockBaseCountRef.current=base.length;relockLastRef.current={found:0,reason:'need_more_tags'};
     if(base.length<RELOCK_MIN_TAGS){clientDiagnostics.info('XR_RELOCK_UNAVAILABLE',{baseTags:base.length});return;}
     relockBaseRef.current=base;relockArmedRef.current=true;setRelock({...INITIAL_RELOCK_STATE});
     clientDiagnostics.info('XR_RELOCK_START',{baseTags:base.map((tag)=>tag.tagId).join(',')});
@@ -182,7 +184,7 @@ export function XrRuntimePanel({
   const updateRelock=(observations:readonly TagObservation[]):void=>{
     if(!relockArmedRef.current)return;
     const fusion=fuseTagObservations(recentTagObservations(observations),{minObservations:RELOCK_MIN_OBSERVATIONS,minIndependentViews:RELOCK_MIN_VIEWS});
-    const next=evaluateRelock(relockBaseRef.current,fusion);const held=relockTransformRef.current;
+    const next=evaluateRelock(relockBaseRef.current,fusion);const held=relockTransformRef.current;relockLastRef.current={found:next.found,reason:next.reason};
     if(held!==null){
       if(relockLostByJump(relockUsedRef.current,fusion)||!relockStillHolds(held,next)){dropRelockLock('XR_RELOCK_LOST');return;}
       /* The same lock, now informed by more sightings: adopt the better fit (the merge is seeded with the latest) and move the overlay with it. */
@@ -268,10 +270,11 @@ export function XrRuntimePanel({
       const neverLocked=relockArmedRef.current&&relockTransformRef.current===null;
       const lockedForMerge=relockTransformRef.current;       /* read before disarming: the merge of this Continue is registered by it */
       const finished=finishedRaw;
+      const relockSummary:RelockSummary|null=scanIntentRef.current==='continue'?{baseTags:relockBaseCountRef.current,found:relockLastRef.current.found,needed:RELOCK_MIN_TAGS,reason:relockLastRef.current.reason}:null;
       if(runtimeState.phase==='ended'&&neverLocked)clientDiagnostics.warn('XR_RELOCK_NEVER_LOCKED',{pointCount:runtimeState.pointCount});
       disarmRelock();
       /* MAX-403: the Finished scan is primary evidence and is handed over at once; tag finalization is a separate bounded stage. */
-      if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot(),{relockTransform:lockedForMerge});
+      if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot(),{relockTransform:lockedForMerge,relock:relockSummary});
       void (async()=>{
         let artifact:RegistrationArtifact|null=null;
         try{artifact=await tagStopRef.current({discard:!finished});}catch{artifact=null;}

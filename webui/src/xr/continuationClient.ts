@@ -16,7 +16,12 @@ export interface ContinuationClientOptions {
   onPhase?: (phase: ScanContinuationPhase) => void;
   /** The B -> A transform found from known tags (issue #45): used as the registration. */
   seed?: { yaw: number; tx: number; ty: number; tz: number } | null;
+  /** The worker is terminated and the request fails with {@link ContinuationTimeoutError} when it has not answered by then. */
+  timeoutMs?: number;
 }
+
+/** A merge that has not finished within this long is stopped: a hung worker must end in a visible state, not in silence (TASK 05). */
+export const CONTINUATION_DEFAULT_TIMEOUT_MS = 180_000;
 
 export class ContinuationBudgetExceededError extends Error {
   readonly code = 'continuation_transient_budget_exceeded';
@@ -36,7 +41,17 @@ export class ContinuationCancelledError extends Error {
   }
 }
 
+export class ContinuationTimeoutError extends Error {
+  readonly code = 'continuation_timeout';
+
+  constructor(readonly timeoutMs: number) {
+    super(`continuation_timeout: no answer from the merge worker within ${timeoutMs} ms`);
+    this.name = 'ContinuationTimeoutError';
+  }
+}
+
 interface PendingContinuation {
+  timer?: ReturnType<typeof setTimeout>;
   requestId: number;
   generation: number;
   token: number;
@@ -137,6 +152,8 @@ export class ContinuationClient {
           ...(options.onPhase === undefined ? {} : { onPhase: options.onPhase }), resolve, reject,
         };
         this.pending = pending;
+        const timeoutMs = options.timeoutMs ?? CONTINUATION_DEFAULT_TIMEOUT_MS;
+        if (Number.isFinite(timeoutMs) && timeoutMs > 0) pending.timer = setTimeout(() => this.finishWithError(pending, new ContinuationTimeoutError(timeoutMs)), timeoutMs);
         worker.addEventListener('message', this.handleMessage);
         worker.addEventListener('error', this.handleError);
         worker.addEventListener('messageerror', this.handleMessageError);
@@ -158,6 +175,7 @@ export class ContinuationClient {
     const pending = this.pending;
     if (pending === null) return;
     this.pending = null;
+    if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
     releaseBuffers(pending.copies.flatMap(snapshotBuffers));
@@ -180,6 +198,7 @@ export class ContinuationClient {
   private finishWithError(pending: PendingContinuation, reason: unknown): void {
     if (this.pending !== pending) return;
     this.pending = null;
+    if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
     releaseBuffers(pending.copies.flatMap(snapshotBuffers));
@@ -204,6 +223,7 @@ export class ContinuationClient {
       return;
     }
     this.pending = null;
+    if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
     pending.copies = [];

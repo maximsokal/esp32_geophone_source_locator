@@ -35,7 +35,8 @@ import {
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
 import StorageUnavailableBanner from './components/StorageUnavailableBanner';
-import { formatErrorText, TranslatedError, useLocale, useT } from './i18n';
+import { formatErrorText, TranslatedError, translate, useLocale, useT } from './i18n';
+import type { ContinuationOutcome } from './xr/continuationOutcome';
 import ScannerFeatureHost from './features/scanner/ScannerFeatureHost';
 import WorkflowPanel from './features/workflow/WorkflowPanel';
 import { workflowStatusPollDelay } from './features/workflow/workflowPolling';
@@ -94,6 +95,8 @@ export default function DeviceConsoleApp() {
   const [preselectSessionId, setPreselectSessionId] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
+  /* How the last Continue scan ended when it did not merge (TASK 05): shown on the workflow page too, because the operator may have left the scanner meanwhile. */
+  const [continuationNotice, setContinuationNotice] = useState<ContinuationOutcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [webPreview, setWebPreview] = useState(false);
   const storageUnavailable = status?.storage_available === false;
@@ -678,6 +681,7 @@ export default function DeviceConsoleApp() {
           onBack={() => { void returnToWorkflowFromScanner(); }}
           onDashboard={() => setScreen('dashboard')}
           onScanSaved={completeWorkflowScan}
+          onContinuationOutcome={(outcome) => setContinuationNotice(outcome.state === 'success' ? null : outcome)}
         />
       </div>
     );
@@ -721,6 +725,12 @@ export default function DeviceConsoleApp() {
 
       <PowerBanner status={status} />
       <StorageUnavailableBanner status={status} />
+      {continuationNotice !== null && continuationNotice.messageKey !== null && (
+        <div className={continuationNotice.state === 'cancelled' ? 'console-notice' : 'console-error'} role={continuationNotice.state === 'cancelled' ? 'status' : 'alert'} data-testid="continuation-outcome" data-state={continuationNotice.state}>
+          <span>{translate(locale, continuationNotice.messageKey as Parameters<typeof translate>[1], continuationNotice.params)}</span>
+          <button className="secondary" onClick={() => setContinuationNotice(null)}>{t('calc.close')}</button>
+        </div>
+      )}
 
       {screen === 'dashboard' && (
         <DeviceDashboard

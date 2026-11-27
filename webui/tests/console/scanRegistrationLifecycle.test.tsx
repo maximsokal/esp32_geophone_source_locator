@@ -128,7 +128,7 @@ async function retryOccupancy(renderer: ReactTestRenderer): Promise<void> {
 /** Drives the production App through one AR session the way XrRuntimePanel does. */
 async function finishScan(intent: 'fresh' | 'continue', tag: RegistrationArtifact | null, options: { tagFirst?: boolean } = {}): Promise<void> {
   await act(async () => { h.props.onScanIntent(intent); h.props.onPointCloudReady(null); });
-  await act(async () => { h.props.onPointCloudReady(intent === 'fresh' ? variantSnapshot() : makeValidScanSnapshot()); });
+  await act(async () => { h.props.onPointCloudReady(intent === 'fresh' ? variantSnapshot() : makeValidScanSnapshot(), intent === 'fresh' ? undefined : { relockTransform: { yaw: 0, tx: 0, ty: 0, tz: 0 } }); });
   if (options.tagFirst !== true) await act(async () => { h.props.onTagRegistrationResult(tag, true); });
   await flush();
 }
