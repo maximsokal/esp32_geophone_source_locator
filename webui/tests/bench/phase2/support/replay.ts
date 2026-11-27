@@ -129,3 +129,57 @@ export function depthInformation(frame: ReplayFrame): { width: number; height: n
 export function projectCameraPosition(frame: ReplayFrame): [number, number, number] {
   const m = frame.worldFromView; return [m[12], -m[14], m[13]];
 }
+
+function downsample(png: { width: number; height: number; values: Uint16Array }, outW: number, outH: number, depthScale: number): Float32Array {
+  const depth = new Float32Array(outW * outH);
+  for (let y = 0; y < outH; y += 1) for (let x = 0; x < outW; x += 1) {
+    const sx = Math.min(png.width - 1, Math.floor(((x + 0.5) * png.width) / outW)); const sy = Math.min(png.height - 1, Math.floor(((y + 0.5) * png.height) / outH));
+    const raw = png.values[sy * png.width + sx];
+    depth[y * outW + x] = raw === 0 ? Number.NaN : raw / depthScale;
+  }
+  return depth;
+}
+
+export interface FolderReplayOptions { stride?: number; maxFrames?: number; outWidth?: number; outHeight?: number }
+
+/**
+ * ICL-NUIM TUM-compatible sequences: depth/<n>.png (16-bit, scale 5000, z-depth: verified by plane fit, see the manifest) and a Freiburg ground-truth file
+ * "index tx ty tz qx qy qz qw" whose rows are the frames in order.
+ */
+export function loadIclSequence(dir: string, groundTruthFile: string, options: FolderReplayOptions = {}): ReplayFrame[] {
+  const outW = options.outWidth ?? 160; const outH = options.outHeight ?? 120;
+  const files = readdirSync(join(dir, 'depth')).filter((name) => name.endsWith('.png')).sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+  const poses = readRows(groundTruthFile);
+  const projection = projectionFor(ICL_INTRINSICS);
+  const frames: ReplayFrame[] = [];
+  const count = Math.min(files.length, poses.length);
+  for (let i = 0; i < count; i += options.stride ?? 1) {
+    const q = poses[i].parts.slice(1).map(Number);
+    const png = readDepthPng(join(dir, 'depth', files[i]));
+    const camera = quaternionMatrix(q[0], q[1], q[2], q[3], q[4], q[5], q[6]);
+    frames.push({ timestamp: i / 30, width: outW, height: outH, depth: downsample(png, outW, outH, 5000), projection, worldFromView: columnMajor(mul(WORLD_Y_UP, mul(camera, CAMERA_FLIP))) });
+    if (options.maxFrames !== undefined && frames.length >= options.maxFrames) break;
+  }
+  return frames;
+}
+
+/** Redwood augmented ICL-NUIM: <depthDir>/NNNNN.png (16-bit millimetres, z-depth) and a trajectory file of "i i+1 n" headers each followed by a 4x4 camera-to-world matrix. */
+export function loadRedwoodSequence(depthDir: string, trajectoryFile: string, options: FolderReplayOptions = {}): ReplayFrame[] {
+  const outW = options.outWidth ?? 160; const outH = options.outHeight ?? 120;
+  const lines = readFileSync(trajectoryFile, 'utf8').split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const matrices: Mat[] = [];
+  for (let i = 0; i + 4 < lines.length + 1; i += 5) {
+    const rows = lines.slice(i + 1, i + 5).map((l) => l.trim().split(/\s+/).map(Number));
+    if (rows.length === 4 && rows.every((r) => r.length === 4)) matrices.push(rows.flat());
+  }
+  const files = readdirSync(depthDir).filter((name) => name.endsWith('.png')).sort();
+  const projection = projectionFor(ICL_INTRINSICS);
+  const frames: ReplayFrame[] = [];
+  const count = Math.min(files.length, matrices.length);
+  for (let i = 0; i < count; i += options.stride ?? 1) {
+    const png = readDepthPng(join(depthDir, files[i]));
+    frames.push({ timestamp: i / 30, width: outW, height: outH, depth: downsample(png, outW, outH, 1000), projection, worldFromView: columnMajor(mul(WORLD_Y_UP, mul(matrices[i], CAMERA_FLIP))) });
+    if (options.maxFrames !== undefined && frames.length >= options.maxFrames) break;
+  }
+  return frames;
+}

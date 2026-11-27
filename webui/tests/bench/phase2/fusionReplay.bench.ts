@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 
@@ -7,7 +8,7 @@ import {
   ARCORE_NOISE, boxCornerScene, DEFAULT_INTRINSICS, insideCornerScene, nearestPolygon, orbitPoses, renderDepth, stepScene, tiltedPlaneScene,
   type SyntheticScene,
 } from '../../xr/support/syntheticDepthScene';
-import { DATASET_ROOT, depthInformation, findSequenceDir, loadTumLike, projectCameraPosition, TUM_INTRINSICS } from './support/replay';
+import { DATASET_ROOT, depthInformation, findSequenceDir, loadIclSequence, loadRedwoodSequence, loadTumLike, projectCameraPosition, TUM_INTRINSICS, type ReplayFrame } from './support/replay';
 import { heapMb, summarize, writeReport } from './support/stats';
 
 /*
@@ -113,20 +114,42 @@ describe('fusion workload and surface quality, synthetic scans (ARCore-like nois
   }, 600_000);
 });
 
-const SEQUENCES: Array<[string, string, 'freiburg1' | 'freiburg2']> = [
-  ['tum-freiburg1-xyz', `${DATASET_ROOT}/tum/freiburg1_xyz`, 'freiburg1'],
-  ['tum-freiburg1-desk', `${DATASET_ROOT}/tum/freiburg1_desk`, 'freiburg1'],
-  ['tum-freiburg1-room', `${DATASET_ROOT}/tum/freiburg1_room`, 'freiburg1'],
-  ['tum-freiburg2-desk', `${DATASET_ROOT}/tum/freiburg2_desk`, 'freiburg2'],
+type SequenceSource = { name: string; load: () => ReplayFrame[] | null };
+
+const tumSource = (name: string, folder: string, camera: 'freiburg1' | 'freiburg2'): SequenceSource => ({
+  name,
+  load: () => { const dir = findSequenceDir(`${DATASET_ROOT}/tum/${folder}`); return dir === null ? null : loadTumLike({ dir, intrinsics: TUM_INTRINSICS[camera], depthScale: 5000, stride: 3, maxFrames: 300 }); },
+});
+const iclSource = (name: string, folder: string, gt: string): SequenceSource => ({
+  name,
+  load: () => { const dir = `${DATASET_ROOT}/icl-nuim/${folder}`; return existsSync(dir) ? loadIclSequence(dir, `${DATASET_ROOT}/icl-nuim/${gt}`, { stride: 3, maxFrames: 300 }) : null; },
+});
+const redwoodSource = (name: string, folder: string, traj: string): SequenceSource => ({
+  name,
+  load: () => { const dir = `${DATASET_ROOT}/redwood/${folder}`; return existsSync(dir) ? loadRedwoodSequence(dir, `${DATASET_ROOT}/redwood/${traj}`, { stride: 3, maxFrames: 300 }) : null; },
+});
+
+const SEQUENCES: SequenceSource[] = [
+  tumSource('tum-freiburg1-xyz', 'freiburg1_xyz', 'freiburg1'),
+  tumSource('tum-freiburg1-desk', 'freiburg1_desk', 'freiburg1'),
+  tumSource('tum-freiburg1-room', 'freiburg1_room', 'freiburg1'),
+  tumSource('tum-freiburg2-desk', 'freiburg2_desk', 'freiburg2'),
+  iclSource('icl-living-kt0-clean', 'living_kt0', 'livingRoom0.gt.freiburg'),
+  iclSource('icl-living-kt0-noisy', 'living_kt0_noisy', 'livingRoom0.gt.freiburg'),
+  iclSource('icl-office-kt0-clean', 'office_kt0', 'traj0.gt.freiburg'),
+  iclSource('icl-office-kt0-noisy', 'office_kt0_noisy', 'traj0.gt.freiburg'),
+  redwoodSource('redwood-living1-clean', 'livingroom1-depth-clean', 'livingroom1-traj.txt'),
+  redwoodSource('redwood-living1-noisy', 'livingroom1-depth-simulated', 'livingroom1-traj.txt'),
+  redwoodSource('redwood-office1-clean', 'office1-depth-clean', 'office1-traj.txt'),
+  redwoodSource('redwood-office1-noisy', 'office1-depth-simulated', 'office1-traj.txt'),
 ];
 
-describe('fusion workload, TUM RGB-D depth/pose replay (Kinect depth resampled to 160x120)', () => {
-  for (const [name, root, camera] of SEQUENCES) {
-    it(`${name}: ${DATASET_REPEATS} repeats of up to 300 frames`, () => {
-      const dir = findSequenceDir(root);
-      expect(dir, `dataset ${name} is not downloaded (python tools/datasets/download_3d_scanning.py download)`).not.toBeNull();
-      const frames = loadTumLike({ dir: dir!, intrinsics: TUM_INTRINSICS[camera], depthScale: 5000, stride: 3, maxFrames: 300 });
-      expect(frames.length, 'depth/pose pairs found').toBeGreaterThan(100);
+describe('fusion workload, public RGB-D depth/pose replay (depth resampled to 160x120, up to 300 frames)', () => {
+  for (const { name, load } of SEQUENCES) {
+    it(`${name}: ${DATASET_REPEATS} repeats`, () => {
+      const frames = load();
+      expect(frames, `dataset ${name} is not downloaded (python tools/datasets/download_3d_scanning.py download)`).not.toBeNull();
+      expect(frames!.length, 'depth/pose pairs found').toBeGreaterThan(100);
       const all: number[] = []; const allOccupancy: number[] = [];
       let last = { points: 0, promoted: 0, keyframes: 0 };
       let heapPeak = 0;
@@ -135,7 +158,7 @@ describe('fusion workload, TUM RGB-D depth/pose replay (Kinect depth resampled t
         const occupancyClock = instrumentOccupancy(accumulator);
         const heapStart = heapMb(); const times: number[] = []; const occupancyTimes: number[] = [];
         let keyframeId = 0; let lastKey: Float32Array | null = null;
-        for (const frame of frames) {
+        for (const frame of frames!) {
           const m = frame.worldFromView;
           const moved = lastKey === null ? Infinity : Math.hypot(m[12] - lastKey[12], m[13] - lastKey[13], m[14] - lastKey[14]);
           const turned = lastKey === null ? Infinity : 1 - (m[0] * lastKey[0] + m[1] * lastKey[1] + m[2] * lastKey[2] + m[4] * lastKey[4] + m[5] * lastKey[5] + m[6] * lastKey[6] + m[8] * lastKey[8] + m[9] * lastKey[9] + m[10] * lastKey[10]) / 3;
@@ -151,7 +174,7 @@ describe('fusion workload, TUM RGB-D depth/pose replay (Kinect depth resampled t
         all.push(...times.slice(WARMUP_CALLS)); allOccupancy.push(...occupancyTimes.slice(WARMUP_CALLS));
         last = { points: accumulator.pointCount, promoted: accumulator.promotedCount, keyframes: accumulator.keyframeCount };
       }
-      writeReport('fusion', name, { frames: frames.length, callMs: summarize(all), occupancyMs: summarize(allOccupancy), ...last, heapDeltaMb: heapPeak });
+      writeReport('fusion', name, { frames: frames!.length, callMs: summarize(all), occupancyMs: summarize(allOccupancy), ...last, heapDeltaMb: heapPeak });
     }, 1_800_000);
   }
 });

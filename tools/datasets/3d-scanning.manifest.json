@@ -246,7 +246,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj0_frei_png.tar.gz",
       "path": "icl-nuim/living_room_traj0_frei_png.tar.gz",
       "extract": "icl-nuim/living_kt0",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "4eca8c2e9f77c1bd7436c746d22ea6144b8c01fe9bc29a84e734186823f1f1ad",
+      "bytes": 711444709
     },
     {
       "name": "icl-living-kt0-noisy",
@@ -255,7 +257,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj0n_frei_png.tar.gz",
       "path": "icl-nuim/living_room_traj0n_frei_png.tar.gz",
       "extract": "icl-nuim/living_kt0_noisy",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "886a9c56c97746fbeee4fd4214fd267821a8caa3daa47e364bd05febba144502",
+      "bytes": 940525575
     },
     {
       "name": "icl-living-kt0-gt",
@@ -263,7 +267,9 @@
       "kind": "trajectory",
       "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/livingRoom0.gt.freiburg",
       "path": "icl-nuim/livingRoom0.gt.freiburg",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "658bfae1e3118c9f97ad7c99721649e3de65b16e209c1f5271dbc2a84cb67d61",
+      "bytes": 108786
     },
     {
       "name": "icl-living-kt1",
@@ -272,7 +278,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj1_frei_png.tar.gz",
       "path": "icl-nuim/living_room_traj1_frei_png.tar.gz",
       "extract": "icl-nuim/living_kt1",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "75d5f87ebaf313f6ddf9d1750815c277e3b16db8abd68a950f6a3665a49f2403",
+      "bytes": 473108638
     },
     {
       "name": "icl-living-kt1-noisy",
@@ -281,7 +289,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj1n_frei_png.tar.gz",
       "path": "icl-nuim/living_room_traj1n_frei_png.tar.gz",
       "extract": "icl-nuim/living_kt1_noisy",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "6383ed5157967c2f7c82c2eb1b5c88ab8813eac0d40b7612d41a526f30b9cdb8",
+      "bytes": 612790800
     },
     {
       "name": "icl-living-kt1-gt",
@@ -289,7 +299,9 @@
       "kind": "trajectory",
       "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/livingRoom1.gt.freiburg",
       "path": "icl-nuim/livingRoom1.gt.freiburg",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "31b02f32d40c2d4949e310e386aaa81eed5bb8db9a7d1d6feb055788de7bae37",
+      "bytes": 70986
     },
     {
       "name": "icl-office-kt0",
@@ -298,7 +310,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/traj0_frei_png.tar.gz",
       "path": "icl-nuim/traj0_frei_png.tar.gz",
       "extract": "icl-nuim/office_kt0",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "1e86246fdbe185e85a9914c7910285e34cfb11bfd12f3de59d160222ffb72ee6",
+      "bytes": 504943631
     },
     {
       "name": "icl-office-kt0-noisy",
@@ -307,7 +321,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/traj0n_frei_png.tar.gz",
       "path": "icl-nuim/traj0n_frei_png.tar.gz",
       "extract": "icl-nuim/office_kt0_noisy",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "b2fc52e7f8b81f593981fb111ce781d5e9af55fe828927d5e67842b8f0181757",
+      "bytes": 925675886
     },
     {
       "name": "icl-office-kt0-gt",
@@ -315,7 +331,9 @@
       "kind": "trajectory",
       "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/traj0.gt.freiburg",
       "path": "icl-nuim/traj0.gt.freiburg",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "1abecdd5bf6098f0e465ce2206a7935de51592e3b3e96ab741d65db1b6c1df93",
+      "bytes": 108604
     },
     {
       "name": "icl-office-kt1",
@@ -324,7 +342,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/traj1_frei_png.tar.gz",
       "path": "icl-nuim/traj1_frei_png.tar.gz",
       "extract": "icl-nuim/office_kt1",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "0cc6b42226a449fcc643137845e4b0cd6ad36aa904b20f7d110d1d50645dfb6a",
+      "bytes": 237882629
     },
     {
       "name": "icl-office-kt1-noisy",
@@ -333,7 +353,9 @@
       "url": "http://www.doc.ic.ac.uk/~ahanda/traj1n_frei_png.tar.gz",
       "path": "icl-nuim/traj1n_frei_png.tar.gz",
       "extract": "icl-nuim/office_kt1_noisy",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "a735c1eb22c754193c721844fd114318883cdda80129240c1bdd17678ce60346",
+      "bytes": 537116532
     },
     {
       "name": "icl-office-kt1-gt",
@@ -341,7 +363,9 @@
       "kind": "trajectory",
       "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/traj1.gt.freiburg",
       "path": "icl-nuim/traj1.gt.freiburg",
-      "license": "CC BY 3.0"
+      "license": "CC BY 3.0",
+      "sha256": "5b46c51a4d084a6f2206dc57e22dc8ec879dcd46244e1dcaef46d8f4e2c3a270",
+      "bytes": 69891
     }
   ]
 }
