@@ -1,5 +1,6 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import { liveComputeScheduler } from './liveComputeScheduler';
+import { logWorkerLifecycle } from './workerLifecycleLog';
 import type { SurfaceComponentReadinessSummary } from './scanCapabilityReadiness';
 import type { StructuralCandidateDiagnostics } from './structuralCandidatePolicy';
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
@@ -69,6 +70,7 @@ export class StructuralGuideClient {
     // main thread. Creation is deliberately lazy: a tiny scan never pays for it.
     const worker = this.workerFactory();
     this.worker = worker;
+    logWorkerLifecycle('structural-guide', 'create', 'first analysis of the session');
     try {
       worker.addEventListener('message', this.handleMessage);
       worker.addEventListener('error', this.handleError);
@@ -137,7 +139,7 @@ export class StructuralGuideClient {
 
   reset(): void {
     this.epoch += 1;
-    this.terminateWorker();
+    this.terminateWorker('reset for a new scan');
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide analysis reset for a new scan.'));
       this.pending = null;
@@ -147,7 +149,7 @@ export class StructuralGuideClient {
   /** Stop live work and release its worker at the XR -> post-scan boundary. */
   park(): void {
     this.epoch += 1;
-    this.terminateWorker();
+    this.terminateWorker('parked after XR ended');
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker parked after XR ended.'));
       this.pending = null;
@@ -161,17 +163,18 @@ export class StructuralGuideClient {
 
   dispose(): void {
     this.disposed = true;
-    this.terminateWorker();
+    this.terminateWorker('disposed');
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker disposed.'));
       this.pending = null;
     }
   }
 
-  private terminateWorker(): void {
+  private terminateWorker(reason = 'ended'): void {
     if (this.worker !== null) {
       const worker = this.worker;
       this.worker = null;
+      logWorkerLifecycle('structural-guide', 'terminate', reason);
       worker.removeEventListener('message', this.handleMessage);
       worker.removeEventListener('error', this.handleError);
       worker.terminate();

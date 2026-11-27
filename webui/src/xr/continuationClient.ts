@@ -1,4 +1,5 @@
 import ContinuationWorker from './continuationWorker?worker&inline';
+import { logWorkerLifecycle } from './workerLifecycleLog';
 import {
   estimateContinuationBudget,
   type ContinuationBudgetEstimate,
@@ -146,6 +147,7 @@ export class ContinuationClient {
       const extensionCopy = copySnapshot(extension);
       copies.push(extensionCopy);
       worker = this.workerFactory();
+      logWorkerLifecycle('continuation', 'create', 'merge request');
       return new Promise<ScanContinuationResult>((resolve, reject) => {
         const pending: PendingContinuation = {
           requestId, generation, token, worker, copies,
@@ -178,6 +180,7 @@ export class ContinuationClient {
     if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
+    logWorkerLifecycle('continuation', 'terminate', 'cancelled');
     releaseBuffers(pending.copies.flatMap(snapshotBuffers));
     pending.copies = [];
     pending.reject(new ContinuationCancelledError(reason));
@@ -201,6 +204,7 @@ export class ContinuationClient {
     if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
+    logWorkerLifecycle('continuation', 'terminate', 'failed or timed out');
     releaseBuffers(pending.copies.flatMap(snapshotBuffers));
     pending.copies = [];
     pending.reject(reason instanceof Error ? reason : new Error(String(reason)));
@@ -226,6 +230,7 @@ export class ContinuationClient {
     if (pending.timer !== undefined) clearTimeout(pending.timer);
     this.detachWorker(pending.worker);
     pending.worker.terminate();
+    logWorkerLifecycle('continuation', 'terminate', 'merge finished');
     pending.copies = [];
     pending.resolve(response.result);
   };

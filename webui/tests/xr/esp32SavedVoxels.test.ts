@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { act, create } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import { loadSavedEsp32Voxels, useSavedEsp32Voxels, type SavedVoxelLoaders, type SavedVoxelRequest, type SavedVoxelState } from '../../src/xr/esp32SavedVoxels';
 import { encodeOccupancySolverArtifact } from '../../src/xr/occupancySolverArtifact';
 import { encodeVoxelPreviewArtifact } from '../../src/xr/voxelPreview';
@@ -50,6 +51,27 @@ describe('voxels read back from the ESP32 (issue #44)', () => {
   it('refuses a preview of another scan (CRC32 differs) as stale', async () => {
     expect(await loadSavedEsp32Voxels(request('preview'), loaders(previewBytes(8), null))).toEqual({ state: 'stale' });
     expect(await loadSavedEsp32Voxels(request('preview', { scanId: 'not-an-identity' }), loaders(previewBytes(7), null))).toEqual({ state: 'stale' });
+  });
+
+  it('TASK 11: every load is one bounded SCAN_VOXEL_LOAD_RESULT, and a rejected identity names the check that failed and both values (SCAN_VOXEL_IDENTITY_MISMATCH)', async () => {
+    const info = vi.spyOn(clientDiagnostics, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(clientDiagnostics, 'warn').mockImplementation(() => undefined);
+    try {
+      await loadSavedEsp32Voxels(request('preview'), loaders(previewBytes(8), null));
+      expect(warn).toHaveBeenCalledWith('SCAN_VOXEL_IDENTITY_MISMATCH', { objectId: 'OBJ_0001', sessionId: 'staging', kind: 'preview', mismatch: 'crc32', expected: '00000007', found: '00000008' });
+      await loadSavedEsp32Voxels(request('solver'), loaders(null, occupancyBytes('scan-crc32:00000009')));
+      expect(warn).toHaveBeenCalledWith('SCAN_VOXEL_IDENTITY_MISMATCH', expect.objectContaining({ kind: 'solver', mismatch: 'frame_id', expected: SCAN_ID, found: 'scan-crc32:00000009' }));
+      await loadSavedEsp32Voxels(request('solver', { scanSha256: SHA }), loaders(null, occupancyBytes(SCAN_ID, 'b'.repeat(64))));
+      expect(warn).toHaveBeenCalledWith('SCAN_VOXEL_IDENTITY_MISMATCH', expect.objectContaining({ mismatch: 'sha256', expected: 'a'.repeat(16), found: 'b'.repeat(16) }));
+      await loadSavedEsp32Voxels(request('preview', { scanId: 'not-an-identity' }), loaders(previewBytes(7), null));
+      expect(warn).toHaveBeenCalledWith('SCAN_VOXEL_IDENTITY_MISMATCH', expect.objectContaining({ mismatch: 'unparsable_scan_id' }));
+      info.mockClear();
+      await loadSavedEsp32Voxels(request('preview'), loaders(previewBytes(7), null));
+      await loadSavedEsp32Voxels(request('solver'), loaders(null, null));
+      expect(info).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenNthCalledWith(1, 'SCAN_VOXEL_LOAD_RESULT', expect.objectContaining({ kind: 'preview', scan: SCAN_ID, state: 'ready' }));
+      expect(info).toHaveBeenNthCalledWith(2, 'SCAN_VOXEL_LOAD_RESULT', expect.objectContaining({ kind: 'solver', state: 'missing', bytes: 0 }));
+    } finally { info.mockRestore(); warn.mockRestore(); }
   });
 
   it('decodes the solver occupancy of THIS scan: frame id, and the SHA-256 when both sides have one', async () => {

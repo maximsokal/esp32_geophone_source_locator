@@ -50,6 +50,7 @@ import {
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import { TsdfMeshCache, tsdfGeometryFingerprint, tsdfSettingsKey } from '../xr/tsdfMeshCache';
+import { tsdfDiagnosticEvents, type TsdfDiagnosticsResult } from '../xr/tsdfDiagnostics';
 import { Esp32VoxelScene, esp32VoxelSource, type Esp32VoxelView, type VoxelPick } from './Esp32VoxelLayers';
 import { Esp32VoxelOverlay } from './Esp32VoxelOverlay';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
@@ -581,10 +582,11 @@ export function ScanPointCloudViewport({
       setTsdfMesh(cachedMesh);
       setTsdfError(null);
       onMeshReadyRef.current?.(snapshot, cachedMesh.trianglePositions);
-      clientDiagnostics.info('SCAN_TSDF_CACHE_HIT', { triangles: cachedMesh.triangleCount, components: cachedMesh.meshTopologyComponentCount, settings: settingsKey });
+      clientDiagnostics.info('SCAN_TSDF_CACHE_HIT', { scan: fingerprint, triangles: cachedMesh.triangleCount, components: cachedMesh.meshTopologyComponentCount, settings: settingsKey });
       return () => { cancelled = true; };
     }
 
+    clientDiagnostics.info('SCAN_TSDF_CACHE_MISS', { scan: fingerprint, settings: settingsKey, tsdfPoints: snapshot.tsdfPointCount, held: tsdfCache.size });
     const started = performance.now();
     const reconstruction = runAdmittedTsdfRequest(
       display.mesh,
@@ -611,36 +613,10 @@ export function ScanPointCloudViewport({
       tsdfCache.set(fingerprint, settingsKey, result);
       setTsdfMesh(result);
       onMeshReadyRef.current?.(snapshot, result.trianglePositions);
-      clientDiagnostics.info('SCAN_TSDF_READY', {
-        sourcePoints: result.sourcePointCount,
-        certifiedPoints: snapshot.tsdfPointCount,
-        integratedPoints: result.integratedPointCount,
-        coarsenings: result.coarsenings ?? 0,
-        channelTriangles: (result as { channelTriangleCounts?: number[] }).channelTriangleCounts?.join(',') ?? null,
-        refineHolesFilled: (result as { meshRefine?: { holesFilled: number } }).meshRefine?.holesFilled ?? null,
-        refineSmoothedVertices: (result as { meshRefine?: { smoothedVertices: number } }).meshRefine?.smoothedVertices ?? null,
-        nodes: result.nodeCount,
-        rawTriangles: result.rawTriangleCount,
-        triangles: result.triangleCount,
-        quarantinedTriangles: result.quarantinedTriangleCount,
-        localHotspots: result.localNoiseHotspotCount,
-        localHotspotTriangles: result.localNoiseHotspotTriangleCount,
-        discardedTriangles: result.topologyDiscardedTriangleCount,
-        nonManifoldEdges: result.nonManifoldEdgeCount,
-        /* The component count of the FINAL triangle mesh (edge adjacency), the baseline for any stitching work (issue #43). */
-        meshComponents: result.meshTopologyComponentCount,
-        orientationConflicts: result.orientationConflictCount,
-        selfIntersections: result.selfIntersectionPairCount,
-        selfIntersectionExactTests: result.selfIntersectionExactTestedPairs,
-        selfIntersectionBroadPairs: result.selfIntersectionBroadPhaseCandidatePairs,
-        selfIntersectionTruncated: result.selfIntersectionTruncated,
-        meshNoiseScore: Number(result.meshNoiseScore.toFixed(3)),
-        meshReadiness: Number(result.meshReadiness.toFixed(3)),
-        voxelMm: Math.round(result.voxelSizeMeters * 1000),
-        truncationMm: Math.round(result.truncationMeters * 1000),
-        computeMs: Number(result.computeMs.toFixed(1)),
-        roundTripMs: Number((performance.now() - started).toFixed(1)),
-      });
+      /* Several bounded events instead of one long record the client log would cut (TASK 11); the pieces share the scan fingerprint. */
+      for (const { event, fields } of tsdfDiagnosticEvents(result as unknown as TsdfDiagnosticsResult, {
+        scan: fingerprint, certifiedPoints: snapshot.tsdfPointCount, roundTripMs: performance.now() - started, settings: settingsKey,
+      })) clientDiagnostics.info(event, fields);
       void clientDiagnostics.flush();
     }).catch((error) => {
       if (cancelled) return;

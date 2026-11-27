@@ -1070,6 +1070,10 @@ export default function App({ objectId, sessionId, status, onScanSaved, onContin
       const relockSummary = relockSummaryRef.current;
       const token = continuationLedger.current!.begin();
       continuationIncoming.current = { snapshot: incoming, seed, relock: relockSummary };
+      clientDiagnostics.info('SCAN_CONTINUATION_STARTED', {
+        objectId, operation: token, basePoints: base.pointCount, extensionPoints: incoming.pointCount, locked: seed !== null,
+        tagsInSavedScan: relockSummary?.baseTags ?? null, tagsFound: relockSummary?.found ?? null, tagsNeeded: relockSummary?.needed ?? null, lockReason: relockSummary?.reason ?? null,
+      });
       /* Gate: the extension is merged only when three suitable tags tied it to the saved scan. Overlap never replaces a missing lock (issue #43, TASK 05). */
       const gate = continuationGate(seed, relockSummary);
       if (!gate.ok) {

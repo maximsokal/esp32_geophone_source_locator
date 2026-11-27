@@ -57,6 +57,7 @@ vi.mock('../../src/xr/continuationWorker?worker&inline', () => ({
 }));
 
 import App from '../../src/App';
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import { LocaleProvider } from '../../src/i18n';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import { occupancyFrameIdForScan } from '../../src/xr/occupancySolverArtifact';
@@ -489,6 +490,37 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
       expect(h.outcomes).toHaveLength(1);
       expect(h.outcomes[0]).toMatchObject({ state: 'error', code: 'worker_timeout', messageKey: 'scan.continuation.timeout' });
     } finally { vi.useRealTimers(); }
+  });
+
+  it('TASK 11: STARTED names the operation and the lock, and exactly one of REGISTERED / REJECTED / CANCELLED / FAILED follows with a real reason', async () => {
+    const info = vi.spyOn(clientDiagnostics, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(clientDiagnostics, 'warn').mockImplementation(() => undefined);
+    const terminal = (): string[] => [...info.mock.calls, ...warn.mock.calls].map((call) => String(call[0])).filter((name) => /^SCAN_CONTINUATION_(REGISTERED|REJECTED|CANCELLED|FAILED)$/.test(name));
+    try {
+      await openSavedBase();
+      /* gate rejection */
+      await act(async () => { expect(h.props.onScanIntent('continue')).toBe(true); h.props.onPointCloudReady(null); });
+      await flush();
+      await act(async () => { h.props.onPointCloudReady(makeValidScanSnapshot(), { relockTransform: null, relock: { baseTags: 4, found: 2, needed: 3, reason: 'need_more_tags' } }); });
+      await flush();
+      expect(info).toHaveBeenCalledWith('SCAN_CONTINUATION_STARTED', expect.objectContaining({ objectId: 'OBJ', locked: false, tagsInSavedScan: 4, tagsFound: 2, tagsNeeded: 3, lockReason: 'need_more_tags' }));
+      expect(warn).toHaveBeenCalledWith('SCAN_CONTINUATION_REJECTED', expect.objectContaining({ reason: 'tags_not_found' }));
+      expect(terminal()).toEqual(['SCAN_CONTINUATION_REJECTED']);
+      /* worker error -> FAILED, once */
+      info.mockClear(); warn.mockClear();
+      const worker = await startContinue();
+      await act(async () => { worker.fail('boom'); });
+      await flush();
+      expect(warn).toHaveBeenCalledWith('SCAN_CONTINUATION_FAILED', { objectId: 'OBJ', code: 'worker_error' });
+      expect(terminal().filter((name) => name === 'SCAN_CONTINUATION_FAILED')).toHaveLength(1);
+      /* superseded -> CANCELLED, once */
+      info.mockClear(); warn.mockClear();
+      await startContinue();
+      await act(async () => { expect(h.props.onScanIntent('fresh')).toBe(true); });
+      await flush();
+      expect(warn).toHaveBeenCalledWith('SCAN_CONTINUATION_CANCELLED', { objectId: 'OBJ', code: 'cancelled' });
+      expect(terminal().filter((name) => name === 'SCAN_CONTINUATION_CANCELLED')).toHaveLength(1);
+    } finally { info.mockRestore(); warn.mockRestore(); }
   });
 
   it('CONT-24: whatever the terminal state, the saved scan is never written or replaced', async () => {

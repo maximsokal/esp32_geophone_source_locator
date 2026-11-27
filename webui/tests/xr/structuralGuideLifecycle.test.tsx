@@ -2,6 +2,8 @@ import { StrictMode, createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
+import { resetWorkerLifecycleCounts } from '../../src/xr/workerLifecycleLog';
 import { LiveComputeScheduler } from '../../src/xr/liveComputeScheduler';
 import { StructuralGuideClient } from '../../src/xr/structuralGuideClient';
 import { useStructuralGuideClient } from '../../src/xr/useStructuralGuideClient';
@@ -96,6 +98,26 @@ describe('structural guide client lifecycle (TASK 06: WORKER-01..07)', () => {
     expect(workers).toHaveLength(10);
     expect(workers.filter((worker) => !worker.terminated)).toHaveLength(0);
     client.dispose();
+  });
+
+  it('SCAN_WORKER_LIFECYCLE records every create and terminate with the number alive, which returns to zero (TASK 11)', async () => {
+    resetWorkerLifecycleCounts();
+    const info = vi.spyOn(clientDiagnostics, 'info').mockImplementation(() => undefined);
+    try {
+      const { workers, client } = harness();
+      for (let session = 0; session < 3; session += 1) {
+        client.reset();
+        const job = client.analyze(input());
+        (await posted(workers, session)).answer();
+        await job;
+        client.park();
+      }
+      const events = info.mock.calls.filter((call) => call[0] === 'SCAN_WORKER_LIFECYCLE').map((call) => call[1] as { worker: string; action: string; alive: number });
+      expect(events.filter((e) => e.action === 'create')).toHaveLength(3);
+      expect(events.filter((e) => e.action === 'terminate')).toHaveLength(3);
+      expect(Math.max(...events.map((e) => e.alive))).toBe(1);
+      expect(events.at(-1)).toMatchObject({ worker: 'structural-guide', action: 'terminate', alive: 0 });
+    } finally { info.mockRestore(); }
   });
 
   it('a disposed client refuses new work with the documented message (a real unmount stays final)', async () => {

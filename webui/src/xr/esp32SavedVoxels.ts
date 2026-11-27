@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { loadSessionOccupancyArtifact, loadSessionPreviewArtifact } from '../api/deviceApi';
+import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { Esp32VoxelView } from '../components/Esp32VoxelLayers';
 import { decodeOccupancySolverArtifact } from './occupancySolverArtifact';
 import { decodeVoxelPreviewArtifact } from './voxelPreview';
@@ -52,21 +53,31 @@ export async function loadSavedEsp32Voxels(request: SavedVoxelRequest, loaders: 
   const bytes = request.kind === 'preview'
     ? await loaders.preview(request.objectId, request.sessionId)
     : await loaders.occupancy(request.objectId, request.sessionId);
-  if (bytes === null) return { state: 'missing' };
+  /* One bounded record per load (TASK 11); a rejected identity also says WHICH check failed and what was expected, so a mismatch is never a mystery. */
+  const done = (result: SavedVoxelResult): SavedVoxelResult => {
+    clientDiagnostics.info('SCAN_VOXEL_LOAD_RESULT', { objectId: request.objectId, sessionId: request.sessionId, kind: request.kind, scan: request.scanId, state: result.state, bytes: bytes?.byteLength ?? 0, ...(result.state === 'invalid' ? { error: result.error.slice(0, 120) } : {}) });
+    return result;
+  };
+  const stale = (mismatch: 'crc32' | 'frame_id' | 'sha256' | 'unparsable_scan_id', expected: string | null, found: string | null): SavedVoxelResult => {
+    clientDiagnostics.warn('SCAN_VOXEL_IDENTITY_MISMATCH', { objectId: request.objectId, sessionId: request.sessionId, kind: request.kind, mismatch, expected, found });
+    return done({ state: 'stale' });
+  };
+  if (bytes === null) return done({ state: 'missing' });
   try {
     if (request.kind === 'preview') {
       const artifact = decodeVoxelPreviewArtifact(bytes);
       const crc = crcOfScanId(request.scanId);
-      if (crc === null || artifact.sourceScanCrc32 >>> 0 !== crc) return { state: 'stale' };
-      return { state: 'ready', view: { kind: 'preview', artifact, status: 'saved' } };
+      if (crc === null) return stale('unparsable_scan_id', request.scanId, null);
+      if (artifact.sourceScanCrc32 >>> 0 !== crc) return stale('crc32', crc.toString(16).padStart(8, '0'), (artifact.sourceScanCrc32 >>> 0).toString(16).padStart(8, '0'));
+      return done({ state: 'ready', view: { kind: 'preview', artifact, status: 'saved' } });
     }
     const occupancy = decodeOccupancySolverArtifact(bytes);
-    if (occupancy.header.frame_id !== request.scanId) return { state: 'stale' };
+    if (occupancy.header.frame_id !== request.scanId) return stale('frame_id', request.scanId, occupancy.header.frame_id);
     const boundSha = occupancy.header.scan_sha256;
-    if (boundSha !== undefined && boundSha !== null && request.scanSha256 !== undefined && boundSha !== request.scanSha256) return { state: 'stale' };
-    return { state: 'ready', view: { kind: 'solver', occupancy, status: 'saved' } };
+    if (boundSha !== undefined && boundSha !== null && request.scanSha256 !== undefined && boundSha !== request.scanSha256) return stale('sha256', request.scanSha256.slice(0, 16), boundSha.slice(0, 16));
+    return done({ state: 'ready', view: { kind: 'solver', occupancy, status: 'saved' } });
   } catch (reason) {
-    return { state: 'invalid', error: errorText(reason) };
+    return done({ state: 'invalid', error: errorText(reason) });
   }
 }
 
