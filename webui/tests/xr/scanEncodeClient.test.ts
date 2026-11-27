@@ -171,12 +171,20 @@ describe('ScanEncodeClient', () => {
     expect(encoded.counters.floatsVisited).toBeGreaterThan(0);
   });
 
-  it('the native byte comparison still sees a single changed byte, a truncated artifact and an identical copy', () => {
+  it('the native byte comparison covers ALL bytes: one changed byte at the start, in the middle, at the end and at 64 spread offsets is seen; so is a truncated artifact; an identical copy passes', () => {
     const original = encodeScanArtifactWithIdentity(nearLimitSnapshot()).bytes;
+    expect(original.byteLength, 'the near-limit artifact is about 8 MiB').toBeGreaterThan(8_000_000);
     expect(() => expectSameBytes(original.slice(), original)).not.toThrow();
-    const flipped = original.slice(); flipped[flipped.length - 3] ^= 1;
-    expect(() => expectSameBytes(flipped, original)).toThrow(/differ at offset/);
-    expect(() => expectSameBytes(original.slice(0, original.length - 1), original)).toThrow();
+    const last = original.length - 1;
+    const offsets = [0, 1, original.length >> 1, last - 1, last];
+    for (let i = 1; i <= 64; i += 1) offsets.push(Math.floor((i * last) / 65));
+    for (const offset of offsets) {
+      const damaged = original.slice();
+      damaged[offset] ^= 0x01;
+      expect(() => expectSameBytes(damaged, original), `byte ${offset}`).toThrow(`differ at offset ${offset}:`);
+    }
+    expect(() => expectSameBytes(original.slice(0, last), original)).toThrow(/artifact size/);
+    expect(() => expectSameBytes(new Uint8Array(original.length), original)).toThrow(/differ at offset/);
   });
 
   it('returns encode counters once and reuses the identity in occupancy and preview builders', async () => {
