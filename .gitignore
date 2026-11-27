@@ -1,4 +1,4 @@
-﻿# ESP-IDF build output
+# ESP-IDF build output
 build/
 .test-build/
 build-refactor/

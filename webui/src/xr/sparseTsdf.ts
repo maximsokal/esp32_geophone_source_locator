@@ -295,6 +295,7 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     0.075,
   ) * (Number.isFinite(input.coarseningScale) && (input.coarseningScale ?? 1) >= 1 ? input.coarseningScale! : 1);
   const truncationMeters = voxelSizeMeters * 2.75;
+  const P = ((globalThis as any).__tsdf ??= {}); const T = (k: string, from: number) => { P[k] = (P[k] ?? 0) + performance.now() - from; }; let t = performance.now();
   const tangentRadiusMeters = voxelSizeMeters * 2.25;
   const tangentSigmaMeters = voxelSizeMeters * 1.15;
   const maxInputPoints = Math.max(1, Math.floor(input.maxInputPoints ?? DEFAULT_MAX_INPUT_POINTS));
@@ -318,6 +319,7 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     eligibleIndices.push(index);
   }
 
+  T('prepare', t); t = performance.now();
   let integratedPointCount = 0;
   const stride = Math.max(1, Math.ceil(eligibleIndices.length / maxInputPoints));
   const radiusNodes = Math.ceil(truncationMeters / voxelSizeMeters);
@@ -372,6 +374,7 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     }
   }
 
+  T('integrate', t); t = performance.now(); P.nodes = (P.nodes ?? 0) + nodes.size; P.samples = (P.samples ?? 0) + integratedPointCount;
   const triangles: number[] = [];
   let budgetReached = false;
   const minimumTriangleArea = voxelSizeMeters * voxelSizeMeters * MIN_TRIANGLE_AREA_FACTOR;
@@ -416,7 +419,9 @@ function buildSparseTsdfMeshOnce(input: SparseTsdfInput): { mesh: SparseTsdfMesh
     }
   }
 
+  T('polygonize', t); t = performance.now();
   const topology = sanitizeMeshTopology(Float32Array.from(triangles), voxelSizeMeters);
+  T('sanitizeTopology', t); t = performance.now(); P.calls = (P.calls ?? 0) + 1;
   const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const mesh: SparseTsdfMesh = {
     trianglePositions: topology.trianglePositions,
