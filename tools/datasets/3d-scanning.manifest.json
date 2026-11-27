@@ -225,7 +225,9 @@
       "url": "http://redwood-data.org/indoor/data/office2-depth-simulated.zip",
       "path": "redwood/office2-depth-simulated.zip",
       "extract": "redwood/office2-depth-simulated",
-      "license": "see Redwood page"
+      "license": "see Redwood page",
+      "sha256": "011c2a1d34e9e70c78b730d8d686d497ff0e1a90cc71cc46f36b39be70e8c880",
+      "bytes": 243123183
     },
     {
       "name": "redwood-office2-traj",
@@ -233,7 +235,9 @@
       "kind": "trajectory",
       "url": "http://redwood-data.org/indoor/data/office2-traj.txt",
       "path": "redwood/office2-traj.txt",
-      "license": "see Redwood page"
+      "license": "see Redwood page",
+      "sha256": "0b824bcfefd7ad9caa5575938b88df8cf21803e05dc42fa78dd1ce086fc34a7d",
+      "bytes": 658582
     },
     {
       "name": "icl-living-kt0",
