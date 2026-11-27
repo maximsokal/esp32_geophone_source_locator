@@ -6,7 +6,7 @@ import type {
 import { DepthFusionClient, type DepthFusionClientOptions, type SubmitOutcome } from './depthFusionClient';
 import type { FusionGuidancePacket, FusionStats } from './depthFusionProtocol';
 import { createDepthFusionKeeper, createDepthFusionWorker } from './depthFusionWorkerFactory';
-import { FUSION_BASE_INTERVAL_MS, FusionCaptureGovernor, type FusionCaptureStep } from './fusionCaptureGovernor';
+import { FusionCaptureGovernor, type FusionCaptureStep } from './fusionCaptureGovernor';
 import type { FusionPoseLike, WebXrFusionKeyframeSelector } from './webxrFusionQuality';
 import { registerManualPlacementResolver, solveManualPlacementOnStableSurface } from './manualPlacementSurface';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
@@ -113,8 +113,11 @@ export class RuntimeFusion {
   /** True while not even a new viewpoint can be taken: the operator is asked to hold still. */
   get catchingUp(): boolean { return this.governor.catchingUp; }
 
-  /** True while the fusion cannot keep its normal rate: the tasks that share its worker or the CPU yield to it. */
-  get behind(): boolean { return this.governor.catchingUp || this.governor.intervalMs > FUSION_BASE_INTERVAL_MS * 1.5; }
+  /**
+   * True while frames are actually WAITING for the fusion: the tasks that share its worker or the CPU yield to it. A worker that is merely slow per frame
+   * but keeps up is not behind, and the live mesh and the coverage guide keep their normal rate.
+   */
+  get behind(): boolean { const limits = this.client.limits; return this.governor.catchingUp || limits.queueDepth >= limits.maxInFlight - 1; }
 
   /**
    * Hands one XR depth frame to the fusion. Called inside the frame callback: the device buffer is COPIED here and nothing of the XR frame leaves it.

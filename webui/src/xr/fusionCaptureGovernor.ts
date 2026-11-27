@@ -12,6 +12,11 @@ import type { FusionFrameDecision, FusionPoseLike, FusionSelectorMark, WebXrFusi
  * a refusal delays evidence, it does not mark the view as taken. The sampling interval follows the measured fusion time of the worker, with hysteresis
  * (it widens at once and narrows only after a run of frames with a short queue). While not even a keyframe can be taken, `catchingUp` is raised for
  * the operator; it drops again only once the queue has drained to one frame.
+ *
+ * The measured interval paces the frames that only refine what is already seen. A KEYFRAME is not held to it while the worker has no backlog: the selector is
+ * asked at the base cadence and an informative viewpoint is taken at once, because asking it less often spaces the keyframes further apart and loses surface
+ * even though the worker is idle most of the time (desktop replay, +200 ms per frame: 74 keyframes instead of 101, recall 0.554 instead of 0.612). Once
+ * `maxInFlight` frames are waiting, keyframes are paced too, which keeps the delay to the live mesh and to Finish short.
  */
 export type FusionFrameClass = 'keyframe' | 'depth' | 'polish' | 'repeat';
 
@@ -73,11 +78,13 @@ export class FusionCaptureGovernor {
   private workEwmaMs = 0;
   private shortQueueRun = 0;
   private lastCaptureMs = Number.NEGATIVE_INFINITY;
+  /** When the selector was last asked and its answer used. */
+  private lastAskedMs = Number.NEGATIVE_INFINITY;
   private catching = false;
   counters: FusionCaptureCounters = { captured: zero(), deferred: zero(), deferredNoSlot: 0, catchingUpEntries: 0 };
 
   reset(): void {
-    this.interval = FUSION_BASE_INTERVAL_MS; this.workEwmaMs = 0; this.shortQueueRun = 0; this.lastCaptureMs = Number.NEGATIVE_INFINITY; this.catching = false;
+    this.interval = FUSION_BASE_INTERVAL_MS; this.workEwmaMs = 0; this.shortQueueRun = 0; this.lastCaptureMs = Number.NEGATIVE_INFINITY; this.lastAskedMs = Number.NEGATIVE_INFINITY; this.catching = false;
     this.counters = { captured: zero(), deferred: zero(), deferredNoSlot: 0, catchingUpEntries: 0 };
   }
 
@@ -107,7 +114,9 @@ export class FusionCaptureGovernor {
    * every slot, so it is never deferred: it either finds a slot or the whole XR frame is 'no-slot'.
    */
   step(timeMs: number, pose: FusionPoseLike, selector: WebXrFusionKeyframeSelector, queue: FusionQueueView): FusionCaptureStep {
-    if (timeMs - this.lastCaptureMs < this.interval) return { action: 'not-due' };
+    const backlog = queue.queueDepth >= queue.maxInFlight;
+    const paced = timeMs - this.lastCaptureMs >= this.interval;
+    if (timeMs - this.lastAskedMs < FUSION_BASE_INTERVAL_MS || (backlog && !paced)) return { action: 'not-due' };
     if (queue.queueDepth >= queue.maxInFlight + queue.mandatoryReserve) {
       this.counters.deferredNoSlot += 1;
       this.enterCatchingUp();
@@ -115,14 +124,20 @@ export class FusionCaptureGovernor {
     }
     const mark = selector.mark();
     const decision = selector.evaluate(timeMs, pose);
-    if (decision.kind === 'skip') { this.lastCaptureMs = timeMs; return { action: 'skip', decision }; }
+    if (decision.kind === 'skip') { this.lastAskedMs = timeMs; return { action: 'skip', decision }; }
     const frameClass = classifyFusionFrame(decision);
+    if (frameClass !== 'keyframe' && !paced) {
+      selector.withdraw(mark);
+      this.lastAskedMs = timeMs;
+      return { action: 'not-due' };
+    }
     if (queue.queueDepth >= slotsFor(frameClass, queue)) {
       selector.withdraw(mark);
       this.counters.deferred[frameClass] += 1;
       return { action: 'deferred', decision, frameClass };
     }
     this.lastCaptureMs = timeMs;
+    this.lastAskedMs = timeMs;
     this.counters.captured[frameClass] += 1;
     return { action: 'capture', decision, frameClass, mark };
   }

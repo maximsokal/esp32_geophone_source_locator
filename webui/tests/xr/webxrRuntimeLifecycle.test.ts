@@ -752,8 +752,13 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     expect(internals.cadenceLoad()).toEqual({pressure:'low',fusionBehind:false});
     for(let i=0;i<30;i+=1)r.runtime.reportTagDecode(600);
     expect(internals.tagCadence.intervalMs(clock,internals.cadenceLoad()),'frames are not captured faster than 600 ms detections can take them').toBeCloseTo(600/0.9,0);
-    for(let i=0;i<20;i+=1)internals.pointCloud.governor.frameDone(900,{queueDepth:3,maxInFlight:3,mandatoryReserve:5});
-    expect(internals.cadenceLoad().fusionBehind).toBe(true);
+    for(let i=0;i<20;i+=1)internals.pointCloud.governor.frameDone(900,{queueDepth:0,maxInFlight:3,mandatoryReserve:5});
+    expect(internals.cadenceLoad().fusionBehind,'slow per frame but nothing waits: not behind').toBe(false);
+    const fusionClient=(r.runtime as unknown as{pointCloud:{client:object}}).pointCloud.client;
+    let waiting=1;Object.defineProperty(fusionClient,'limits',{configurable:true,get:()=>({queueDepth:waiting,maxInFlight:3,mandatoryReserve:5})});
+    expect(internals.cadenceLoad().fusionBehind).toBe(false);
+    waiting=2;
+    expect(internals.cadenceLoad().fusionBehind,'frames are waiting').toBe(true);
     expect(internals.coverageCadence.intervalMs(clock,internals.cadenceLoad())).toBe(1100);
     schedulerUnder(r.runtime,'medium');
     expect(internals.cadenceLoad().pressure).toBe('medium');

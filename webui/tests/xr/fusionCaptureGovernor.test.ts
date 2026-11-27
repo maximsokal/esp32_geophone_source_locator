@@ -215,6 +215,44 @@ describe('the measured fusion time is a floor of its own, not only the queue', (
   });
 });
 
+describe('a slow worker that still has spare capacity loses no viewpoint (desktop replay 2026-11-27: +200 ms per frame cost 26 of 101 keyframes)', () => {
+  it('at 30 Hz with 200 and 250 ms per frame, informative keyframes are captured as often as on an ideal device', async () => {
+    const ideal = await scan(30, () => 0);
+    for (const serviceMs of [200, 250]) {
+      const slow = await scan(30, () => serviceMs);
+      expect(ideal.capturedKeyframes * serviceMs, 'precondition: the worker has time for every keyframe').toBeLessThan(DURATION_MS * 0.9);
+      expect(slow.capturedKeyframes, `${serviceMs} ms per frame`).toBeGreaterThanOrEqual(Math.floor(ideal.capturedKeyframes * 0.97));
+      expect(slow.coverage, `${serviceMs} ms per frame: coverage within 1 point`).toBeGreaterThanOrEqual(ideal.coverage - 0.01);
+      expect(slow.lost + slow.rejectedAfterCapture).toBe(0);
+    }
+  }, 300_000);
+
+  it('only keyframes get ahead of the measured throughput: a frame that adds no new viewpoint waits for the measured pace of the worker', () => {
+    const governor = new FusionCaptureGovernor();
+    const selector = new WebXrFusionKeyframeSelector();
+    const idle = { queueDepth: 0, maxInFlight: 3, mandatoryReserve: 5 };
+    for (let i = 0; i < 12; i += 1) governor.frameDone(500, idle);
+    expect(governor.intervalMs).toBeGreaterThanOrEqual(600);
+    const still = fusionPose(poseAt(0, 13));
+    expect(governor.step(10_000, still, selector, idle).action).toBe('capture');
+    for (let time = 10_016; time < 10_000 + governor.intervalMs; time += 16) expect(governor.step(time, still, selector, idle).action, `a repeated view at +${time - 10_000} ms`).not.toBe('capture');
+    const later = 10_000 + governor.intervalMs + 400;
+    expect(governor.step(later, still, selector, idle), 'and is taken once the measured interval has passed').toMatchObject({ action: 'capture', frameClass: 'repeat' });
+    expect(governor.intervalMs, 'the next frame comes well inside the measured interval').toBeGreaterThan(300);
+    expect(governor.step(later + 300, fusionPose(poseAt(1200, 13)), selector, idle), 'a new viewpoint does not wait for it').toMatchObject({ action: 'capture', frameClass: 'keyframe' });
+  });
+
+  it('with a backlog the measured throughput holds back keyframes too, so the queue (and the delay to the mesh and to Finish) stays short', () => {
+    const governor = new FusionCaptureGovernor();
+    const selector = new WebXrFusionKeyframeSelector();
+    const backlog = { queueDepth: 3, maxInFlight: 3, mandatoryReserve: 5 };
+    for (let i = 0; i < 12; i += 1) governor.frameDone(500, backlog);
+    expect(governor.step(10_000, fusionPose(poseAt(0, 13)), selector, backlog).action).toBe('capture');
+    expect(governor.step(10_300, fusionPose(poseAt(1200, 13)), selector, backlog).action).toBe('not-due');
+    expect(governor.step(10_300, fusionPose(poseAt(1200, 13)), selector, { ...backlog, queueDepth: 2 })).toMatchObject({ action: 'capture', frameClass: 'keyframe' });
+  });
+});
+
 describe('capture under load: camera 5-60 Hz, fusion slowed 1x-8x from a phone-like 75 ms per frame', () => {
   const table: Record<string, RunResult> = {};
   const reference = new Map<number, Promise<RunResult>>();
