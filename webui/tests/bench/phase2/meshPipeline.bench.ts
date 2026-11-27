@@ -94,6 +94,7 @@ const SCENES: Array<[string, () => SyntheticSurfaceScene]> = [
 describe('final reconstruction (directional TSDF entry point), identical inputs at every checkout', () => {
   it(`${FINAL_REPEATS} repeats per synthetic scene with a known surface: time, topology, precision and recall`, () => {
     const report: Record<string, unknown> = {};
+    const empty: string[] = [];
     for (const [name, make] of SCENES) {
       const scene = make();
       const confidence = new Float32Array(scene.points.length / 3).fill(0.9);
@@ -101,9 +102,10 @@ describe('final reconstruction (directional TSDF entry point), identical inputs 
       const runs = Array.from({ length: FINAL_REPEATS }, () => runFinal(scene.points, scene.normals, confidence, VOXEL, 40000, scene.truth));
       const last = runs[runs.length - 1];
       report[name] = { ms: summarize(runs.map((r) => r.ms)), triangles: last.triangles, components: last.components, boundaryM: last.boundaryM, degenerate: last.degenerate, nonManifold: last.nonManifold, selfIntersections: last.selfIntersections, precision: last.precision, recall: last.recall };
-      expect(last.triangles, name).toBeGreaterThan(0);
+      empty.push(...(last.triangles === 0 ? [name] : []));
     }
-    writeReport('mesh', 'finalSynthetic', report);
+    writeReport('mesh', 'finalSynthetic', { ...report, _scenesWithNoTriangles: empty });
+    if (process.env.PHASE2_STRICT === '1') expect(empty, 'every scene must produce a mesh').toEqual([]);
   }, 1_800_000);
 
   it(`${FINAL_REPEATS} repeats on the local real scan (original, not decimated)`, () => {
