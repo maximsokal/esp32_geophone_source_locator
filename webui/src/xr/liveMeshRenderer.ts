@@ -1,4 +1,3 @@
-import { activeXrRenderPolicy } from './xrPerformanceProfiler';
 import { captureWebGlDrawState, restoreWebGlDrawState } from './webGlStateGuard';
 import {
   compileShader, isWebGl2, multiplyMat4, rigidInverse,
@@ -8,11 +7,12 @@ import {
 type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
 
 /**
- * Fill of the translucent live mesh. With the single-layer pass below this IS the opacity of the mesh at every pixel, however many shells overlap there;
- * 0.10 keeps the camera image, texture and AprilTags readable (phone run 2026-11-26: 0.30 per layer summed to 51% for two layers and 94% for eight).
+ * Opacity of the live mesh. The XR layer's framebuffer is transparent and the compositor puts it over the camera (WebXR AR module), so the renderer
+ * writes the premultiplied pixel (colour x alpha, alpha) DIRECTLY, without blending: a pixel covered by one triangle or by a thousand shows exactly this
+ * opacity. Blending here would also blend the alpha channel and leave about alpha squared on a transparent buffer.
  */
 export const LIVE_MESH_ALPHA = 0.10;
-/** The most opaque the meshes may make any pixel when the saved scan's mesh (amber) and the live mesh (blue) are both drawn. */
+/** The most opaque the meshes may make any pixel; with direct writes it is simply the larger of their alphas. */
 export const MESH_OVERLAY_OPACITY_BUDGET = 0.25;
 
 export interface LiveMeshStyle { color: readonly [number, number, number]; alpha: number }
@@ -21,13 +21,11 @@ export const LIVE_MESH_STYLE: LiveMeshStyle = { color: [0.30, 0.78, 1.0], alpha:
 /** The mesh of the saved scan drawn over a Continue: warm amber, fainter, so it reads as "already there" next to the blue one being built. */
 export const REFERENCE_MESH_STYLE: LiveMeshStyle = { color: [1.0, 0.72, 0.28], alpha: 0.08 };
 
-/** 'single-layer': a depth-only pass, then ONE blended fragment per pixel (the nearest). 'accumulate': every shell blends in (the old look; kept for comparison tests). */
-export type LiveMeshBlendMode = 'single-layer' | 'accumulate';
-export interface LiveMeshRendererOptions { style?: LiveMeshStyle; mode?: LiveMeshBlendMode; /** Push this mesh slightly back so that it yields to a coincident mesh drawn before it. */ depthBias?: boolean }
+export interface LiveMeshRendererOptions { style?: LiveMeshStyle }
 
 function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
   const webGl2 = isWebGl2(gl);
-  const body = `vec3 color = vec3(${style.color.map((v) => v.toFixed(3)).join(', ')}); float alpha = ${style.alpha.toFixed(3)};`;
+  const premultiplied = `vec4(${[...style.color.map((v) => v * style.alpha), style.alpha].map((v) => v.toFixed(5)).join(', ')})`;
   const vertexSource = webGl2
     ? `#version 300 es
       precision highp float; in vec3 a_position; uniform mat4 u_view_projection;
@@ -39,9 +37,9 @@ function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
   const fragmentSource = webGl2
     ? `#version 300 es
       precision mediump float; out vec4 out_color;
-      void main() { ${body} out_color = vec4(color, alpha); }`
+      void main() { out_color = ${premultiplied}; }`
     : `precision mediump float;
-      void main() { ${body} gl_FragColor = vec4(color, alpha); }`;
+      void main() { gl_FragColor = ${premultiplied}; }`;
   const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   const program = gl.createProgram();
@@ -57,8 +55,10 @@ function createProgram(gl: GlContext, style: LiveMeshStyle): WebGLProgram {
 }
 
 /**
- * Translucent triangles over the camera: depth-tested against the real world (so the mesh hides behind real surfaces), never writing depth, drawn
- * after the point guide. Double-sided: the live normals are not trusted to face the camera.
+ * Translucent triangles over the camera. Each covered pixel is written once with the mesh's premultiplied value, whatever overlaps there; draw order
+ * decides between two meshes (the saved scan's first, the live one over it; the coverage guide is drawn after both). The depth buffer is tested, so
+ * anything that put real depth there still occludes the mesh, and is never written, so the mesh occludes nothing. Double-sided: the live normals are not
+ * trusted to face the camera.
  */
 export class LiveMeshRenderer {
   private readonly program: WebGLProgram;
@@ -68,16 +68,11 @@ export class LiveMeshRenderer {
   private readonly viewMatrix = new Float32Array(16);
   private readonly viewProjection = new Float32Array(16);
   private vertexCount = 0;
-  private lastDrawMs = Number.NEGATIVE_INFINITY;
 
   readonly style: LiveMeshStyle;
-  readonly mode: LiveMeshBlendMode;
-  private readonly depthBias: boolean;
 
   constructor(private readonly gl: GlContext, options: LiveMeshRendererOptions = {}) {
     this.style = options.style ?? LIVE_MESH_STYLE;
-    this.mode = options.mode ?? 'single-layer';
-    this.depthBias = options.depthBias ?? false;
     this.program = createProgram(gl, this.style);
     const buffer = gl.createBuffer();
     const matrix = gl.getUniformLocation(this.program, 'u_view_projection');
@@ -106,22 +101,17 @@ export class LiveMeshRenderer {
   clear(): void { this.vertexCount = 0; }
 
   render(layer: CoverageRenderLayer, views: readonly CoverageRenderView[]): void {
+    /* Drawn in EVERY XR frame, whatever the pressure: the framebuffer is cleared each frame, so a skipped frame would show no mesh and flicker. */
     if (this.vertexCount <= 0) return;
-    const policy = activeXrRenderPolicy();
-    const now = performance.now();
-    if (policy.drawIntervalMs > 0 && now - this.lastDrawMs < policy.drawIntervalMs) return;
-    this.lastDrawMs = now;
     const gl = this.gl;
     const previous = captureWebGlDrawState(gl, [this.positionLocation]);
     try {
-      const offsetWasOn = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
-      const offsetFactor = gl.getParameter(gl.POLYGON_OFFSET_FACTOR) as number;
-      const offsetUnits = gl.getParameter(gl.POLYGON_OFFSET_UNITS) as number;
       gl.useProgram(this.program);
-      gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.enable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(false);
+      gl.colorMask(true, true, true, true);
+      gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
-      if (this.depthBias) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1); }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.enableVertexAttribArray(this.positionLocation);
       gl.vertexAttribPointer(this.positionLocation, 3, gl.FLOAT, false, 0, 0);
@@ -131,21 +121,7 @@ export class LiveMeshRenderer {
         if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
         if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
         gl.uniformMatrix4fv(this.matrixLocation, false, this.viewProjection);
-        if (this.mode === 'single-layer') {
-          /* Pass 1: depth only, against whatever is already there (LESS), so the nearest shell of this mesh is the only one left standing at each pixel. */
-          gl.colorMask(false, false, false, false); gl.depthMask(true); gl.depthFunc(gl.LESS);
-          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
-          /* Pass 2: colour only where the depth equals that nearest shell: one blended fragment per pixel, so overlap cannot add up. */
-          gl.colorMask(true, true, true, true); gl.depthMask(false); gl.depthFunc(gl.EQUAL);
-          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
-        } else {
-          gl.depthMask(false); gl.depthFunc(gl.LEQUAL);
-          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
-        }
-      }
-      if (this.depthBias) {
-        if (!offsetWasOn) gl.disable(gl.POLYGON_OFFSET_FILL);
-        gl.polygonOffset(offsetFactor, offsetUnits);
+        gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
       }
     } finally { restoreWebGlDrawState(gl, previous); }
   }

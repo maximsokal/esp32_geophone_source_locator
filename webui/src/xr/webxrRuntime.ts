@@ -937,7 +937,7 @@ export class WebXrRuntime{
     const mesh=this.referenceMesh;
     if(mesh===null||this.originResetPaused||this.gl===null)return;
     try{
-      if(this.referenceMeshRenderer===null)this.referenceMeshRenderer=new LiveMeshRenderer(this.gl,{style:REFERENCE_MESH_STYLE,depthBias:true});
+      if(this.referenceMeshRenderer===null)this.referenceMeshRenderer=new LiveMeshRenderer(this.gl,{style:REFERENCE_MESH_STYLE});
       if(this.referenceMeshDirty){this.referenceMeshRenderer.update(mesh.trianglesXr,mesh.triangleCount);this.referenceMeshDirty=false;}
       this.referenceMeshRenderer.render(layer as never,views);
     }catch(error){
@@ -1036,9 +1036,11 @@ export class WebXrRuntime{
       faultClass='xr-frame-body';
       if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
       this.frameCount+=1;this.updateLightEstimate(time,frame);
-      if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}
+      if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);
+        /* The meshes write their pixels directly (no blending), saved scan first, so the live one wins where they overlap; the guide points go on top. */
         this.tickReferenceMesh(layer,pose.views);
         this.tickLiveMesh(layer,pose.views);
+        const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}
         const overlay=this.referenceOverlay;
         if(overlay!==null&&!this.originResetPaused&&this.gl!==null){
           try{

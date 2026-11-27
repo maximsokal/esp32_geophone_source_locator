@@ -784,6 +784,19 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     expect(refused).toHaveBeenLastCalledWith(step,internals.keyframeSelector);
   });
 
+  it('draws the saved scan mesh first, the live mesh over it and the coverage guide last (the meshes write their pixels directly, so order decides)',async()=>{
+    const r=await rig('on','low');
+    const order:string[]=[];
+    const internals=r.runtime as unknown as{coverageRenderer:unknown;referenceMeshRenderer:unknown;referenceMesh:unknown;referenceMeshDirty:boolean};
+    internals.coverageRenderer={render:()=>order.push('guide'),update:()=>undefined,clear:()=>undefined,dispose:()=>undefined};
+    internals.referenceMesh={trianglesXr:new Float32Array(9),triangleCount:1};internals.referenceMeshDirty=false;
+    internals.referenceMeshRenderer={render:()=>order.push('saved'),update:()=>undefined,clear:()=>undefined,dispose:()=>undefined,triangleCount:1};
+    r.renderer.render.mockImplementation(()=>{order.push('live');});
+    await run(r,300);
+    expect(order.length).toBeGreaterThanOrEqual(6);
+    expect(order.slice(-3)).toEqual(['saved','live','guide']);
+  });
+
   it('builds nothing while the reference space has been reset, and resumes when it is back',async()=>{
     const r=await rig('on','low');
     expect(await run(r,5000)).toBeGreaterThan(0);
