@@ -134,7 +134,7 @@ export class RuntimeFusion {
     this.coverageFetching = true;
     const generation = this.client.currentGeneration;
     this.client.request<LiveCoverageSnapshot>('coverage', { budget }).then((snapshot) => {
-      this.coverage = snapshot;
+      if (generation === this.client.currentGeneration) this.coverage = snapshot;
     }, () => undefined).finally(() => { if (generation === this.client.currentGeneration) this.coverageFetching = false; });
   }
 
