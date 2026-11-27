@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "default_root": "E:\\datasets\\3d-scanning",
+  "facts": {
+    "tum": {
+      "camera": "Kinect, 640x480, depth PNG 16-bit scale 5000 (5000 = 1 m, 0 = missing), colour/depth pre-registered 1:1",
+      "intrinsics": {
+        "freiburg1": {
+          "fx": 517.3,
+          "fy": 516.5,
+          "cx": 318.6,
+          "cy": 255.3
+        },
+        "freiburg2": {
+          "fx": 520.9,
+          "fy": 521.0,
+          "cx": 325.1,
+          "cy": 249.7
+        }
+      },
+      "depth_scale": 5000,
+      "ground_truth": "groundtruth.txt (timestamp tx ty tz qx qy qz qw), associate to depth.txt with <=20 ms",
+      "source": "https://cvg.cit.tum.de/data/datasets/rgbd-dataset",
+      "citation": "Sturm et al., IROS 2012"
+    },
+    "redwood": {
+      "camera": "synthetic 640x480, depth PNG (clean and with simulated Kinect-like noise)",
+      "depth_scale": "to be checked against the depth PNG range by the replay loader (Redwood/ICL: 1000 or 5000)",
+      "ground_truth": "dense point model (.ply) of living room and office, trajectories *-traj.txt",
+      "source": "http://redwood-data.org/indoor/dataset.html",
+      "citation": "Choi, Zhou, Koltun, CVPR 2015; Handa et al., ICRA 2014"
+    },
+    "icl-nuim": {
+      "camera": "synthetic 640x480, TUM-compatible PNGs (clean and noisy)",
+      "intrinsics": {
+        "fx": 481.2,
+        "fy": -480.0,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "depth_scale": 5000,
+      "note": "ICL-NUIM depth is the distance along the viewing ray, not the z coordinate",
+      "source": "https://www.doc.ic.ac.uk/~ahanda/VaFRIC/iclnuim.html",
+      "citation": "Handa et al., ICRA 2014"
+    }
+  },
+  "items": [
+    {
+      "name": "tum-freiburg1-xyz",
+      "dataset": "tum",
+      "kind": "tum-sequence",
+      "url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_xyz.tgz",
+      "path": "tum/rgbd_dataset_freiburg1_xyz.tgz",
+      "extract": "tum/freiburg1_xyz",
+      "license": "CC BY 4.0",
+      "sha256": "a0236d97b8c30cd93b653656d2b6c293ff7c982a4130ef2a1a8beecdb124ef98",
+      "bytes": 448204271
+    },
+    {
+      "name": "tum-freiburg1-desk",
+      "dataset": "tum",
+      "kind": "tum-sequence",
+      "url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_desk.tgz",
+      "path": "tum/rgbd_dataset_freiburg1_desk.tgz",
+      "extract": "tum/freiburg1_desk",
+      "license": "CC BY 4.0",
+      "sha256": "e983d6830916e66dc4a46a71368046b149b283de87769690e7aa4e0b9483530c",
+      "bytes": 344011403
+    },
+    {
+      "name": "tum-freiburg1-room",
+      "dataset": "tum",
+      "kind": "tum-sequence",
+      "url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_room.tgz",
+      "path": "tum/rgbd_dataset_freiburg1_room.tgz",
+      "extract": "tum/freiburg1_room",
+      "license": "CC BY 4.0",
+      "sha256": "5ace47a1d2e53696bc939a84999293a04a7226958e848a609666691fd3cc38da",
+      "bytes": 782381450
+    },
+    {
+      "name": "tum-freiburg2-desk",
+      "dataset": "tum",
+      "kind": "tum-sequence",
+      "url": "https://cvg.cit.tum.de/rgbd/dataset/freiburg2/rgbd_dataset_freiburg2_desk.tgz",
+      "path": "tum/rgbd_dataset_freiburg2_desk.tgz",
+      "extract": "tum/freiburg2_desk",
+      "license": "CC BY 4.0",
+      "sha256": "1a0756d72510a26e26e2a02bf0b6c69c2796619fca531e176fc2e5110173807c",
+      "bytes": 1893351095
+    },
+    {
+      "name": "redwood-livingroom.ply",
+      "dataset": "redwood",
+      "kind": "ground-truth-geometry",
+      "url": "http://redwood-data.org/indoor/data/livingroom.ply.zip",
+      "path": "redwood/livingroom.ply.zip",
+      "extract": "redwood/livingroom",
+      "license": "see Redwood page (augmented ICL-NUIM; cite Choi et al. 2015 and Handa et al. 2014); ICL-NUIM models CC BY 3.0",
+      "sha256": "4e7f0d8658ffe17ca032b46fffe512b22a0c61b38cb5ca4f96365311abc31a25",
+      "bytes": 22505546
+    },
+    {
+      "name": "redwood-office.ply",
+      "dataset": "redwood",
+      "kind": "ground-truth-geometry",
+      "url": "http://redwood-data.org/indoor/data/office.ply.zip",
+      "path": "redwood/office.ply.zip",
+      "extract": "redwood/office",
+      "license": "see Redwood page (augmented ICL-NUIM; cite Choi et al. 2015 and Handa et al. 2014); ICL-NUIM models CC BY 3.0",
+      "sha256": "7fd387d91988ba68fe63089770185753e21f480795b057b13c1990734199af17",
+      "bytes": 30126375
+    },
+    {
+      "name": "redwood-livingroom1-depth-clean",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/livingroom1-depth-clean.zip",
+      "path": "redwood/livingroom1-depth-clean.zip",
+      "extract": "redwood/livingroom1-depth-clean",
+      "license": "see Redwood page",
+      "sha256": "aacc06f31d73997b76bec8072d6d28ed59029fb88c2ba3ce93e69ea72eb32b90",
+      "bytes": 120412184
+    },
+    {
+      "name": "redwood-livingroom1-depth-simulated",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/livingroom1-depth-simulated.zip",
+      "path": "redwood/livingroom1-depth-simulated.zip",
+      "extract": "redwood/livingroom1-depth-simulated",
+      "license": "see Redwood page",
+      "sha256": "e5f0497abdd77bf8ca16d3216ef3642f1041e743a31519a071562597fcb65acd",
+      "bytes": 260777252
+    },
+    {
+      "name": "redwood-livingroom1-traj",
+      "dataset": "redwood",
+      "kind": "trajectory",
+      "url": "http://redwood-data.org/indoor/data/livingroom1-traj.txt",
+      "path": "redwood/livingroom1-traj.txt",
+      "license": "see Redwood page",
+      "sha256": "81148ea03d897a30034a634c08b55264dabff8185f2fc98880fc96b4aa227a51",
+      "bytes": 748425
+    },
+    {
+      "name": "redwood-livingroom2-depth-clean",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/livingroom2-depth-clean.zip",
+      "path": "redwood/livingroom2-depth-clean.zip",
+      "extract": "redwood/livingroom2-depth-clean",
+      "license": "see Redwood page",
+      "sha256": "20b1b890efac3c825d39117ba126d7fe6b7eea6cc8ee6bcf2c56913011fbd31b",
+      "bytes": 98135092
+    },
+    {
+      "name": "redwood-livingroom2-depth-simulated",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/livingroom2-depth-simulated.zip",
+      "path": "redwood/livingroom2-depth-simulated.zip",
+      "extract": "redwood/livingroom2-depth-simulated",
+      "license": "see Redwood page",
+      "sha256": "34cd99e86bd1a3a7881f9aa551c4ce17a58f216bfa428244f6051ada808c9bb4",
+      "bytes": 207979141
+    },
+    {
+      "name": "redwood-livingroom2-traj",
+      "dataset": "redwood",
+      "kind": "trajectory",
+      "url": "http://redwood-data.org/indoor/data/livingroom2-traj.txt",
+      "path": "redwood/livingroom2-traj.txt",
+      "license": "see Redwood page",
+      "sha256": "758f8b851ac503be0e4bd9117e32d7725e557f43e7b6c54f4fc8b2478d72eff0",
+      "bytes": 611708
+    },
+    {
+      "name": "redwood-office1-depth-clean",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/office1-depth-clean.zip",
+      "path": "redwood/office1-depth-clean.zip",
+      "extract": "redwood/office1-depth-clean",
+      "license": "see Redwood page",
+      "sha256": "26a25cd0544c1139b0a49db2cdf6def1ece2f995a0d8084d19a2b50f3073cebd",
+      "bytes": 130918659
+    },
+    {
+      "name": "redwood-office1-depth-simulated",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/office1-depth-simulated.zip",
+      "path": "redwood/office1-depth-simulated.zip",
+      "extract": "redwood/office1-depth-simulated",
+      "license": "see Redwood page",
+      "sha256": "970ae3f17182531e876d82bf7d7f3421eff7ed00cb08b19cdacadbdbdfb2f399",
+      "bytes": 249213569
+    },
+    {
+      "name": "redwood-office1-traj",
+      "dataset": "redwood",
+      "kind": "trajectory",
+      "url": "http://redwood-data.org/indoor/data/office1-traj.txt",
+      "path": "redwood/office1-traj.txt",
+      "license": "see Redwood page",
+      "sha256": "e6f9878617e8fab427c9c757301e6a6b0b3e6de502347fed70790efdaf3f3d9b",
+      "bytes": 699245
+    },
+    {
+      "name": "redwood-office2-depth-clean",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/office2-depth-clean.zip",
+      "path": "redwood/office2-depth-clean.zip",
+      "extract": "redwood/office2-depth-clean",
+      "license": "see Redwood page",
+      "sha256": "231fa50e194508f93ab002f230f1595a1fb3379d0fe7fb8df6d747adef59040d",
+      "bytes": 126865254
+    },
+    {
+      "name": "redwood-office2-depth-simulated",
+      "dataset": "redwood",
+      "kind": "depth-sequence",
+      "url": "http://redwood-data.org/indoor/data/office2-depth-simulated.zip",
+      "path": "redwood/office2-depth-simulated.zip",
+      "extract": "redwood/office2-depth-simulated",
+      "license": "see Redwood page"
+    },
+    {
+      "name": "redwood-office2-traj",
+      "dataset": "redwood",
+      "kind": "trajectory",
+      "url": "http://redwood-data.org/indoor/data/office2-traj.txt",
+      "path": "redwood/office2-traj.txt",
+      "license": "see Redwood page"
+    },
+    {
+      "name": "icl-living-kt0",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj0_frei_png.tar.gz",
+      "path": "icl-nuim/living_room_traj0_frei_png.tar.gz",
+      "extract": "icl-nuim/living_kt0",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-living-kt0-noisy",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj0n_frei_png.tar.gz",
+      "path": "icl-nuim/living_room_traj0n_frei_png.tar.gz",
+      "extract": "icl-nuim/living_kt0_noisy",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-living-kt0-gt",
+      "dataset": "icl-nuim",
+      "kind": "trajectory",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/livingRoom0.gt.freiburg",
+      "path": "icl-nuim/livingRoom0.gt.freiburg",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-living-kt1",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj1_frei_png.tar.gz",
+      "path": "icl-nuim/living_room_traj1_frei_png.tar.gz",
+      "extract": "icl-nuim/living_kt1",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-living-kt1-noisy",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/living_room_traj1n_frei_png.tar.gz",
+      "path": "icl-nuim/living_room_traj1n_frei_png.tar.gz",
+      "extract": "icl-nuim/living_kt1_noisy",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-living-kt1-gt",
+      "dataset": "icl-nuim",
+      "kind": "trajectory",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/livingRoom1.gt.freiburg",
+      "path": "icl-nuim/livingRoom1.gt.freiburg",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt0",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/traj0_frei_png.tar.gz",
+      "path": "icl-nuim/traj0_frei_png.tar.gz",
+      "extract": "icl-nuim/office_kt0",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt0-noisy",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/traj0n_frei_png.tar.gz",
+      "path": "icl-nuim/traj0n_frei_png.tar.gz",
+      "extract": "icl-nuim/office_kt0_noisy",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt0-gt",
+      "dataset": "icl-nuim",
+      "kind": "trajectory",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/traj0.gt.freiburg",
+      "path": "icl-nuim/traj0.gt.freiburg",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt1",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/traj1_frei_png.tar.gz",
+      "path": "icl-nuim/traj1_frei_png.tar.gz",
+      "extract": "icl-nuim/office_kt1",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt1-noisy",
+      "dataset": "icl-nuim",
+      "kind": "tum-compatible-sequence",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/traj1n_frei_png.tar.gz",
+      "path": "icl-nuim/traj1n_frei_png.tar.gz",
+      "extract": "icl-nuim/office_kt1_noisy",
+      "license": "CC BY 3.0"
+    },
+    {
+      "name": "icl-office-kt1-gt",
+      "dataset": "icl-nuim",
+      "kind": "trajectory",
+      "url": "http://www.doc.ic.ac.uk/~ahanda/VaFRIC/traj1.gt.freiburg",
+      "path": "icl-nuim/traj1.gt.freiburg",
+      "license": "CC BY 3.0"
+    }
+  ]
+}

@@ -17,6 +17,21 @@ import { processScanEncodeWorkerMessage, type ScanEncodeWorkerRequest, type Scan
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import { makeValidScanSnapshot } from './support/validScanSnapshot';
 
+/**
+ * Byte-exact comparison of two artifacts. `expect(a).toEqual(b)` on an 8 MiB Uint8Array walks the arrays element by element through the generic deep-equal
+ * (18 s for the near-limit fixture, the cause of the timeouts under load; the encode itself takes 85 ms), so the bytes are compared natively and the first
+ * differing offset is reported on failure.
+ */
+function expectSameBytes(actual: Uint8Array, expected: Uint8Array): void {
+  expect(actual.byteLength, 'artifact size').toBe(expected.byteLength);
+  const a = Buffer.from(actual.buffer, actual.byteOffset, actual.byteLength);
+  const b = Buffer.from(expected.buffer, expected.byteOffset, expected.byteLength);
+  if (Buffer.compare(a, b) === 0) return;
+  let offset = 0;
+  while (a[offset] === b[offset]) offset += 1;
+  expect.fail(`artifact bytes differ at offset ${offset}: ${a[offset]} vs ${b[offset]}`);
+}
+
 type WorkerListener = (event: MessageEvent<ScanEncodeWorkerResponse> | ErrorEvent) => void;
 
 class DeferredWorker {
@@ -148,13 +163,21 @@ describe('ScanEncodeClient', () => {
 
     const encoded = await client.encode(snapshot, { generation: 17 });
 
-    expect(encoded.bytes).toEqual(sync.bytes);
+    expectSameBytes(encoded.bytes, sync.bytes);
     expect(encoded.identity).toEqual(sync.identity);
     expect(encoded.counters.bytesCopied).toBe(worker.request?.copyBytes);
     expect(encoded.counters.wholeScanCrcInvocations).toBe(1);
     expect(encoded.counters.wholeScanCrcBytesVisited).toBe(sync.bytes.byteLength);
     expect(encoded.counters.floatsVisited).toBeGreaterThan(0);
-  }, 30_000);
+  });
+
+  it('the native byte comparison still sees a single changed byte, a truncated artifact and an identical copy', () => {
+    const original = encodeScanArtifactWithIdentity(nearLimitSnapshot()).bytes;
+    expect(() => expectSameBytes(original.slice(), original)).not.toThrow();
+    const flipped = original.slice(); flipped[flipped.length - 3] ^= 1;
+    expect(() => expectSameBytes(flipped, original)).toThrow(/differ at offset/);
+    expect(() => expectSameBytes(original.slice(0, original.length - 1), original)).toThrow();
+  });
 
   it('returns encode counters once and reuses the identity in occupancy and preview builders', async () => {
     resetScanIdentityMetrics();
