@@ -1550,6 +1550,32 @@
             },
             "problemMatcher": [],
             "detail": "Download, verify SHA-256, and flash PocketBeagle 2 Debian 13.3 image to a USB/SD disk (requires Admin)."
+        },
+        {
+            "label": "PB2: Test On Board",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-board"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Cross-compile ARM64 tests, deploy via SSH, and run all 6 test suites on physical PocketBeagle 2 A0."
         }
     ],
     "inputs": [

@@ -118,7 +118,7 @@ if(PB2_BUILD_TESTS)
     add_executable(pb2_pty_tests
         tests/integration/test_pty_transport.cpp
     )
-    target_link_libraries(pb2_pty_tests PRIVATE pb2_core util)
+    target_link_libraries(pb2_pty_tests PRIVATE pb2_core)
     target_compile_options(pb2_pty_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME pb2_pty_tests COMMAND pb2_pty_tests)
 

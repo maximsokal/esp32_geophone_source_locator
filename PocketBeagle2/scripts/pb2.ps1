@@ -4,6 +4,7 @@ param(
         "doctor",
         "build-host",
         "test-host",
+        "test-board",
         "build-arm64",
         "deploy",
         "run",
@@ -78,6 +79,63 @@ switch ($Action) {
     "test-host" {
         Invoke-WslBash "cmake --preset host-debug && cmake --build --preset host-debug && ctest --preset host-debug"
     }
+    "test-board" {
+        Assert-BoardReachable
+        $protoDir = Join-Path $repoRootWin "components\pb2_protocol"
+        $eventsDir = Join-Path $repoRootWin "components\geophone_events"
+        $locDir = Join-Path $repoRootWin "components\localization"
+        $pb2Src = Join-Path $pb2RootWin "src"
+        $pb2Inc = Join-Path $pb2RootWin "include"
+        $pb2PruInc = Join-Path $pb2RootWin "pru\include"
+        $pb2Tests = Join-Path $pb2RootWin "tests"
+
+        & ssh "$Pb2User@$Pb2Host" "mkdir -p '$RemoteDir/src_build/proto' '$RemoteDir/src_build/events' '$RemoteDir/src_build/loc/stubs' '$RemoteDir/src_build/pb2'"
+        & scp -r "$protoDir\*" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/proto/"
+        & scp -r "$eventsDir\*.c" "$eventsDir\include" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/events/"
+        & scp "$locDir\localization.c" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/loc/"
+        & scp -r "$locDir\include" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/loc/"
+        & scp "$locDir\tests\stubs\esp_err.h" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/loc/stubs/"
+        & scp -r "$pb2Inc" "$pb2Src" "$pb2Tests" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/pb2/"
+        & scp -r "$pb2PruInc" "${Pb2User}@${Pb2Host}:$RemoteDir/src_build/pb2/pru_include"
+
+        $buildAndRun = @'
+set -e
+cd ~/pb2_locator/src_build
+mkdir -p bin
+gcc -std=c11 -O2 -Wall -Wextra -Werror -Iproto/include -c proto/pb2_cobs.c -o bin/pb2_cobs.o
+gcc -std=c11 -O2 -Wall -Wextra -Werror -Iproto/include -c proto/pb2_crc32c.c -o bin/pb2_crc32c.o
+gcc -std=c11 -O2 -Wall -Wextra -Werror -Iproto/include -c proto/pb2_protocol.c -o bin/pb2_protocol.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include \
+  pb2/src/acquisition/mock_source.cpp pb2/src/acquisition/pru_ring_consumer.cpp \
+  pb2/src/diagnostics/runtime_info.cpp pb2/src/hardware/pinmap_a0.cpp \
+  pb2/src/power/shutdown_fsm.cpp pb2/src/storage/geoseis_v2_writer.cpp \
+  pb2/src/transport/uart_transport.cpp bin/pb2_cobs.o bin/pb2_crc32c.o bin/pb2_protocol.o \
+  -c 2>/dev/null || true
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/acquisition/mock_source.cpp -c -o bin/mock_source.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/acquisition/pru_ring_consumer.cpp -c -o bin/pru_ring_consumer.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/diagnostics/runtime_info.cpp -c -o bin/runtime_info.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/hardware/pinmap_a0.cpp -c -o bin/pinmap_a0.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/power/shutdown_fsm.cpp -c -o bin/shutdown_fsm.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/storage/geoseis_v2_writer.cpp -c -o bin/geoseis_v2_writer.o
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/src/transport/uart_transport.cpp -c -o bin/uart_transport.o
+CORE_OBJS="bin/mock_source.o bin/pru_ring_consumer.o bin/runtime_info.o bin/pinmap_a0.o bin/shutdown_fsm.o bin/geoseis_v2_writer.o bin/uart_transport.o bin/pb2_cobs.o bin/pb2_crc32c.o bin/pb2_protocol.o"
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/tests/unit/test_mock_source.cpp $CORE_OBJS -o bin/pb2_unit_tests
+gcc -std=c11 -O2 -Wall -Wextra -Werror -Iproto/include proto/tests/pb2_protocol_test.c bin/pb2_cobs.o bin/pb2_crc32c.o bin/pb2_protocol.o -lm -o bin/pb2_protocol_c_tests
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/tests/integration/test_pty_transport.cpp $CORE_OBJS -o bin/pb2_pty_tests
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/tests/unit/test_phase3_4.cpp $CORE_OBJS -o bin/pb2_phase3_4_tests
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ipb2/include -Ipb2/pru_include -Iproto/include pb2/tests/unit/test_geoseis_v2.cpp $CORE_OBJS -o bin/pb2_geoseis_v2_tests
+gcc -std=c11 -O2 -Ievents/include -Iloc/include -Iloc/stubs -c events/*.c loc/localization.c
+mv *.o bin/
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ievents/include -Iloc/include -Iloc/stubs pb2/tests/unit/test_shared_math.cpp bin/geophone_event_*.o bin/localization.o -lm -o bin/pb2_shared_math_tests
+for t in pb2_unit_tests pb2_protocol_c_tests pb2_pty_tests pb2_phase3_4_tests pb2_geoseis_v2_tests pb2_shared_math_tests; do
+  echo "=== $t (on-board aarch64) ==="
+  ./bin/$t
+done
+'@
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($buildAndRun))
+        & ssh "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
+        exit $LASTEXITCODE
+    }
     "build-arm64" {
         Invoke-WslBash "cmake --preset arm64-release && cmake --build --preset arm64-release"
     }
@@ -149,7 +207,59 @@ switch ($Action) {
         & ssh "$Pb2User@$Pb2Host" "journalctl -b --no-pager" | Out-File -Encoding utf8 $dest
         Write-Host "[pb2] Saved $dest"
     }
-    { $_ -in @("build-pru", "load-pru", "stop-pru", "install-overlay", "hil-uart", "hil-adc", "benchmark-adc", "benchmark-storage", "benchmark-transport") } {
+    "build-pru" {
+        Assert-BoardReachable
+        $pruDir = Join-Path $pb2RootWin "pru"
+        & ssh "$Pb2User@$Pb2Host" "mkdir -p '$RemoteDir/pru'"
+        & scp -r "$pruDir\*" "${Pb2User}@${Pb2Host}:$RemoteDir/pru/"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & ssh "$Pb2User@$Pb2Host" "cd '$RemoteDir/pru' && make clean all"
+        exit $LASTEXITCODE
+    }
+    "load-pru" {
+        Assert-BoardReachable
+        $remoteScript = @'
+set -e
+RP=""
+for d in /sys/class/remoteproc/remoteproc*; do
+  if [ "$(cat "$d/name" 2>/dev/null)" = "30078000.pru" ]; then
+    RP="$d"
+    break
+  fi
+done
+[ -n "$RP" ] || { echo "30078000.pru not found"; exit 1; }
+echo "Discovered PRU1 at $RP"
+sudo cp /home/debian/pb2_locator/pru/build/pb2_pru1_ad7606.out /lib/firmware/pb2_pru1_ad7606.out
+STATE="$(cat "$RP/state")"
+if [ "$STATE" = "running" ]; then
+  echo stop | sudo tee "$RP/state" >/dev/null
+fi
+echo pb2_pru1_ad7606.out | sudo tee "$RP/firmware" >/dev/null
+echo start | sudo tee "$RP/state" >/dev/null
+echo "PRU1 state: $(cat "$RP/state") firmware: $(cat "$RP/firmware")"
+'@
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteScript))
+        & ssh -t "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
+        exit $LASTEXITCODE
+    }
+    "stop-pru" {
+        Assert-BoardReachable
+        $remoteScript = @'
+set -e
+for d in /sys/class/remoteproc/remoteproc*; do
+  if [ "$(cat "$d/name" 2>/dev/null)" = "30078000.pru" ]; then
+    if [ "$(cat "$d/state")" = "running" ]; then
+      echo stop | sudo tee "$d/state" >/dev/null
+    fi
+    echo "PRU1 state: $(cat "$d/state")"
+  fi
+done
+'@
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteScript))
+        & ssh -t "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
+        exit $LASTEXITCODE
+    }
+    { $_ -in @("install-overlay", "hil-uart", "hil-adc", "benchmark-adc", "benchmark-storage", "benchmark-transport") } {
         Write-Host "[pb2] Action '$Action' is reserved for Phase 2-5 (gated by plan approval and hardware)." -ForegroundColor Yellow
         exit 0
     }

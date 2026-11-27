@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <pty.h>
+#include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
 #include <vector>
@@ -26,9 +26,18 @@ struct PtyPair {
     char slave_name[128]{};
 
     PtyPair() {
+        master = ::posix_openpt(O_RDWR | O_NOCTTY);
+        PTY_CHECK(master >= 0);
+        PTY_CHECK(::grantpt(master) == 0);
+        PTY_CHECK(::unlockpt(master) == 0);
+        const char* name = ::ptsname(master);
+        PTY_CHECK(name != nullptr);
+        std::snprintf(slave_name, sizeof(slave_name), "%s", name);
+        slave = ::open(slave_name, O_RDWR | O_NOCTTY);
+        PTY_CHECK(slave >= 0);
         struct termios tio {};
         ::cfmakeraw(&tio);
-        PTY_CHECK(::openpty(&master, &slave, slave_name, &tio, nullptr) == 0);
+        ::tcsetattr(slave, TCSANOW, &tio);
     }
     ~PtyPair() {
         if (master >= 0) ::close(master);

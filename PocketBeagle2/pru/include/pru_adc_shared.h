@@ -8,7 +8,7 @@ extern "C" {
 
 #define PB2_PRU_RING_MAGIC       0x50425231U /* 'PBR1' */
 #define PB2_PRU_RING_VERSION     1U
-#define PB2_PRU_RING_CAPACITY    256U /* power of 2 */
+#define PB2_PRU_RING_CAPACITY    128U /* power of 2, fits cleanly in 8 KB PRU_DMEM1 */
 #define PB2_PRU_CHANNEL_COUNT    4U
 
 #define PB2_PRU_PROFILE_SINGLE_DOUT 0U /* V1..V4 on DOUTA (64 SCLK) */
