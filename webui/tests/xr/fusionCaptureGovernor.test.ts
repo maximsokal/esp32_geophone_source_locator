@@ -173,6 +173,17 @@ describe('frame classes and slots', () => {
   });
 });
 
+describe('the measured fusion time is a floor of its own, not only the queue', () => {
+  it('a slow worker whose queue is short again (because the interval widened) is not sped back up past what it can fuse', () => {
+    const governor = new FusionCaptureGovernor();
+    const idle = { queueDepth: 0, maxInFlight: 3, mandatoryReserve: 5 };
+    for (let i = 0; i < 80; i += 1) governor.frameDone(600, idle);
+    expect(governor.intervalMs, '600 ms per frame with 20 % headroom').toBeGreaterThanOrEqual(720);
+    for (let i = 0; i < 80; i += 1) governor.frameDone(20, idle);
+    expect(governor.intervalMs, 'and it comes back once the worker is fast again').toBe(FUSION_BASE_INTERVAL_MS);
+  });
+});
+
 describe('capture under load: camera 5-60 Hz, fusion slowed 1x-8x from a phone-like 75 ms per frame', () => {
   const table: Record<string, RunResult> = {};
   const reference = new Map<number, Promise<RunResult>>();

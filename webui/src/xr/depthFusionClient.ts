@@ -20,7 +20,9 @@ import type {
  *
  * Recovery: every `checkpointEveryFrames` fused frames the worker sends its state to the keeper worker (never through the main thread), and the client keeps
  * a bounded JOURNAL of the accepted frames since the last stored checkpoint. A checkpoint gets dearer as the scan grows, so the interval stretches (up to
- * `checkpointMaxStretch` times) to keep serialising it within `checkpointOverheadShare` of the fusion time; the journal bound grows with it. When the worker dies, a replacement restores the checkpoint, fuses the journal
+ * `checkpointMaxStretch` times) to keep serialising it within `checkpointOverheadShare` of the fusion time; the journal bound grows with it.
+ * A keeper that fails, or leaves two checkpoints unanswered, is replaced and given a checkpoint at the next frame, so only a keeper and a fusion worker
+ * lost TOGETHER (before the replacement has stored one) cost measurements, and that loss is reported. When the worker dies, a replacement restores the checkpoint, fuses the journal
  * again and answers whatever was still pending. Frames that could not be kept (journal overflow) are counted and reported, never hidden; when no
  * replacement can be had, the failure is terminal and reported.
  */
@@ -66,6 +68,7 @@ export const FUSION_DEFAULT_CHECKPOINT_EVERY = 20;
 export const FUSION_DEFAULT_CHECKPOINT_SHARE = 0.05;
 export const FUSION_DEFAULT_CHECKPOINT_MAX_STRETCH = 4;
 export const FUSION_DEFAULT_MAX_RESTARTS = 2;
+export const FUSION_MAX_KEEPER_REPLACEMENTS = 2;
 
 export const FUSION_DEFAULT_MAX_IN_FLIGHT = 3;
 export const FUSION_DEFAULT_MANDATORY_RESERVE = 5;
@@ -92,6 +95,9 @@ export interface FusionCounters {
   recoveries: number;
   replayedFrames: number;
   checkpointsStored: number;
+  /** Checkpoints the keeper never confirmed within two intervals; each was asked for again. */
+  checkpointsOverdue: number;
+  keeperReplacements: number;
   /** Time the fusion worker spent serialising checkpoints (the keeper spends about as much again reading them). */
   checkpointMsTotal: number;
   checkpointMsMax: number;
@@ -131,7 +137,7 @@ export class DepthFusionClient {
   private failed: string | null = null;
   private disposed = false;
   private mirror: FusionStats = ZERO_STATS;
-  readonly counters: FusionCounters = { submitted: 0, accepted: 0, droppedOptional: 0, droppedKeyframes: 0, lostFrames: 0, lostKeyframes: 0, recoveries: 0, replayedFrames: 0, checkpointsStored: 0, checkpointMsTotal: 0, checkpointMsMax: 0, checkpointEvery: 0, checkpointEveryMax: 0, maxJournal: 0, maxInFlight: 0, maxQueueDepth: 0, workerMsTotal: 0, frameRoundTripMs: [] };
+  readonly counters: FusionCounters = { submitted: 0, accepted: 0, droppedOptional: 0, droppedKeyframes: 0, lostFrames: 0, lostKeyframes: 0, recoveries: 0, replayedFrames: 0, checkpointsStored: 0, checkpointsOverdue: 0, keeperReplacements: 0, checkpointMsTotal: 0, checkpointMsMax: 0, checkpointEvery: 0, checkpointEveryMax: 0, maxJournal: 0, maxInFlight: 0, maxQueueDepth: 0, workerMsTotal: 0, frameRoundTripMs: [] };
   private readonly options: DepthFusionClientOptions;
   private keeper: Worker | null = null;
   private readonly journal = new Map<number, FusionFrameMessage>();
@@ -140,6 +146,8 @@ export class DepthFusionClient {
   private readonly evicted = new Map<number, boolean>();
   private storedThroughSeq = -1;
   private checkpointPending = false;
+  private overdueInARow = 0;
+  private keeperBudget = 0;
   private framesSinceCheckpoint = 0;
   private frameWorkEwmaMs = 0;
   private restarts = 0;
@@ -163,14 +171,8 @@ export class DepthFusionClient {
       this.mode = 'worker';
       this.worker = worker;
       this.listen(worker);
-      let keeper: Worker | null = null;
-      try { keeper = options.keeperFactory?.() ?? null; } catch { keeper = null; }
-      if (keeper !== null) {
-        this.keeper = keeper;
-        keeper.addEventListener('message', this.handleKeeperMessage);
-        keeper.addEventListener('error', this.handleKeeperError);
-        this.attachKeeper();
-      }
+      this.keeperBudget = FUSION_MAX_KEEPER_REPLACEMENTS;
+      this.startKeeper();
     } else {
       this.mode = 'inline';
       this.inline = createDepthFusionHandler((message) => this.deliver(message));
@@ -198,6 +200,8 @@ export class DepthFusionClient {
     this.mirror = ZERO_STATS;
     this.forgetRecoveryState();
     this.restarts = 0;
+    this.overdueInARow = 0;
+    this.keeperBudget = FUSION_MAX_KEEPER_REPLACEMENTS;
     this.keeper?.postMessage({ type: 'drop' });
     this.post({ type: 'reset', generation: this.generation });
     return this.generation;
@@ -296,6 +300,29 @@ export class DepthFusionClient {
     this.worker = null;
   }
 
+  private startKeeper(): void {
+    let keeper: Worker | null = null;
+    try { keeper = this.options.keeperFactory?.() ?? null; } catch { keeper = null; }
+    if (keeper === null) return;
+    this.keeper = keeper;
+    keeper.addEventListener('message', this.handleKeeperMessage);
+    keeper.addEventListener('error', this.handleKeeperError);
+    this.attachKeeper();
+  }
+
+  /** The keeper is gone or silent: a new one, which holds nothing yet, so the state is sent to it with the very next frame. */
+  private replaceKeeper(): void {
+    this.dropKeeper();
+    this.storedThroughSeq = -1;
+    this.overdueInARow = 0;
+    if (this.keeperBudget <= 0) return;
+    this.keeperBudget -= 1;
+    this.startKeeper();
+    if (this.keeper === null) return;
+    this.counters.keeperReplacements += 1;
+    this.framesSinceCheckpoint = this.counters.checkpointEvery;
+  }
+
   private channel(): { port1: unknown; port2: unknown } { return this.options.channelFactory?.() ?? new MessageChannel(); }
 
   private attachKeeper(): void {
@@ -314,11 +341,10 @@ export class DepthFusionClient {
     this.checkpointPending = false;
   }
 
-  /** A keeper that fails takes the checkpoints with it; recovery then rests on the journal and reports what that cannot give back. */
+  /** A keeper that fails takes its checkpoint with it; until a new one holds the state, recovery rests on the journal and reports what that cannot give back. */
   private readonly handleKeeperError = (): void => {
-    const waiting = this.restoreTimer !== null;
-    this.dropKeeper();
-    if (waiting) this.restoreWithoutKeeper('checkpoint keeper failed during restore');
+    if (this.restoreTimer !== null) { this.dropKeeper(); this.restoreWithoutKeeper('checkpoint keeper failed during restore'); return; }
+    this.replaceKeeper();
   };
 
   private clearRestoreTimer(): void { if (this.restoreTimer !== null) { clearTimeout(this.restoreTimer); this.restoreTimer = null; } }
@@ -331,7 +357,8 @@ export class DepthFusionClient {
     const original = this.recovering?.reason ?? reason;
     this.restarts -= 1;
     this.counters.recoveries -= 1;
-    if (!this.recover(original)) this.fail(reason);
+    if (!this.recover(original)) { this.fail(reason); return; }
+    this.replaceKeeper();                                                          /* the rest of the scan is checkpointed again */
   }
 
   private forgetRecoveryState(): void {
@@ -424,6 +451,7 @@ export class DepthFusionClient {
     const message = event.data;
     if (this.disposed || message.generation !== this.generation || message.type !== 'stored' || message.throughSeq === undefined) return;
     this.checkpointPending = false;
+    this.overdueInARow = 0;
     this.storedThroughSeq = Math.max(this.storedThroughSeq, message.throughSeq);
     this.counters.checkpointsStored += 1;
     for (const [seq, frame] of this.journal) if (seq <= this.storedThroughSeq) { this.evicted.set(seq, frame.mandatory); this.journal.delete(seq); }
@@ -489,6 +517,11 @@ export class DepthFusionClient {
       this.onFrameDone?.(message.changedPoints, message.stats);
       this.options.onFrameTiming?.(message.workMs, this.inFlight.size);
       this.framesSinceCheckpoint += 1;
+      /* A keeper that stays silent must not stop checkpointing for the rest of the scan: after two intervals the checkpoint is asked for again. */
+      if (this.checkpointPending && this.framesSinceCheckpoint >= this.counters.checkpointEvery * 2) {
+        this.checkpointPending = false; this.counters.checkpointsOverdue += 1; this.overdueInARow += 1;
+        if (this.overdueInARow >= 2) this.replaceKeeper();
+      }
       if (this.keeper !== null && !this.checkpointPending && this.framesSinceCheckpoint >= this.counters.checkpointEvery) {
         this.framesSinceCheckpoint = 0;
         this.checkpointPending = true;

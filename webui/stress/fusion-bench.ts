@@ -114,6 +114,21 @@ function differences(a: unknown, b: unknown, path = 'value', out: string[] = [])
   return out;
 }
 
+/** Share of `reference` points that `got` still has within 3 cm. */
+function agreement(reference: Float32Array, got: Float32Array): { recall: number } {
+  if (reference.length === 0) return { recall: 1 };
+  const T = 0.03; const grid = new Map<string, number[]>();
+  for (let i = 0; i + 2 < got.length; i += 3) { const key = `${Math.floor(got[i] / T)},${Math.floor(got[i + 1] / T)},${Math.floor(got[i + 2] / T)}`; const list = grid.get(key); if (list) list.push(i); else grid.set(key, [i]); }
+  let hits = 0;
+  for (let i = 0; i + 2 < reference.length; i += 3) {
+    const cx = Math.floor(reference[i] / T); const cy = Math.floor(reference[i + 1] / T); const cz = Math.floor(reference[i + 2] / T);
+    search: for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) for (let dz = -1; dz <= 1; dz += 1) for (const j of grid.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
+      if (Math.hypot(reference[i] - got[j], reference[i + 1] - got[j + 1], reference[i + 2] - got[j + 2]) <= T) { hits += 1; break search; }
+    }
+  }
+  return { recall: hits / (reference.length / 3) };
+}
+
 /** The files a finished scan is saved as, built with a fixed creation time. A scan too small to be saved gives the same refusal on both paths. */
 function artifacts(snapshot: ScanPointCloudSnapshot) {
   const full = { ...snapshot, manualControlPoints: [], operatorEdges: [] } as never;
@@ -134,7 +149,7 @@ const byteLengthOf = (value: unknown): number => (ArrayBuffer.isView(value) ? va
  * The REAL worker against the synchronous accumulator on the same frames, every frame accepted (the next one is handed over when the previous is fused).
  * With `restartAt`, the worker is thrown away mid-scan and a replacement continues from the real keeper worker's checkpoint plus the journal.
  */
-async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFrames = false) {
+async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFrames = false, killKeeper = false, keeperFailsAt: number | null = null) {
   /* Negative control: the worker (only) gets every tenth frame with its depth moved by 3 mm; the comparison has to report it. */
   const corrupted = (index: number): ReturnType<typeof deviceDepth> => {
     if (!corruptWorkerFrames || index % 10 !== 0) return deviceDepth(pack, index);
@@ -147,11 +162,22 @@ async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFr
   const fusion = new RuntimeFusion({ workerFactory: createDepthFusionWorker, checkpointEveryFrames: 20, onRecovered: (report) => recoveryReports.push(report) });
   fusion.reset();
   if (fusion.mode !== 'worker') throw new Error('the fusion worker could not be started');
-  let restarted: boolean | null = null; let checkpointsBeforeRestart = 0; let recoveryMs = 0;
+  let restarted: boolean | null = null; let checkpointsBeforeRestart = 0; let recoveryMs = 0; let uncovered = 0;
   for (let i = 0; i < pack.frames.length; i += 1) {
     const view = { projectionMatrix: pack.projection, transform: { matrix: pack.frames[i].worldFromView } };
     accumulator.sampleDepthFrame(deviceDepth(pack, i), view, contextOf(pack.frames[i]));
-    if (restartAt === i) { checkpointsBeforeRestart = fusion.client.counters.checkpointsStored; const t0 = performance.now(); restarted = fusion.client.restart('equivalence run: deliberate restart'); for (let wait = 0; recoveryReports.length === 0 && wait < 4000; wait += 1) await sleep(1); recoveryMs = performance.now() - t0; }
+    if (keeperFailsAt === i) (fusion.client as unknown as { keeper: Worker | null }).keeper?.dispatchEvent(new ErrorEvent('error', { message: 'recovery study: keeper failure' }));
+    if (restartAt === i) {
+      checkpointsBeforeRestart = fusion.client.counters.checkpointsStored; uncovered = fusion.client.journalSize;
+      const client = fusion.client as unknown as { worker: Worker; keeper: Worker | null };
+      /* The keeper dies without a word (as under memory pressure), then the worker fails through its own error event. */
+      if (killKeeper) client.keeper?.terminate();
+      const before = fusion.client.counters.recoveries; const t0 = performance.now();
+      client.worker.dispatchEvent(new ErrorEvent('error', { message: 'recovery study: simulated worker crash' }));
+      restarted = fusion.client.counters.recoveries > before;
+      for (let wait = 0; (recoveryReports.length === 0 || fusion.client.queueDepth > 0) && wait < 20000; wait += 1) await sleep(1);
+      recoveryMs = performance.now() - t0;
+    }
     for (let wait = 0; !fusion.client.canAccept(pack.frames[i].keyframe) && wait < 4000; wait += 1) await sleep(1);
     const outcome = fusion.submitFrame(corrupted(i), view, contextOf(pack.frames[i]), 'unsigned-short', performance.now());
     if (outcome !== 'accepted') throw new Error(`frame ${i} was not accepted: ${outcome}`);
@@ -182,7 +208,8 @@ async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFr
       structural: differences(expectedStructural, actualStructural), certifiedStructural: differences(expectedGuide, actualGuide), artifacts: differences(expectedArtifacts, actualArtifacts),
     },
     artifactBytes: { scan: byteLengthOf(expectedArtifacts.scan), occupancy: byteLengthOf(expectedArtifacts.occupancy), preview: byteLengthOf(expectedArtifacts.preview), error: expectedArtifacts.error },
-    recovery: restartAt === null ? null : { restartAt, restarted, checkpointsBeforeRestart, recoveryMs, reports: recoveryReports, lostFrames: counters.lostFrames, recoveries: counters.recoveries, replayedFrames: counters.replayedFrames },
+    confirmed: { expected: expected.tsdfPointCount, got: result.snapshot.tsdfPointCount, expectedPoints: expected.pointCount, gotPoints: result.snapshot.pointCount, ...agreement(expected.positions, result.snapshot.positions) },
+    recovery: restartAt === null ? null : { keeperReplacements: counters.keeperReplacements, restartAt, restarted, checkpointsBeforeRestart, journalFramesAtCrash: uncovered, recoveryMs, reports: recoveryReports, lostFrames: counters.lostFrames, recoveries: counters.recoveries, replayedFrames: counters.replayedFrames },
     checkpoint: { stored: counters.checkpointsStored, finalStateCloneMs: checkpointCloneMs, serialiseMsTotal: counters.checkpointMsTotal, serialiseMsMax: counters.checkpointMsMax, everyMax: counters.checkpointEveryMax, fusionMsTotal: counters.workerMsTotal },
     maxJournal: counters.maxJournal,
   };
@@ -191,7 +218,7 @@ async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFr
 }
 
 (window as unknown as { __fusionBench: unknown }).__fusionBench = {
-  equivalence: (pack: Pack, restartAt: number | null, corruptWorkerFrames?: boolean) => equivalence(pack, restartAt, corruptWorkerFrames),
+  equivalence: (pack: Pack, restartAt: number | null, corruptWorkerFrames?: boolean, killKeeper?: boolean, keeperFailsAt?: number | null) => equivalence(pack, restartAt, corruptWorkerFrames, killKeeper, keeperFailsAt),
   load: async (url: string) => parsePack(await (await fetch(url)).arrayBuffer()),
   run: async (pack: Pack, variant: 'sync' | 'worker', paceMs: number) => {
     const r = variant === 'sync' ? await runSync(pack, paceMs) : await runWorker(pack, paceMs);

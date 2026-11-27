@@ -1,5 +1,6 @@
 // Whole-session replay of the production XR runtime in Chromium (stress/xr-replay.tsx), with main-thread time and renderer CPU time from the DevTools protocol.
-//   node scripts/bench-xr-replay.mjs --label <name> [--packs <dir>] [--only a,b] [--scenarios scan,static] [--duration 30000] [--repeats 3] [--no-tags] [--no-seismic]
+//   node scripts/bench-xr-replay.mjs --label <name> [--packs <dir>] [--only a,b] [--scenarios scan,static,pause,tracking-loss,context-loss,no-scan]
+//     [--duration 30000] [--repeats 3] [--fusion-ms 75] [--load from:length:ms,...] [--no-tags] [--no-seismic]
 // Packs come from tests/bench/phase2/exportFrames.bench.ts. Run on a quiet machine: it measures time.
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -24,7 +25,8 @@ const names = (args.get('only') ?? 'redwood-living1-noisy').split(',');
 const scenarios = (args.get('scenarios') ?? 'scan').split(',');
 const duration = Number(args.get('duration') ?? 30000);
 const repeats = Number(args.get('repeats') ?? 1);
-const options = { durationMs: duration, tags: args.get('no-tags') !== 'true', seismic: args.get('no-seismic') !== 'true' };
+const load = (args.get('load') ?? '').split(',').filter(Boolean).map((text) => { const [from, length, ms] = text.split(':').map(Number); return { from, length, ms }; });
+const options = { durationMs: duration, tags: args.get('no-tags') !== 'true', seismic: args.get('no-seismic') !== 'true', fusionMs: Number(args.get('fusion-ms') ?? 0), load };
 const out = join(repo, `.test-build/phase2/xr-replay-${label}.json`);
 
 /*
@@ -82,6 +84,12 @@ try {
           const cpu = Object.fromEntries(Object.keys(cpuAfter).map((type) => [type, (cpuAfter[type] - (cpuBefore[type] ?? 0)) * 1000]));
           const run = { pack: name, repeat, ...result, mainThreadTaskMs: (after.TaskDuration - before.TaskDuration) * 1000, mainThreadScriptMs: (after.ScriptDuration - before.ScriptDuration) * 1000, rendererCpuMs: cpu.renderer ?? null, allProcessCpuMs: cpu, wallMs, rendererWorkingSetMb: workingSetMb, errors };
           report.runs.push(run);
+          if (scenario === 'no-scan') {
+            console.log(`${name} no-scan #${repeat}: seismic interval p50/p95/p99 ${run.seismic.intervalMs.p50.toFixed(0)}/${run.seismic.intervalMs.p95.toFixed(0)}/${run.seismic.intervalMs.p99.toFixed(0)} ms, rendered ${run.seismic.rendered} | tag p50/p95 ${run.tags?.latencyMs.p50.toFixed(0)}/${run.tags?.latencyMs.p95.toFixed(0)} | renderer CPU ${run.rendererCpuMs?.toFixed(0)} ms | main task ${run.mainThreadTaskMs.toFixed(0)} ms | working set peak ${run.rendererWorkingSetMb?.peak.toFixed(0) ?? '-'} MB`);
+            continue;
+          }
+          if (load.length > 0 || options.fusionMs > 0) for (const key of ['tagCaptures', 'coverage', 'mesh']) console.log(`  ${key}: ${run.schedule[key].map((r) => `${r.segment} ${r.perSecond.toFixed(2)}/s gap ${r.longestGapMs.toFixed(0)}`).join(' | ')}`);
+          if (run.checkpoints !== null) console.log(`  checkpoints stored ${run.checkpoints.stored}, longest without one ${run.checkpoints.longestMsWithoutOne.toFixed(0)} ms, interval<=${run.checkpoints.everyMax} frames, max journal ${run.fusion?.maxJournal}`);
           console.log(`${name} ${scenario} #${repeat}: frameWork p50/p95/p99 ${run.frameWork.p50.toFixed(2)}/${run.frameWork.p95.toFixed(2)}/${run.frameWork.p99.toFixed(2)} ms | main task ${run.mainThreadTaskMs.toFixed(0)} ms (script ${run.mainThreadScriptMs.toFixed(0)}) | renderer CPU ${run.rendererCpuMs?.toFixed(0)} ms | integrated ${run.depth.integrated} kf ${run.depth.keyframes} pts ${run.finalPoints} | drop kf ${run.fusion?.droppedKeyframes ?? 'n/a'} lost ${run.fusion?.lostFrames ?? 'n/a'} q ${run.queueDepth.max} | mesh ${run.mesh.uploads} lat p95 ${run.mesh.depthToMeshMs.p95.toFixed(0)} | tag p50/p95 ${run.tags.latencyMs.p50.toFixed(0)}/${run.tags.latencyMs.p95.toFixed(0)} busy ${run.tags.busy} | seismic p95 ${run.seismic.intervalMs.p95.toFixed(0)} | finish ${run.finishMs?.toFixed(0) ?? '-'} | recall ${run.quality?.recall.toFixed(3) ?? '-'} precision ${run.quality?.precision.toFixed(3) ?? '-'} | heap peak ${run.heapMb.peak.toFixed(0)} MB, renderer working set peak ${run.rendererWorkingSetMb?.peak.toFixed(0) ?? '-'} MB | phase ${run.finalPhase} sessions ${run.liveSessions}${errors.length ? ` | ERRORS ${errors.slice(0, 3).join(' ; ').slice(0, 400)}` : ''}`);
         } catch (error) {
           failed += 1;

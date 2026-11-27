@@ -194,6 +194,59 @@ describe('the worker dies mid-scan', () => {
     expect(r.fusion.client.counters.checkpointEveryMax).toBe(8);
   }, 120_000);
 
+  it('a keeper that goes silent for a while does not end checkpointing: the checkpoint is asked for again, and once it answers a crash loses nothing', async () => {
+    const reference = await uninterrupted();
+    const r = rig({ onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 56; } });
+    await r.feed(0, 10);
+    r.keepers[0].mute = true;
+    await r.feed(10, 36);
+    expect(r.fusion.client.counters.checkpointsOverdue).toBeGreaterThanOrEqual(1);
+    const storedWhileMute = r.fusion.client.counters.checkpointsStored;
+    r.keepers[0].mute = false;
+    await r.feed(36, FRAMES);
+    expect(r.fusion.client.counters.checkpointsStored, 'checkpointing resumed').toBeGreaterThan(storedWhileMute);
+    const result = await r.fusion.finish(FRAMES, FRAMES);
+    expect(r.recoveries[0]).toMatchObject({ lostFrames: 0, lostKeyframes: 0 });
+    expect(r.recoveries[0].restoredThroughSeq).toBeGreaterThan(30);
+    expect(snapshotDigest(result.snapshot)).toEqual(reference);
+  }, 120_000);
+
+  it('a keeper that FAILS mid-scan is replaced and given the state at once: a worker crash later in the scan loses nothing', async () => {
+    const reference = await uninterrupted();
+    const r = rig({ journalLimit: 20, onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 56; } });
+    await r.feed(0, 30);
+    r.keepers[0].fail();
+    await r.feed(30, FRAMES);
+    const result = await r.fusion.finish(FRAMES, FRAMES);
+    expect(r.keepers).toHaveLength(2);
+    expect(r.fusion.client.counters.keeperReplacements).toBe(1);
+    expect(r.recoveries[0]).toMatchObject({ lostFrames: 0, lostKeyframes: 0 });
+    expect(r.recoveries[0].restoredThroughSeq).toBeGreaterThan(30);
+    expect(snapshotDigest(result.snapshot)).toEqual(reference);
+  }, 120_000);
+
+  it('a keeper that dies SILENTLY is replaced after two unanswered checkpoints, and protection is back before the crash', async () => {
+    const reference = await uninterrupted();
+    const r = rig({ journalLimit: 20, onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 58; } });
+    await r.feed(0, 10);
+    r.keepers[0].kill();
+    await r.feed(10, FRAMES);
+    const result = await r.fusion.finish(FRAMES, FRAMES);
+    expect(r.fusion.client.counters.checkpointsOverdue).toBeGreaterThanOrEqual(2);
+    expect(r.fusion.client.counters.keeperReplacements).toBe(1);
+    expect(r.recoveries[0]).toMatchObject({ lostFrames: 0, lostKeyframes: 0 });
+    expect(snapshotDigest(result.snapshot)).toEqual(reference);
+  }, 120_000);
+
+  it('keepers that keep failing are replaced only a bounded number of times', async () => {
+    const r = rig();
+    for (let round = 0; round < 5; round += 1) { await r.feed(round * 10, (round + 1) * 10); r.keepers.at(-1)!.fail(); }
+    expect(r.keepers).toHaveLength(3);
+    expect(r.fusion.client.counters.keeperReplacements).toBe(2);
+    await r.feed(50, FRAMES);
+    await expect(r.fusion.finish(FRAMES, FRAMES)).resolves.toMatchObject({ drained: true });
+  }, 120_000);
+
   it('the journal is bounded and pruned by stored checkpoints (no unbounded memory on the main thread)', async () => {
     const r = rig();
     await r.feed(0, FRAMES);

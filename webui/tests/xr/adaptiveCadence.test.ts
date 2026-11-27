@@ -59,6 +59,20 @@ describe('AdaptiveCadence', () => {
     expect(cadence.currentMs).toBe(LIVE_MESH_CADENCE.baseMs);
   });
 
+  it('NO STARVATION: under the worst load that can be measured, for ten minutes, every task still runs at least at its slowest rate', () => {
+    const worst: CadenceLoad = { pressure: 'high', fusionBehind: true };
+    for (const [options, slowestMs] of [[LIVE_MESH_CADENCE, 6300], [COVERAGE_CADENCE, 2200], [TAG_CADENCE, 1000]] as const) {
+      const cadence = new AdaptiveCadence(options);
+      let lastRun = 0; let runs = 0; let longest = 0;
+      for (let now = 0; now < 600_000; now += 1000 / 30) {
+        if (now - lastRun >= cadence.intervalMs(now, worst)) { longest = Math.max(longest, now - lastRun); lastRun = now; runs += 1; cadence.recordCost(60_000); }
+      }
+      expect(cadence.currentMs).toBeLessThanOrEqual(slowestMs);
+      expect(longest, 'the longest wait is the slowest interval plus one frame').toBeLessThanOrEqual(slowestMs + 34);
+      expect(runs).toBeGreaterThanOrEqual(Math.floor(600_000 / (slowestMs + 34)) - 1);
+    }
+  });
+
   it('HYSTERESIS: pressure that flips every 400 ms changes the rate once, not on every flip', () => {
     const cadence = new AdaptiveCadence(LIVE_MESH_CADENCE);
     let now = 0;

@@ -16,8 +16,15 @@ import { FakeXrLayer, FakeXrSession, FakeXrSystem } from '../tests/xr/support/xr
  * DESKTOP Chromium: it says nothing about a phone's absolute numbers, thermals or ARCore.
  */
 interface Pack { name: string; width: number; height: number; projection: Float32Array; frames: Array<{ depth: ArrayBuffer; worldFromView: Float32Array; eye: [number, number, number]; keyframeId: number; keyframe: boolean }> }
-export type Scenario = 'scan' | 'static' | 'pause' | 'tracking-loss' | 'context-loss';
-export interface ReplayOptions { scenario: Scenario; durationMs: number; seismic: boolean; tags: boolean }
+export type Scenario = 'scan' | 'static' | 'pause' | 'tracking-loss' | 'context-loss' | 'no-scan';
+/** Extra main-thread time spent in every XR frame between two fractions of the run: real frame pressure for the runtime's profiler. */
+export interface LoadWindow { from: number; length: number; ms: number }
+export interface ReplayOptions {
+  scenario: Scenario; durationMs: number; seismic: boolean; tags: boolean;
+  /** 0 = the machine's own speed; otherwise every frame takes at least this long to fuse, which stands for a slower device. */
+  fusionMs: number;
+  load: LoadWindow[];
+}
 
 const PACK_FRAME_MS = 100;                       /* the packs hold every third frame of 30 Hz sequences */
 const TAG_PERIOD_MS = 330;
@@ -60,6 +67,49 @@ function quaternion(m: Float32Array): { x: number; y: number; z: number; w: numb
   if (m[0] > m[5] && m[0] > m[10]) { const s = Math.sqrt(1 + m[0] - m[5] - m[10]) * 2; return { w: (m[6] - m[9]) / s, x: s / 4, y: (m[4] + m[1]) / s, z: (m[8] + m[2]) / s }; }
   if (m[5] > m[10]) { const s = Math.sqrt(1 + m[5] - m[0] - m[10]) * 2; return { w: (m[8] - m[2]) / s, x: (m[4] + m[1]) / s, y: s / 4, z: (m[9] + m[6]) / s }; }
   const s = Math.sqrt(1 + m[10] - m[0] - m[5]) * 2; return { w: (m[1] - m[4]) / s, x: (m[8] + m[2]) / s, y: (m[9] + m[6]) / s, z: s / 4 };
+}
+
+const spin = (ms: number): void => { const until = performance.now() + ms; while (performance.now() < until) { /* busy */ } };
+
+/*
+ * A slower device, without touching the production code. Where the fusion has a worker, each frame is held back for `serviceMs` before the worker gets it,
+ * one at a time and in order with every other message, and the reported fusion time grows by as much. Where the fusion runs on the main thread
+ * (the baseline), the same time is spent on the main thread.
+ */
+function slowDownFusion(internals: Record<string, any>, serviceMs: number): void {
+  const fusion = internals.pointCloud;
+  const client = fusion.client;
+  if (client === undefined) {
+    const sample = fusion.sampleDepthFrame.bind(fusion);
+    fusion.sampleDepthFrame = (...args: unknown[]) => { const result = sample(...args); spin(serviceMs); return result; };
+    return;
+  }
+  const worker = client.worker as Worker | null;
+  if (worker === null) throw new Error('slow-device emulation needs the fusion worker');
+  const post = worker.postMessage.bind(worker) as (message: unknown, transfer?: Transferable[]) => void;
+  const queue: Array<[{ type: string }, Transferable[] | undefined]> = [];
+  let busy = false;
+  const pump = (): void => {
+    while (!busy && queue.length > 0) {
+      const [message, transfer] = queue.shift()!;
+      if (message.type !== 'frame') { post(message, transfer); continue; }
+      busy = true;
+      window.setTimeout(() => { post(message, transfer); busy = false; pump(); }, serviceMs);
+    }
+  };
+  worker.postMessage = ((message: { type: string }, transfer?: Transferable[]) => { queue.push([message, transfer]); pump(); }) as Worker['postMessage'];
+  const deliver = client.deliver.bind(client);
+  client.deliver = (message: { type: string; workMs?: number }) => deliver(message.type === 'frameDone' && (message.workMs ?? 0) > 0 ? { ...message, workMs: (message.workMs as number) + serviceMs } : message);
+}
+
+/** How often something happened in each part of the run, and the longest wait between two of them. */
+function rates(times: number[], segments: Array<{ name: string; from: number; to: number }>) {
+  return segments.map((segment) => {
+    const inside = times.filter((time) => time >= segment.from && time < segment.to);
+    const edges = [segment.from, ...inside, segment.to];
+    let longest = 0; for (let i = 1; i < edges.length; i += 1) longest = Math.max(longest, edges[i] - edges[i - 1]);
+    return { segment: segment.name, seconds: (segment.to - segment.from) / 1000, count: inside.length, perSecond: inside.length / Math.max(0.001, (segment.to - segment.from) / 1000), longestGapMs: longest };
+  });
 }
 
 function viewerPose(pack: Pack, index: number) {
@@ -126,6 +176,39 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
 };
 
+/* The same page without a scan: what the seismic panel and the tag detector do when the scanner is not there. */
+async function withoutScan(pack: Pack, options: ReplayOptions) {
+  const react = createRoot(document.getElementById('seismic')!);
+  seismicCalls.length = 0;
+  react.render(<LocaleProvider><LiveSeismicPanel /></LocaleProvider>);
+  const tags = options.tags ? startTags(pack) : null;
+  const frameDelta: number[] = []; let previous: number | null = null; let running = true;
+  const tick = (now: number): void => { if (previous !== null) frameDelta.push(now - previous); previous = now; if (running) requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  await sleep(options.durationMs);
+  running = false;
+  const tagReport = tags?.stop() ?? null;
+  const seismicIntervals = seismicCalls.slice(1).map((time, i) => time - seismicCalls[i]);
+  react.unmount();
+  return { scenario: options.scenario, durationMs: options.durationMs, frameDelta: summarize(frameDelta), seismic: { requests: seismicCalls.length, intervalMs: summarize(seismicIntervals), rendered: seismicSample / 220 }, tags: tagReport };
+}
+
+/* AprilTag: the production detector client and worker on pre-rendered camera frames of the five sheet tags. */
+function startTags(pack: Pack) {
+  const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  const rendered = Array.from({ length: 12 }, (_, i) => { drawSyntheticScene(ctx, i * 700, 1280, 720); return new Uint8Array(ctx.getImageData(0, 0, 1280, 720).data.buffer); });
+  const client = new TagDetectorClient();
+  const latency: number[] = []; let busy = 0; let detections = 0; let sent = 0; let n = 0;
+  const timer = window.setInterval(() => {
+    if (client.busy) { busy += 1; return; }
+    const started = performance.now(); sent += 1;
+    void client.detect({ width: 1280, height: 720, rgba: rendered[n++ % rendered.length].slice(), rgbaOwnership: 'owned', capturedAtMs: started, cameraPosition: [0, 0, 0], cameraForward: [0, 0, -1], projectionMatrix: pack.projection, worldFromView: IDENTITY })
+      .then((result) => { if (result !== null) { latency.push(performance.now() - started); detections += result.detections.length; } }, () => undefined);
+  }, TAG_PERIOD_MS);
+  return { stop: () => { window.clearInterval(timer); const report = { sent, busy, answered: latency.length, detections, latencyMs: summarize(latency) }; client.dispose(); return report; } };
+}
+
 /* ------------------------------------------------------------------ one session */
 async function replay(pack: Pack, options: ReplayOptions) {
   const runtime = new WebXrRuntime();
@@ -150,7 +233,7 @@ async function replay(pack: Pack, options: ReplayOptions) {
   const originalUpdate = LiveMeshRenderer.prototype.update;
   LiveMeshRenderer.prototype.update = function patched(this: LiveMeshRenderer, ...args: Parameters<typeof originalUpdate>) {
     originalUpdate.apply(this, args);
-    meshUploads += 1; meshTriangles = args[1] as number;
+    meshUploads += 1; meshTriangles = args[1] as number; meshTimes.push(performance.now());
     if (meshInputAt !== null) { const newest = [...captures].reverse().find((time) => time <= meshInputAt!); if (newest !== undefined) meshLatency.push(performance.now() - newest); meshInputAt = null; }
   };
 
@@ -166,27 +249,29 @@ async function replay(pack: Pack, options: ReplayOptions) {
   if (runtime.getState().phase !== 'running') throw new Error(`the runtime did not start: ${runtime.getState().error}`);
   runtime.setLiveMeshMode('auto');
   const session = sessions.at(-1)!;
+  if (options.fusionMs > 0) slowDownFusion(internals, options.fusionMs);
 
-  /* AprilTag: the production detector client and worker on pre-rendered camera frames of the five sheet tags. */
-  const tagLatency: number[] = []; let tagBusy = 0; let tagDetections = 0; let tagSent = 0;
-  let tagTimer: number | null = null; let tagClient: TagDetectorClient | null = null;
-  if (options.tags) {
-    const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    const rendered = Array.from({ length: 12 }, (_, i) => { drawSyntheticScene(ctx, i * 700, 1280, 720); return new Uint8Array(ctx.getImageData(0, 0, 1280, 720).data.buffer); });
-    tagClient = new TagDetectorClient();
-    let n = 0;
-    tagTimer = window.setInterval(() => {
-      if (tagClient!.busy) { tagBusy += 1; return; }
-      const started = performance.now(); tagSent += 1;
-      void tagClient!.detect({ width: 1280, height: 720, rgba: rendered[n++ % rendered.length].slice(), rgbaOwnership: 'owned', capturedAtMs: started, cameraPosition: [0, 0, 0], cameraForward: [0, 0, -1], projectionMatrix: pack.projection, worldFromView: IDENTITY })
-        .then((result) => { if (result !== null) { tagLatency.push(performance.now() - started); tagDetections += result.detections.length; } });
-    }, TAG_PERIOD_MS);
+  /* When the runtime captures an AprilTag frame, refreshes the coverage guide and uploads a live mesh. There is no camera here, so the tag capture is a stub
+     that only records that the runtime asked for a frame at that moment. */
+  const tagCaptureTimes: number[] = []; const coverageTimes: number[] = []; const meshTimes: number[] = [];
+  internals.cameraBinding = {};
+  internals.tagCameraCapture = { tagReadbackMode: 'nonblocking', pollReadyTag: () => null, captureTag: () => { tagCaptureTimes.push(performance.now()); return null; }, dispose: () => undefined };
+  internals.tagCaptureEnabled = true; internals.tagCaptureWidth = 1280; internals.tagCaptureHeight = 720; internals.tagGeometryLogged = true;
+  if (internals.coverageRenderer !== null && internals.coverageRenderer !== undefined) {
+    const renderer = internals.coverageRenderer; const update = renderer.update.bind(renderer); const clear = renderer.clear.bind(renderer);
+    renderer.update = (...args: unknown[]) => { coverageTimes.push(performance.now()); update(...args); };
+    renderer.clear = () => { coverageTimes.push(performance.now()); clear(); };
   }
+  const cadenceTrace: Array<Record<string, number | string>> = [];
+  /* When a checkpoint was stored and how many accepted frames only the journal held at the time. */
+  const storedAt: number[] = []; let storedSeen = 0;
+
+  const tags = options.tags ? startTags(pack) : null;
 
   const frameWork: number[] = []; const frameDelta: number[] = []; const queueDepths: number[] = []; const heap: number[] = [];
   let previous: number | null = null; let lastHeapAt = 0; let paused = false; let contextLost = false; const phases = new Set<string>();
   const started = performance.now();
+  const loadAt = (elapsed: number): number => options.load.reduce((ms, window_) => (inWindow(elapsed, window_.from, window_.length) ? ms + window_.ms : ms), 0);
   let packClockMs = 0; let lastTick = started;
   const at = (fraction: number): number => fraction * options.durationMs;
   const inWindow = (elapsed: number, from: number, length: number): boolean => elapsed >= at(from) && elapsed < at(from + length);
@@ -205,21 +290,33 @@ async function replay(pack: Pack, options: ReplayOptions) {
         if (options.scenario === 'context-loss' && !contextLost && elapsed >= at(0.5)) { contextLost = true; internals.gl?.getExtension('WEBGL_lose_context')?.loseContext(); }
         const index = options.scenario === 'static' ? Math.floor(pack.frames.length * 0.25) : pingPong(Math.floor(packClockMs / PACK_FRAME_MS), pack.frames.length);
         if (session.liveFrameCallbacks > 0) {
-          const frame = { session, getViewerPose: () => (lost ? null : viewerPose(pack, index)), getDepthInformation: () => deviceDepth(pack, index) };
+          const frame = { session, getViewerPose: () => { const load = loadAt(elapsed); if (load > 0) spin(load); if (lost) return null; const pose = viewerPose(pack, index); return { ...pose, views: [{ ...pose.views[0], camera: { width: 1280, height: 720 } }] }; }, getDepthInformation: () => deviceDepth(pack, index) };
           const t0 = performance.now();
           session.driveNextFrame(now, frame as never);
           frameWork.push(performance.now() - t0);
         }
         phases.add(runtime.getState().phase);
         queueDepths.push(fusion.client?.queueDepth ?? 0);
-        if (elapsed - lastHeapAt >= 1000) { lastHeapAt = elapsed; heap.push(heapMb()); }
+        const stored = (fusion.client?.counters.checkpointsStored ?? 0) as number;
+        if (stored > storedSeen) { storedSeen = stored; storedAt.push(performance.now()); }
+        if (elapsed - lastHeapAt >= 1000) {
+          lastHeapAt = elapsed; heap.push(heapMb());
+          if (internals.meshCadence !== undefined) cadenceTrace.push({ atS: Math.round(elapsed / 1000), depth: Math.round(fusion.governor.intervalMs), coverage: Math.round(internals.coverageCadence.currentMs), mesh: Math.round(internals.meshCadence.currentMs), tag: Math.round(internals.tagCadence.currentMs), pressure: internals.computeScheduler.sustainedPressure(), journal: fusion.client.journalSize as number });
+        }
         requestAnimationFrame(tick);
       } catch (error) { reject(error as Error); }
     };
     requestAnimationFrame(tick);
   });
-  if (tagTimer !== null) window.clearInterval(tagTimer);
+  const tagReport = tags?.stop() ?? { sent: 0, busy: 0, answered: 0, detections: 0, latencyMs: summarize([]) };
   const seismicIntervals = seismicCalls.slice(1).map((time, i) => time - seismicCalls[i]);
+  const ended = performance.now();
+  /* The run split at every edge of a load window; with none, one segment. */
+  const edges = [...new Set([0, 1, ...options.load.flatMap((window_) => [window_.from, window_.from + window_.length])])].sort((a, b) => a - b);
+  const segments = edges.slice(1).map((edge, i) => ({ name: `${loadAt(((edges[i] + edge) / 2) * options.durationMs) > 0 ? 'load' : 'calm'} ${Math.round(edges[i] * 100)}-${Math.round(edge * 100)}%`, from: started + at(edges[i]), to: Math.min(ended, started + at(edge)) }));
+  const schedule = { tagCaptures: rates(tagCaptureTimes, segments), coverage: rates(coverageTimes, segments), mesh: rates(meshTimes, segments), cadenceTrace };
+  const storedGaps = [started, ...storedAt].map((time, i, all) => (all[i + 1] ?? ended) - time);
+  const checkpoints = fusion.client === undefined ? null : { stored: storedAt.length, longestMsWithoutOne: Math.max(...storedGaps), everyMax: (fusion.client.counters.checkpointEveryMax ?? null) as number | null, serialiseMsMax: (fusion.client.counters.checkpointMsMax ?? null) as number | null };
   const stateBeforeFinish = { ...runtime.getState() };
   const counters = fusion.client?.counters ?? null;
   const countersBeforeFinish = counters === null ? null : { accepted: counters.accepted as number, droppedOptional: counters.droppedOptional as number, droppedKeyframes: counters.droppedKeyframes as number, lostFrames: counters.lostFrames as number, maxQueueDepth: counters.maxQueueDepth as number, maxJournal: counters.maxJournal as number, workerMsTotal: counters.workerMsTotal as number, checkpointMsTotal: (counters.checkpointMsTotal ?? 0) as number, recoveries: counters.recoveries as number };
@@ -235,7 +332,6 @@ async function replay(pack: Pack, options: ReplayOptions) {
   observer.disconnect();
   const finalState = runtime.getState();
   react.unmount();
-  tagClient?.dispose();
   LiveMeshRenderer.prototype.update = originalUpdate;
   await runtime.dispose();
 
@@ -248,13 +344,13 @@ async function replay(pack: Pack, options: ReplayOptions) {
   }
 
   return {
-    scenario: options.scenario, durationMs: options.durationMs,
+    scenario: options.scenario, durationMs: options.durationMs, fusionMs: options.fusionMs, load: options.load, schedule, checkpoints,
     frames: frameWork.length, frameWork: summarize(frameWork), frameDelta: summarize(frameDelta), longFrames50: frameDelta.filter((d) => d >= 50).length,
     longTasks: { count: longTasks.length, totalMs: longTasks.reduce((a, b) => a + b, 0), maxMs: Math.max(0, ...longTasks) },
     depth: { xrDepthFrames: stateBeforeFinish.depthFrameCount, integrated: stateBeforeFinish.sampledDepthFrames, keyframes: stateBeforeFinish.keyframeCount, points: stateBeforeFinish.pointCount, motionRejected: stateBeforeFinish.motionRejectedFrames },
     fusion: countersBeforeFinish, governor, queueDepth: summarize(queueDepths),
     mesh: { uploads: meshUploads, triangles: meshTriangles, depthToMeshMs: summarize(meshLatency) },
-    tags: { sent: tagSent, busy: tagBusy, answered: tagLatency.length, detections: tagDetections, latencyMs: summarize(tagLatency) },
+    tags: tagReport,
     seismic: { requests: seismicCalls.length, intervalMs: summarize(seismicIntervals), rendered: seismicSample / 220 },
     heapMb: { first: heap[0] ?? 0, peak: Math.max(0, ...heap), last: heap.at(-1) ?? 0, samples: heap.length },
     finishMs, finishError, finalPoints: snapshot?.pointCount ?? null, quality,
@@ -264,6 +360,6 @@ async function replay(pack: Pack, options: ReplayOptions) {
 
 (window as unknown as { __xrReplay: unknown }).__xrReplay = {
   load: async (url: string) => parsePack(await (await nativeFetch(url)).arrayBuffer()),
-  run: (pack: Pack, options: ReplayOptions) => replay(pack, options),
+  run: (pack: Pack, options: ReplayOptions) => (options.scenario === 'no-scan' ? withoutScan(pack, options) : replay(pack, options)),
 };
 document.getElementById('state')!.textContent = 'ready';

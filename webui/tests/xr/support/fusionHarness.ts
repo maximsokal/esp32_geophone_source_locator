@@ -39,9 +39,13 @@ export class KeeperWorker extends FakeEndpoint {
   stored: Array<{ generation: number; throughSeq: number }> = [];
   /** A keeper that has died (memory pressure): it stores nothing and answers nothing. */
   dead = false;
-  /** Kills the keeper: its checkpoint port is closed and it answers nothing any more. */
+  /** A keeper that is alive but whose confirmations do not arrive. */
+  mute = false;
+  /** A keeper that reports its own failure through the error event. */
+  fail(): void { this.kill(); for (const listener of [...(this.listeners.get('error') ?? [])]) (listener as (e: unknown) => void)({ message: 'keeper failed' }); }
+  /** Kills the keeper WITHOUT an error event, as a silently terminated worker does. */
   kill(): void { this.keeper.handle({ type: 'listen', port: { postMessage: () => undefined, onmessage: null } }); this.dead = true; }
-  private readonly keeper = createCheckpointKeeper((message: KeeperResponse) => { if (message.type === 'stored') this.stored.push(message); this.emit('message', { data: message }); });
+  private readonly keeper = createCheckpointKeeper((message: KeeperResponse) => { if (message.type === 'stored') this.stored.push(message); if (!this.mute) this.emit('message', { data: message }); });
   postMessage(message: KeeperRequest): void { if (!this.terminated && !this.dead) this.keeper.handle(message); }
 }
 

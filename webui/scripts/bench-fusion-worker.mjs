@@ -36,11 +36,30 @@ try {
   await page.goto('http://127.0.0.1:5190/stress/fusion-bench.html');
   await page.waitForFunction(() => document.getElementById('state')?.textContent === 'ready', null, { timeout: 120000 });
   console.log('isolated:', await page.evaluate(() => window.crossOriginIsolated));
-  const packs = readdirSync(packDir).filter((name) => name.endsWith('.pack') && (only === undefined || name.startsWith(only)));
+  const packs = readdirSync(packDir).filter((name) => name.endsWith('.pack') && (only === undefined || only.split(',').some((prefix) => name.startsWith(prefix))));
+  if (packs.length === 0) throw new Error(`no pack matches ${only ?? '(all)'} in ${packDir}`);
   for (const file of packs) {
     const name = file.replace(/\.pack$/, '');
     await page.route(`**/${file}`, (route) => route.fulfill({ body: readFileSync(join(packDir, file)), contentType: 'application/octet-stream', headers: { 'Cross-Origin-Resource-Policy': 'same-origin' } }));
     const handle = await page.evaluateHandle((url) => window.__fusionBench.load(url), `/${file}`);
+    if (mode === 'recovery') {
+      // The worker fails at 10, 50 and 90 % of the scan; once with the checkpoint keeper alive and once with it gone too.
+      const results = {};
+      for (const failure of ['worker', 'keeper-then-worker', 'worker+keeper']) for (const percent of [10, 50, 90]) {
+        // keeper-then-worker: the keeper fails 8 frames before the worker does. worker+keeper: both are gone at the same moment.
+        const killKeeper = failure === 'worker+keeper';
+        const r = await page.evaluate(([pack, f, kill, early]) => { const at = Math.floor(pack.frames.length * f); return window.__fusionBench.equivalence(pack, at, false, kill, early ? Math.max(1, at - 8) : null); }, [handle, percent / 100, killKeeper, failure === 'keeper-then-worker']);
+        const key = `${failure}@${percent}%`;
+        results[key] = r;
+        const identical = Object.values(r.differences).every((d) => d.length === 0);
+        console.log(`${name} ${key}: recovered ${r.recovery.restarted} in ${r.recovery.recoveryMs.toFixed(0)} ms (replayed ${r.recovery.replayedFrames}, journal at crash ${r.recovery.journalFramesAtCrash}) | lost frames ${r.recovery.lostFrames} of ${r.recovery.restartAt} fused | confirmed points ${r.confirmed.got}/${r.confirmed.expected} (lost ${r.confirmed.expected - r.confirmed.got}) | recall of uninterrupted ${r.confirmed.recall.toFixed(3)} | identical ${identical}`);
+        if (!killKeeper && !(identical && r.recovery.lostFrames === 0)) failed.push(`${name} ${key}`);   // a simultaneous loss of both is reported, not recoverable
+      }
+      report.packs[name] = results;
+      await handle.dispose();
+      await page.unroute(`**/${file}`);
+      continue;
+    }
     if (mode === 'equivalence') {
       // The same accepted frames through the synchronous accumulator and the real worker, uninterrupted and with the worker replaced at 10, 50 and 90 %.
       const results = {};
@@ -78,7 +97,7 @@ try {
     await handle.dispose();
     await page.unroute(`**/${file}`);
   }
-  const out = join(repo, `.test-build/phase2/fusion-${mode === 'equivalence' ? 'equivalence' : 'browser'}-${label}.json`);
+  const out = join(repo, `.test-build/phase2/fusion-${mode === 'cost' ? 'browser' : mode}-${label}.json`);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, JSON.stringify(report, null, 2));
 } finally {
