@@ -1,4 +1,4 @@
-import type { FusionFrameDecision, FusionPoseLike, WebXrFusionKeyframeSelector } from './webxrFusionQuality';
+import type { FusionFrameDecision, FusionPoseLike, FusionSelectorMark, WebXrFusionKeyframeSelector } from './webxrFusionQuality';
 
 /**
  * Admission control of depth capture (Phase 2): the rate is regulated BEFORE a frame is captured and queued, so that nothing accepted is ever discarded.
@@ -49,7 +49,7 @@ export type FusionCaptureStep =
   | { action: 'no-slot' }
   | { action: 'skip'; decision: FusionFrameDecision }
   | { action: 'deferred'; decision: FusionFrameDecision; frameClass: FusionFrameClass }
-  | { action: 'capture'; decision: FusionFrameDecision; frameClass: FusionFrameClass };
+  | { action: 'capture'; decision: FusionFrameDecision; frameClass: FusionFrameClass; mark: FusionSelectorMark };
 
 export function classifyFusionFrame(decision: FusionFrameDecision): FusionFrameClass {
   if (decision.kind === 'keyframe') return 'keyframe';
@@ -102,8 +102,9 @@ export class FusionCaptureGovernor {
   }
 
   /**
-   * One XR frame. Decides whether depth is captured now; on 'capture' the caller captures and submits, and calls {@link refuse} with the returned mark if the
-   * hand-off fails. The selector is only consulted when a frame is due and a slot exists, and is put back when the frame is deferred.
+   * One XR frame. Decides whether depth is captured now; on 'capture' the caller captures and submits, and calls {@link refuse} with that step if the
+   * hand-off fails. The selector is only consulted when a frame is due and a slot exists, and is put back when the frame is deferred. A keyframe may use
+   * every slot, so it is never deferred: it either finds a slot or the whole XR frame is 'no-slot'.
    */
   step(timeMs: number, pose: FusionPoseLike, selector: WebXrFusionKeyframeSelector, queue: FusionQueueView): FusionCaptureStep {
     if (timeMs - this.lastCaptureMs < this.interval) return { action: 'not-due' };
@@ -119,12 +120,17 @@ export class FusionCaptureGovernor {
     if (queue.queueDepth >= slotsFor(frameClass, queue)) {
       selector.withdraw(mark);
       this.counters.deferred[frameClass] += 1;
-      if (frameClass === 'keyframe') this.enterCatchingUp();
       return { action: 'deferred', decision, frameClass };
     }
     this.lastCaptureMs = timeMs;
     this.counters.captured[frameClass] += 1;
-    return { action: 'capture', decision, frameClass };
+    return { action: 'capture', decision, frameClass, mark };
+  }
+
+  /** The fusion did not take a frame {@link step} had admitted: its viewpoint is not taken and the selector offers it again. */
+  refuse(step: Extract<FusionCaptureStep, { action: 'capture' }>, selector: WebXrFusionKeyframeSelector): void {
+    selector.withdraw(step.mark);
+    this.counters.captured[step.frameClass] -= 1;
   }
 
   private enterCatchingUp(): void {

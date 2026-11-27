@@ -760,6 +760,25 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     expect(internals.tagCadence.intervalMs(clock+1,internals.cadenceLoad())).toBeCloseTo(600/0.9,0);
   });
 
+  it('a depth frame the fusion does not accept is handed back to the keyframe selector',async()=>{
+    const r=await rig('off','low');
+    type Fusion={captureStep:()=>unknown;submitFrame:()=>string;captureRefused:(step:unknown,selector:unknown)=>void};
+    const internals=r.runtime as unknown as{pointCloud:Fusion;keyframeSelector:unknown;captureDepth:(time:number,frame:unknown,pose:unknown)=>void;depthEnabled:boolean};
+    const step={action:'capture',frameClass:'keyframe',mark:{},decision:{kind:'keyframe',state:'keyframe',keyframeId:2,frameWeight:1,motionQuality:1,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0}};
+    internals.pointCloud.captureStep=()=>step;
+    const refused=vi.fn();internals.pointCloud.captureRefused=refused;
+    internals.depthEnabled=true;
+    const matrix=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);const transform={matrix,position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1}};
+    const view={projectionMatrix:matrix,transform};
+    const frame={getDepthInformation:()=>({width:4,height:3,getDepthInMeters:()=>1})};
+    const capture=():void=>internals.captureDepth(clock,frame,{transform,views:[view]});
+    internals.pointCloud.submitFrame=()=>'accepted';capture();
+    expect(refused).not.toHaveBeenCalled();
+    for(const outcome of ['dropped-keyframe','dropped-optional','unavailable']){internals.pointCloud.submitFrame=()=>outcome;capture();}
+    expect(refused).toHaveBeenCalledTimes(3);
+    expect(refused).toHaveBeenLastCalledWith(step,internals.keyframeSelector);
+  });
+
   it('builds nothing while the reference space has been reset, and resumes when it is back',async()=>{
     const r=await rig('on','low');
     expect(await run(r,5000)).toBeGreaterThan(0);

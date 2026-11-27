@@ -139,22 +139,48 @@ describe('frame classes and slots', () => {
     expect((['keyframe', 'depth', 'polish', 'repeat'] as const).map((c) => slotsFor(c, queue))).toEqual([8, 3, 2, 1]);
   });
 
-  it('a deferred viewpoint is NOT taken: the selector offers it again, and capture resumes with it when a slot frees', () => {
+  it('with no free slot the selector is not even asked: the next keyframe id is not spent, and the operator is told to wait until the queue drains', () => {
     const governor = new FusionCaptureGovernor();
     const selector = new WebXrFusionKeyframeSelector();
     const full = { queueDepth: 8, maxInFlight: 3, mandatoryReserve: 5 };
     const free = { ...full, queueDepth: 0 };
     expect(governor.step(0, fusionPose(poseAt(0, 13)), selector, free).action).toBe('capture');
-    expect(governor.step(400, fusionPose(poseAt(400, 13)), selector, full).action).toBe('no-slot');
+    expect(governor.step(1200, fusionPose(poseAt(1200, 13)), selector, full).action).toBe('no-slot');
     expect(governor.catchingUp).toBe(true);
-    const slotForOthersOnly = { ...full, queueDepth: 8 - 1, mandatoryReserve: 4 };      /* 7 of 7 used: a keyframe finds no slot of its class */
-    const deferred = governor.step(800, fusionPose(poseAt(800, 13)), selector, slotForOthersOnly);
-    expect(deferred.action === 'deferred' || deferred.action === 'no-slot').toBe(true);
-    const next = governor.step(1200, fusionPose(poseAt(1200, 13)), selector, free);
+    const next = governor.step(1216, fusionPose(poseAt(1200, 13)), selector, free);
     expect(next.action).toBe('capture');
-    if (next.action === 'capture') expect([next.frameClass, next.decision.keyframeId]).toEqual(['keyframe', 2]);     /* the next keyframe id was not spent */
+    if (next.action === 'capture') expect([next.frameClass, next.decision.keyframeId]).toEqual(['keyframe', 2]);
     governor.frameDone(20, free);
     expect(governor.catchingUp).toBe(false);
+  });
+
+  it('a DEFERRED frame is not taken: it is captured as soon as its class has a slot, without waiting for the selector to offer a new one', () => {
+    const governor = new FusionCaptureGovernor();
+    const selector = new WebXrFusionKeyframeSelector();
+    const free = { queueDepth: 0, maxInFlight: 3, mandatoryReserve: 5 };
+    const still = fusionPose(poseAt(0, 13));
+    expect(governor.step(0, still, selector, free).action).toBe('capture');
+    const deferred = governor.step(2000, still, selector, { ...free, queueDepth: 1 });   /* a repeat may only run while the worker is idle */
+    expect(deferred).toMatchObject({ action: 'deferred', frameClass: 'repeat' });
+    expect(governor.counters.deferred.repeat).toBe(1);
+    expect(governor.step(2016, still, selector, free), 'the very next XR frame').toMatchObject({ action: 'capture', frameClass: 'repeat' });
+  });
+
+  it('a frame the fusion REFUSED after admission is handed back: the same viewpoint is offered again as the same keyframe', () => {
+    const governor = new FusionCaptureGovernor();
+    const selector = new WebXrFusionKeyframeSelector();
+    const free = { queueDepth: 0, maxInFlight: 3, mandatoryReserve: 5 };
+    expect(governor.step(0, fusionPose(poseAt(0, 13)), selector, free).action).toBe('capture');
+    const moved = fusionPose(poseAt(1200, 13));
+    const first = governor.step(1200, moved, selector, free);
+    expect(first).toMatchObject({ action: 'capture', frameClass: 'keyframe' });
+    if (first.action !== 'capture') return;
+    expect(first.decision.keyframeId).toBe(2);
+    governor.refuse(first, selector);
+    expect(governor.counters.captured.keyframe, 'it does not count as captured').toBe(1);
+    const again = governor.step(1400, moved, selector, free);
+    expect(again).toMatchObject({ action: 'capture', frameClass: 'keyframe' });
+    if (again.action === 'capture') expect(again.decision.keyframeId).toBe(2);
   });
 
   it('the capture interval follows the measured fusion time with hysteresis: wider at once, narrower only after a run of short queues', () => {
@@ -165,7 +191,12 @@ describe('frame classes and slots', () => {
     const widened = governor.intervalMs;
     expect(widened).toBeGreaterThanOrEqual(480);                                         /* at least the measured time with headroom */
     for (let i = 0; i < 5; i += 1) governor.frameDone(20, queue(0));
-    expect(governor.intervalMs, 'five good frames are not enough to narrow below the measured time').toBeGreaterThan(FUSION_BASE_INTERVAL_MS * 2);
+    expect(governor.intervalMs, 'five frames with a short queue change nothing').toBe(widened);
+    governor.frameDone(20, queue(2));
+    for (let i = 0; i < 5; i += 1) governor.frameDone(20, queue(0));
+    expect(governor.intervalMs, 'a longer queue in between starts the run again').toBe(widened);
+    governor.frameDone(20, queue(0));
+    expect(governor.intervalMs, 'the sixth in a row narrows it by one step').toBeCloseTo(widened * 0.85, 6);
     for (let i = 0; i < 120; i += 1) governor.frameDone(20, queue(0));
     expect(governor.intervalMs).toBe(FUSION_BASE_INTERVAL_MS);
     governor.frameDone(20, queue(3));

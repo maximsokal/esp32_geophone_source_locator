@@ -1004,7 +1004,7 @@ export class WebXrRuntime{
       if(step.action==='deferred')return;
       if(decision.kind==='keyframe')this.maybeRecordVisualEvidence(time,decision.keyframeId,view);
       const context:DepthFusionFrameContext={keyframeId:decision.keyframeId,evidenceKeyframe:decision.kind==='keyframe',frameWeight:decision.frameWeight,cameraProjectPosition:projectCameraPosition(pose)};
-      const fusionStarted=performance.now();const outcome=this.pointCloud.submitFrame(depth,depthGeometry(depth,view),context,this.state.depthDataFormat as WebXrDepthDataFormat,time);this.performanceProfiler.record('fusion',performance.now()-fusionStarted);if(outcome==='accepted')this.sampledDepthFrames+=1;this.refreshCoverageGuide(time);
+      const fusionStarted=performance.now();const outcome=this.pointCloud.submitFrame(depth,depthGeometry(depth,view),context,this.state.depthDataFormat as WebXrDepthDataFormat,time);this.performanceProfiler.record('fusion',performance.now()-fusionStarted);if(outcome==='accepted')this.sampledDepthFrames+=1;else this.pointCloud.captureRefused(step,this.keyframeSelector);this.refreshCoverageGuide(time);
     }catch(error){if(!this.depthFailureReported){this.depthFailureReported=true;const message=`Depth access failed: ${errorText(error)}`;clientDiagnostics.error('XR_DEPTH_ACCESS_FAILED',message);this.publish({depthError:message});}}
   }
 

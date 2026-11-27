@@ -105,6 +105,11 @@ export class RuntimeFusion {
     return this.governor.step(timeMs, pose, selector, this.client.limits);
   }
 
+  /** {@link submitFrame} did not accept the frame of an admitted step: the viewpoint stays a candidate. */
+  captureRefused(step: Extract<FusionCaptureStep, { action: 'capture' }>, selector: WebXrFusionKeyframeSelector): void {
+    this.governor.refuse(step, selector);
+  }
+
   /** True while not even a new viewpoint can be taken: the operator is asked to hold still. */
   get catchingUp(): boolean { return this.governor.catchingUp; }
 

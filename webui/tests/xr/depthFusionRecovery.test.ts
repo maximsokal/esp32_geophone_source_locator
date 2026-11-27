@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { captureFusionState, restoreFusionState } from '../../src/xr/depthFusionCheckpoint';
 import type { FusionRecoveryReport } from '../../src/xr/depthFusionClient';
 import { DepthFusionCore } from '../../src/xr/depthFusionCore';
+import { createCheckpointKeeper, type KeeperResponse, type PortLike } from '../../src/xr/depthFusionKeeper';
 import { RuntimeFusion, type RuntimeFusionOptions } from '../../src/xr/depthFusionRuntime';
 import type { ScanPointCloudSnapshot } from '../../src/xr/depthPointCloudV2';
 import { frameContext, HandlerWorker, KeeperWorker, orbitFrames, settle, snapshotDigest, type OrbitFrame } from './support/fusionHarness';
@@ -171,7 +172,8 @@ describe('the worker dies mid-scan', () => {
 
   it('a DEAR checkpoint stretches the interval (bounded), the journal bound grows with it, and a late crash still loses nothing', async () => {
     const reference = await uninterrupted();
-    const r = rig({ checkpointMaxStretch: 4, onWorker: (worker, index) => { worker.checkpointCostMs = 10_000; if (index === 0) worker.crashAtFrame = 54; } });
+    /* Checkpoints after frame 8 and then every 32: at frame 38 the journal has to hold 30 frames, more than the base interval's bound of 2 x 8 + 8. */
+    const r = rig({ checkpointMaxStretch: 4, onWorker: (worker, index) => { worker.checkpointCostMs = 10_000; if (index === 0) worker.crashAtFrame = 38; } });
     await r.feed(0, FRAMES);
     const result = await r.fusion.finish(FRAMES, FRAMES);
     expect(r.fusion.client.counters.checkpointEveryMax).toBe(8 * 4);
@@ -213,7 +215,8 @@ describe('the worker dies mid-scan', () => {
 
   it('a keeper that FAILS mid-scan is replaced and given the state at once: a worker crash later in the scan loses nothing', async () => {
     const reference = await uninterrupted();
-    const r = rig({ journalLimit: 20, onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 56; } });
+    /* The worker dies two frames after the keeper: only a checkpoint sent to the new keeper with the very next frame saves what the old one held. */
+    const r = rig({ journalLimit: 20, onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 32; } });
     await r.feed(0, 30);
     r.keepers[0].fail();
     await r.feed(30, FRAMES);
@@ -246,6 +249,48 @@ describe('the worker dies mid-scan', () => {
     await r.feed(50, FRAMES);
     await expect(r.fusion.finish(FRAMES, FRAMES)).resolves.toMatchObject({ drained: true });
   }, 120_000);
+
+  it('a checkpoint whose CONFIRMATION was lost: the journal still holds frames the checkpoint already contains, and none of them is fused twice', async () => {
+    const reference = await uninterrupted();
+    const r = rig({ journalLimit: 60, onWorker: (worker, index) => { if (index === 0) worker.crashAtFrame = 22; } });
+    await r.feed(0, 10);
+    r.keepers[0].mute = true;                                                       /* it goes on storing; the client never hears of it, so it prunes nothing */
+    await r.feed(10, FRAMES);
+    const result = await r.fusion.finish(FRAMES, FRAMES);
+    expect(r.recoveries).toHaveLength(1);
+    expect(r.recoveries[0].restoredThroughSeq, 'the unconfirmed checkpoint is the one restored').toBeGreaterThanOrEqual(16);
+    expect(r.recoveries[0].replayedFrames, 'and the journal replayed more than what it lacked').toBeGreaterThan(22 - r.recoveries[0].restoredThroughSeq);
+    expect(r.recoveries[0].lostFrames).toBe(0);
+    expect(snapshotDigest(result.snapshot)).toEqual(reference);
+  }, 120_000);
+
+  it('a frame the fusion refused is counted as lost once and is not handed to the replacement worker again', async () => {
+    const r = rig({ noKeeper: true, journalLimit: 60, onWorker: (worker, index) => { if (index === 0) { worker.refuseFrame = 5; worker.crashAtFrame = 12; } } });
+    await r.feed(0, 20);
+    await r.fusion.finish(20, 20);
+    expect(r.recoveries).toHaveLength(1);
+    expect(r.recoveries[0].replayedFrames, '11 frames handed over before the crash and the one that hit it, without the refused one').toBe(11);
+    expect(r.recoveries[0].lostFrames).toBe(0);
+    expect(r.fusion.client.counters.lostFrames).toBe(1);
+    expect(r.workers[1].framesSeen, '11 replayed and the 8 that followed').toBe(19);
+  }, 120_000);
+
+  it('the keeper never hands a checkpoint of an OLDER scan to a newer one, even when it arrives after the order to drop it', () => {
+    /* The order to drop comes from the main thread and the checkpoint from the worker over its own port: their order is not guaranteed. */
+    const posted: KeeperResponse[] = [];
+    const keeper = createCheckpointKeeper((message) => posted.push(message));
+    const inbox: PortLike = { postMessage: () => undefined, onmessage: null };
+    keeper.handle({ type: 'listen', port: inbox });
+    keeper.handle({ type: 'drop' });
+    inbox.onmessage!({ data: { generation: 1, throughSeq: 20, integratedFrames: 20, state: {} } });
+    const sent: unknown[] = [];
+    keeper.handle({ type: 'send', generation: 2, port: { postMessage: (message: unknown) => sent.push(message), onmessage: null } });
+    expect(sent).toEqual([null]);
+    expect(posted.at(-1)).toEqual({ type: 'missing', generation: 2 });
+    const own: unknown[] = [];
+    keeper.handle({ type: 'send', generation: 1, port: { postMessage: (message: unknown) => own.push(message), onmessage: null } });
+    expect(own[0]).toMatchObject({ generation: 1, throughSeq: 20 });
+  });
 
   it('the journal is bounded and pruned by stored checkpoints (no unbounded memory on the main thread)', async () => {
     const r = rig();

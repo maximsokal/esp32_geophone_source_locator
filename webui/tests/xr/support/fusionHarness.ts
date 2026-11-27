@@ -26,9 +26,15 @@ export class HandlerWorker extends FakeEndpoint {
   /** Crash while handling the n-th frame (1-based) or the first request of a kind. */
   crashAtFrame: number | null = null;
   crashOnRequest: string | null = null;
+  /** The n-th frame (1-based) is answered with a frame error, as the core answers a frame it cannot fuse. */
+  refuseFrame: number | null = null;
   postMessage(message: FusionWorkerRequest): void {
     if (this.terminated) return;
-    if (message.type === 'frame') { this.framesSeen += 1; if (this.crashAtFrame === this.framesSeen) { this.crash(`crash at frame ${this.framesSeen}`); return; } }
+    if (message.type === 'frame') {
+      this.framesSeen += 1;
+      if (this.crashAtFrame === this.framesSeen) { this.crash(`crash at frame ${this.framesSeen}`); return; }
+      if (this.refuseFrame === this.framesSeen) { this.emit('message', { data: { type: 'error', generation: message.generation, seq: message.seq, message: 'this frame cannot be fused' } }); return; }
+    }
     if (message.type === 'request' && this.crashOnRequest === message.kind) { this.crash(`crash on ${message.kind}`); return; }
     this.handler.handle(message);
   }

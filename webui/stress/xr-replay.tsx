@@ -251,6 +251,24 @@ async function replay(pack: Pack, options: ReplayOptions) {
   const session = sessions.at(-1)!;
   if (options.fusionMs > 0) slowDownFusion(internals, options.fusionMs);
 
+  /* Every depth frame the fusion was given, with what the fusion needs to repeat it: [pack frame, evidence keyframe, frame weight, keyframe id, class]. */
+  const captured: Array<[number, number, number, number, string]> = [];
+  let currentIndex = 0; let currentClass = '';
+  if (typeof fusion.captureStep === 'function') {
+    const step = fusion.captureStep.bind(fusion);
+    fusion.captureStep = (...args: unknown[]) => { const result = step(...args); if (result.action === 'capture') currentClass = result.frameClass; return result; };
+  }
+  const note = (context: { evidenceKeyframe: boolean; frameWeight: number; keyframeId: number }): void => {
+    captured.push([currentIndex, context.evidenceKeyframe ? 1 : 0, context.frameWeight, context.keyframeId, currentClass || (context.evidenceKeyframe ? 'keyframe' : 'non-keyframe')]);
+  };
+  if (typeof fusion.submitFrame === 'function') {
+    const submit = fusion.submitFrame.bind(fusion);
+    fusion.submitFrame = (...args: any[]) => { const outcome = submit(...args); if (outcome === 'accepted') note(args[2]); return outcome; };
+  } else {
+    const sample = fusion.sampleDepthFrame.bind(fusion);
+    fusion.sampleDepthFrame = (...args: any[]) => { const result = sample(...args); note(args[2]); return result; };
+  }
+
   /* When the runtime captures an AprilTag frame, refreshes the coverage guide and uploads a live mesh. There is no camera here, so the tag capture is a stub
      that only records that the runtime asked for a frame at that moment. */
   const tagCaptureTimes: number[] = []; const coverageTimes: number[] = []; const meshTimes: number[] = [];
@@ -289,6 +307,7 @@ async function replay(pack: Pack, options: ReplayOptions) {
         const lost = options.scenario === 'tracking-loss' && (inWindow(elapsed, 0.3, 0.1) || inWindow(elapsed, 0.65, 0.1));
         if (options.scenario === 'context-loss' && !contextLost && elapsed >= at(0.5)) { contextLost = true; internals.gl?.getExtension('WEBGL_lose_context')?.loseContext(); }
         const index = options.scenario === 'static' ? Math.floor(pack.frames.length * 0.25) : pingPong(Math.floor(packClockMs / PACK_FRAME_MS), pack.frames.length);
+        currentIndex = index;
         if (session.liveFrameCallbacks > 0) {
           const frame = { session, getViewerPose: () => { const load = loadAt(elapsed); if (load > 0) spin(load); if (lost) return null; const pose = viewerPose(pack, index); return { ...pose, views: [{ ...pose.views[0], camera: { width: 1280, height: 720 } }] }; }, getDepthInformation: () => deviceDepth(pack, index) };
           const t0 = performance.now();
@@ -335,16 +354,19 @@ async function replay(pack: Pack, options: ReplayOptions) {
   LiveMeshRenderer.prototype.update = originalUpdate;
   await runtime.dispose();
 
-  let quality: { recall: number; precision: number; referencePoints: number } | null = null;
+  let quality: { recall: number; precision: number; referencePoints: number; observedRecall: number; tentativePoints: number } | null = null;
   if (snapshot !== null && options.scenario !== 'static') {
     const reference = new DepthPointCloudAccumulator();
     pack.frames.forEach((frame, i) => reference.sampleDepthFrame(deviceDepth(pack, i), { projectionMatrix: pack.projection, transform: { matrix: frame.worldFromView } }, { keyframeId: frame.keyframeId, evidenceKeyframe: frame.keyframe, frameWeight: frame.keyframe ? 1 : 0.2, cameraProjectPosition: frame.eye }));
     const full = reference.snapshot(pack.frames.length, pack.frames.length);
-    quality = { ...agreement(full.positions, snapshot.positions), referencePoints: full.pointCount };
+    /* Observed: the surface has a point at all, confirmed or not. Confirmed (recall): it has a point that met the promotion rules. */
+    const tentative = (snapshot as unknown as { tentativePositions: Float32Array }).tentativePositions;
+    const seen = new Float32Array(snapshot.positions.length + tentative.length); seen.set(snapshot.positions, 0); seen.set(tentative, snapshot.positions.length);
+    quality = { ...agreement(full.positions, snapshot.positions), referencePoints: full.pointCount, observedRecall: agreement(full.positions, seen).recall, tentativePoints: tentative.length / 3 };
   }
 
   return {
-    scenario: options.scenario, durationMs: options.durationMs, fusionMs: options.fusionMs, load: options.load, schedule, checkpoints,
+    scenario: options.scenario, durationMs: options.durationMs, fusionMs: options.fusionMs, load: options.load, schedule, checkpoints, captured,
     frames: frameWork.length, frameWork: summarize(frameWork), frameDelta: summarize(frameDelta), longFrames50: frameDelta.filter((d) => d >= 50).length,
     longTasks: { count: longTasks.length, totalMs: longTasks.reduce((a, b) => a + b, 0), maxMs: Math.max(0, ...longTasks) },
     depth: { xrDepthFrames: stateBeforeFinish.depthFrameCount, integrated: stateBeforeFinish.sampledDepthFrames, keyframes: stateBeforeFinish.keyframeCount, points: stateBeforeFinish.pointCount, motionRejected: stateBeforeFinish.motionRejectedFrames },

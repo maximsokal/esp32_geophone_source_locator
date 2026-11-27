@@ -21,6 +21,7 @@ vi.mock('../../src/xr/webxrRuntime',()=>({
     subscribe=(listener:(state:any)=>void)=>{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);};
     subscribeTagFrames=(listener:(frame:any)=>void)=>{this.tagListeners.add(listener);return()=>{this.tagListeners.delete(listener);this.tagUnsubscribes+=1;};};
     emitTagFrame=(frame:any)=>{for(const listener of this.tagListeners)listener(frame);};
+    tagDecodeReports:number[]=[];reportTagDecode=(durationMs:number)=>{this.tagDecodeReports.push(durationMs);};
     tagCaptureEnables=0;setTagCaptureEnabled=(enabled:boolean)=>{if(enabled)this.tagCaptureEnables+=1;else this.tagCaptureDisables+=1;return null;};
     getPointCloudSnapshot=()=>this.finalSnapshot;getLastManualPointId=()=>null;getStructuralGuideSnapshot=()=>({positions:new Float32Array(),normals:new Float32Array(),confidence:new Float32Array(),pointCount:0,keyframeCount:0,voxelSizeMeters:0});
     projectProjectPointToNormalized=()=>null;addSuggestedManualPoint=()=>null;queueManualPointAtNormalized=()=>undefined;undoLastManualPoint=()=>undefined;
@@ -238,6 +239,8 @@ describe('XrRuntimePanel lifecycle',()=>{
     const renderer=await mountPanel({onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{await settleReact();});const worker=panelHarness.workers[0];
     runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
+    expect(runtime.tagDecodeReports,'the runtime is told how long the detection took, so tags are not captured faster than they decode').toHaveLength(1);
+    expect(runtime.tagDecodeReports[0]).toBeGreaterThanOrEqual(0);
     ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
     expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot,{relockTransform:null,relock:null});
