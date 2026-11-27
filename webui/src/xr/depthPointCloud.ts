@@ -33,7 +33,7 @@ import {
   STRUCTURAL_MIN_CONFIDENCE,
   type StructuralSurfaceEvidenceSnapshot,
 } from './structuralSurfacePreprocess';
-import { getFreshRgbGuidance } from './xrGuidanceRegistry';
+import { getFreshRgbGuidance } from './rgbGuidanceStore';
 import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
 
 export type {

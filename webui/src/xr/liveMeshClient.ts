@@ -46,6 +46,11 @@ export class LiveMeshClient {
   get busy(): boolean { return this.inFlight !== null; }
   get isDisabled(): boolean { return this.disabled; }
 
+  /** Whether a request made now would be accepted (not busy, not disabled, interval elapsed): lets the caller fetch its input only then. */
+  acceptsAt(minIntervalMs: number = this.minIntervalMs): boolean {
+    return !(this.disposed || this.disabled || this.inFlight !== null) && this.now() - this.lastAcceptedMs >= minIntervalMs;
+  }
+
   /** Returns true when the request was accepted. `build` is only called then, so the caller does not gather points for nothing. */
   request(build: () => LiveMeshInput | null, minIntervalMs: number = this.minIntervalMs): boolean {
     if (this.disposed || this.disabled || this.inFlight !== null) return false;

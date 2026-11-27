@@ -11,11 +11,11 @@ import {
   type TagReadbackMode,
 } from './xrCapabilityProfile';
 import {
-  DepthPointCloudAccumulator,
   type CpuDepthInformationLike,
   type DepthFusionFrameContext,
   type DepthSampleView,
   type LiveCoverageSnapshot,
+  type StructuralGuideSnapshot,
   type ScanPointCloudSnapshot as DepthScanPointCloudSnapshot,
 } from './depthPointCloud';
 import {
@@ -28,6 +28,8 @@ import type { ReferenceOverlay } from './fiducial/referenceOverlay';
 import { LiveMeshRenderer, REFERENCE_MESH_STYLE } from './liveMeshRenderer';
 import type { ReferenceMeshOverlay } from './fiducial/referenceOverlay';
 import { LiveMeshClient } from './liveMeshClient';
+import { EMPTY_STRUCTURAL_GUIDE, RuntimeFusion } from './depthFusionRuntime';
+import type { WebXrDepthDataFormat } from './cpuDepthSampler';
 import { LiveMeshStats } from './liveMeshStats';
 import { LIVE_MESH_MAX_POINTS } from './liveMeshCore';
 import { LIVE_MESH_MIN_INTERVAL_MS } from './liveMeshClient';
@@ -353,7 +355,7 @@ export class WebXrRuntime{
   private contextCanvas:EventTarget|null=null;private contextLostListener:((event:Event)=>void)|null=null;private contextRestoredListener:(()=>void)|null=null;
   private finalSnapshot:ScanPointCloudSnapshot|null=null;
   private depthGateBlocked=false;private explicitStopRequested=false;private evidenceFrozen=false;private evidenceEpoch=0;private frozenVisualEvidenceFrames=0;private scanPaused=false;private originResetPaused=false;private referenceSpaceResetCleanup:(()=>void)|null=null;private frameCount=0;private lastUiUpdateMs=0;
-  private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
+  private fusionBackpressureSkips=0;private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
   private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;private lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;
   private depthFrameCount=0;private sampledDepthFrames=0;private pointCloudVersion=0;private depthWidth:number|null=null;private depthHeight:number|null=null;
@@ -365,7 +367,7 @@ export class WebXrRuntime{
   private coverageWeakPoints=0;private coverageImprovingPoints=0;private coverageStablePoints=0;private coverageGuideError:string|null=null;
   private lightingEstimateAvailable=false;private primaryLightIntensity:number|null=null;
   private rgbGuidanceAvailable=false;private rgbGuidanceWidth:number|null=null;private rgbGuidanceHeight:number|null=null;
-  private readonly pointCloud=new DepthPointCloudAccumulator();private readonly keyframeSelector=new WebXrFusionKeyframeSelector();
+  private readonly pointCloud:RuntimeFusion=new RuntimeFusion({onFrameDone:(changed)=>{if(changed>0)this.pointCloudVersion+=1;},onFailure:(reason)=>this.handleFusionFailure(reason)});private readonly keyframeSelector=new WebXrFusionKeyframeSelector();
   private readonly manualPoints=new ManualControlPointStore();private readonly operatorEdges=new OperatorEdgeStore();
   private readonly coverageCompositionBuffers={positions:new Float32Array(0),confidence:new Float32Array(0)};
   private readonly performanceProfiler=new XrPerformanceProfiler();private readonly latestProjectionMatrix=new Float32Array(16);
@@ -433,11 +435,14 @@ export class WebXrRuntime{
     catch(error){this.tagCameraCapture?.dispose();this.tagCameraCapture=null;clientDiagnostics.warn('XR_TAG_CAPTURE_REFUSED',{tagReadbackMode:'unavailable',width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT,reason:errorText(error)});void clientDiagnostics.flush();return`High-resolution tag capture unavailable: ${errorText(error)}`;}
   }
   getState():WebXrRuntimeState{return this.state;}
-  getPointCloudSnapshot():ScanPointCloudSnapshot{return this.finalSnapshot??this.createPointCloudSnapshot();}
+  getPointCloudSnapshot():ScanPointCloudSnapshot{const snapshot=this.finalSnapshot??this.createPointCloudSnapshot();if(snapshot===null)throw new Error('The scan snapshot is only available after Finish.');return snapshot;}
   getLifecycleGeneration():number{return this.lifecycleGeneration;}
   getLastManualPointId():number|null{return this.manualPoints.lastId;}
-  getStructuralWorkerSnapshot(){return this.pointCloud.structuralWorkerSnapshot();}
-  getStructuralGuideSnapshot(){return this.pointCloud.structuralGuideSnapshot();}
+  /** The accumulated state lives in the fusion worker, so the live structural handoff is asked for, not read. */
+  requestStructuralWorkerSnapshot(){return this.pointCloud.requestStructuralWorkerSnapshot();}
+  requestStructuralGuideSnapshot(){return this.pointCloud.requestStructuralGuideSnapshot();}
+  /** For synchronous pin previews: fresh when the fusion runs inline, otherwise the latest certified snapshot (at most about a second old). */
+  getStructuralGuideSnapshot():StructuralGuideSnapshot{return this.pointCloud.structuralGuideMirror()??EMPTY_STRUCTURAL_GUIDE;}
   getManualControlPoints():readonly ManualControlPoint[]{return this.manualPoints.snapshot();}
   getOperatorEdges():readonly OperatorEdge[]{return this.operatorEdges.snapshot();}
   projectProjectPointToNormalized(point:ProjectPoint):NormalizedProjection|null{return this.hasLatestProjection?projectProjectPointToScreen(point,this.latestProjectionMatrix,this.latestWorldFromView):null;}
@@ -525,8 +530,11 @@ export class WebXrRuntime{
 
   async stop():Promise<void>{
     const session=this.session;const generation=this.lifecycleGeneration;if(session===null||this.state.phase==='stopping'||this.disposed)return;
-    this.evidenceFrozen=true;this.explicitStopRequested=true;this.finalSnapshot??=this.createPointCloudSnapshot();this.frozenVisualEvidenceFrames=getVisualEvidenceFrameCount();this.tagCaptureEnabled=false;
+    this.evidenceFrozen=true;this.explicitStopRequested=true;this.frozenVisualEvidenceFrames=getVisualEvidenceFrameCount();this.tagCaptureEnabled=false;
+    this.finalSnapshot??=this.pointCloud.mode==='inline'?this.createPointCloudSnapshot():await this.takeFinalSnapshot();
+    if(this.session!==session||this.lifecycleGeneration!==generation||this.disposed)return;
     const snapshot=this.finalSnapshot;
+    if(snapshot===null){this.evidenceFrozen=false;this.explicitStopRequested=false;this.pointCloud.client.resumeIntake();this.publish({error:'The scan could not be finished: the depth fusion did not answer. Nothing was saved; the scan is still running.'});return;}
     clientDiagnostics.info('XR_FINISH_REQUEST',{evidenceEpoch:this.evidenceEpoch,depthFrames:snapshot.depthFrameCount,integratedFrames:snapshot.sampledDepthFrames,stablePoints:snapshot.pointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,polishFrames:snapshot.polishFrames,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:this.frozenVisualEvidenceFrames});void clientDiagnostics.flush();this.publish({phase:'stopping',error:null});
     try{await this.requestSessionEnd(session);if(this.session===session&&this.lifecycleGeneration===generation)this.handleSessionEnd(session,generation);await this.waitForWakeLockReleases();}
     catch(error){if(this.session!==session||this.lifecycleGeneration!==generation||this.disposed)return;this.explicitStopRequested=false;this.publish({phase:'running',error:errorText(error)});}
@@ -535,7 +543,7 @@ export class WebXrRuntime{
   dispose():Promise<void>{
     if(this.disposePromise!==null)return this.disposePromise;
     this.disposed=true;this.lifecycleGeneration+=1;
-    this.disposePromise=(async()=>{await this.detach();this.listeners.clear();})();
+    this.disposePromise=(async()=>{await this.detach();this.pointCloud.dispose();this.listeners.clear();})();
     return this.disposePromise;
   }
   private publish(patch:Partial<WebXrRuntimeState>):void{this.state={...this.state,...patch};for(const listener of this.listeners)listener(this.state);}
@@ -633,6 +641,7 @@ export class WebXrRuntime{
     try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
     try{this.referenceRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceRenderer=null;this.referenceOverlay=null;this.referenceOverlayDirty=false;
     this.disposeLiveMesh();this.liveMeshOff=false;
+    this.pointCloud.park();                    /* every way a session ends releases the fusion worker; the scan's snapshot was taken before */
     try{this.referenceMeshRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.referenceMeshRenderer=null;this.referenceMesh=null;this.referenceMeshDirty=false;
     try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
     try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;
@@ -688,8 +697,23 @@ export class WebXrRuntime{
     this.sessionEndRequests.set(session,tracked);return tracked;
   }
 
-  private createPointCloudSnapshot():ScanPointCloudSnapshot{
-    return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};
+  /** Synchronous only while the fusion runs inline; with the worker the snapshot comes from {@link takeFinalSnapshot}. */
+  private createPointCloudSnapshot():ScanPointCloudSnapshot|null{
+    const base=this.pointCloud.inlineSnapshot(this.depthFrameCount,this.sampledDepthFrames);
+    return base===null?null:this.withAnnotations(base);
+  }
+  private withAnnotations(base:DepthScanPointCloudSnapshot):ScanPointCloudSnapshot{return{...base,manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};}
+  /** Finish: no more frames, the accepted ones are finished (bounded), then the snapshot of the worker-owned state; null when that could not be had. */
+  private async takeFinalSnapshot():Promise<ScanPointCloudSnapshot|null>{
+    try{
+      const result=await this.pointCloud.finish(this.depthFrameCount,this.sampledDepthFrames);
+      clientDiagnostics.info('XR_FUSION_FINISH_DRAIN',{drained:result.drained,outstandingFrames:result.outstandingFrames,outstandingKeyframes:result.outstandingKeyframes,mode:this.pointCloud.mode,droppedKeyframes:this.pointCloud.client.counters.droppedKeyframes,droppedOptional:this.pointCloud.client.counters.droppedOptional});
+      return this.withAnnotations(result.snapshot);
+    }catch(error){clientDiagnostics.error('XR_FUSION_FINISH_FAILED',errorText(error));return null;}
+  }
+  private handleFusionFailure(reason:string):void{
+    clientDiagnostics.error('XR_FUSION_WORKER_FAILED',reason);void clientDiagnostics.flush();
+    if(this.state.phase==='running')this.publish({error:`Depth fusion stopped: ${reason}`});
   }
 
   /** Must only be called from the active XR animation-frame callback. */
@@ -760,12 +784,23 @@ export class WebXrRuntime{
   }
 
   private refreshCoverageGuide(time:number,force=false):void{
+    /* The coverage snapshot is built by the fusion worker; one asked for earlier is applied here, in the frame, and the next one is asked for when due. */
+    const arrived=this.pointCloud.takeCoverage();
+    if(arrived!==null)this.applyCoverageSnapshot(arrived);
     const adaptiveIntervalMs=Math.max(COVERAGE_GPU_UPLOAD_INTERVAL_MS,this.performanceProfiler.recommendedCoverageIntervalMs());if(!force&&time-this.lastCoverageGpuUploadMs<adaptiveIntervalMs)return;
-    this.lastCoverageGpuUploadMs=time;const started=performance.now();
+    this.lastCoverageGpuUploadMs=time;
     try{
       const manualPositions=this.manualPoints.xrReferencePositions();const pointBudget=this.performanceProfiler.renderPolicy().pointBudget;
       const regularBudget=Math.max(0,pointBudget-Math.floor(manualPositions.length/3));
-      const coverage=this.pointCloud.liveCoverageSnapshot(regularBudget);const counts=countCoverageQualityBands(coverage.confidence.subarray(0,coverage.pointCount));
+      this.pointCloud.requestCoverage(regularBudget);
+      if(this.pointCloud.mode==='inline'){const inlineResult=this.pointCloud.takeCoverage();if(inlineResult!==null)this.applyCoverageSnapshot(inlineResult);}
+    }catch(error){this.disableCoverageGuide(error);}
+  }
+  private applyCoverageSnapshot(coverage:LiveCoverageSnapshot):void{
+    const started=performance.now();
+    try{
+      const manualPositions=this.manualPoints.xrReferencePositions();
+      const counts=countCoverageQualityBands(coverage.confidence.subarray(0,coverage.pointCount));
       this.coverageGuideActive=coverage.active&&this.coverageRenderer!==null;this.coverageVisibleCells=coverage.visibleCoverageCells;this.coverageReadyCells=coverage.readyCoverageCells;this.coverageTotalCells=coverage.totalCoverageCells;
       this.coverageTargetIndependentViews=coverage.targetFrameHits;this.coverageAverageConfidence=coverage.averageCoverageConfidence;this.coverageWeakPoints=counts.weak;this.coverageImprovingPoints=counts.improving;this.coverageStablePoints=counts.stable;
       if(this.coverageRenderer!==null){const renderSnapshot=composeCoverageRenderSnapshot(coverage,manualPositions,this.coverageCompositionBuffers);if(renderSnapshot.pointCount>0)this.coverageRenderer.update(renderSnapshot);else this.coverageRenderer.clear();this.coverageGuideRenderPoints=coverage.pointCount;}else this.coverageGuideRenderPoints=0;
@@ -912,7 +947,9 @@ export class WebXrRuntime{
           onDisabled:(reason)=>{this.liveMeshOff=true;this.stopLiveMesh();clientDiagnostics.warn('XR_LIVE_MESH_DISABLED',{reason});},
         });
       }
-      this.liveMeshClient.request(()=>this.pointCloud.liveMeshInput(LIVE_MESH_MAX_POINTS),this.liveMeshIntervalMs());
+      const meshIntervalMs=this.liveMeshIntervalMs();
+      if(this.liveMeshClient.acceptsAt(meshIntervalMs))this.pointCloud.requestLiveMeshInput(LIVE_MESH_MAX_POINTS);
+      this.liveMeshClient.request(()=>this.pointCloud.takeLiveMeshInput(),meshIntervalMs);
       if(this.liveMeshRenderer===null&&this.gl!==null)this.liveMeshRenderer=new LiveMeshRenderer(this.gl);
       const renderer=this.liveMeshRenderer;
       if(renderer===null)return;
@@ -943,12 +980,15 @@ export class WebXrRuntime{
       const depthStarted=performance.now();const depth=frame.getDepthInformation(view);this.performanceProfiler.record('depthAccess',performance.now()-depthStarted);if(depth===null)return;
       this.depthFrameCount+=1;this.depthWidth=depth.width;this.depthHeight=depth.height;
       if(!this.depthReadyLogged){this.depthReadyLogged=true;clientDiagnostics.info('XR_DEPTH_STREAM_READY',{width:depth.width,height:depth.height,usage:this.state.depthUsage,format:this.state.depthDataFormat,type:this.state.depthType});void clientDiagnostics.flush();}
-      if(time-this.lastDepthSampleMs<DEPTH_SAMPLE_INTERVAL_MS)return;this.lastDepthSampleMs=time;
+      /* The fusion queue is bounded: while it is full the interval is widened, and while even a keyframe would find no slot the frame is left alone (the selector keeps its state, so the next one can be that keyframe). */
+      if(time-this.lastDepthSampleMs<(this.pointCloud.client.overloaded?DEPTH_SAMPLE_INTERVAL_MS*2:DEPTH_SAMPLE_INTERVAL_MS))return;
+      if(!this.pointCloud.canAccept(true)){this.fusionBackpressureSkips+=1;return;}
+      this.lastDepthSampleMs=time;
       const decision=this.keyframeSelector.evaluate(time,pose.transform);this.motionState=decision.state;this.motionQuality=decision.motionQuality;this.linearSpeedMetersPerSecond=decision.linearSpeedMetersPerSecond;this.angularSpeedRadiansPerSecond=decision.angularSpeedRadiansPerSecond;this.linearAccelerationMetersPerSecond2=decision.linearAccelerationMetersPerSecond2;
       if(decision.kind==='skip'){if(decision.state==='too-fast')this.motionRejectedFrames+=1;return;}
-      this.sampledDepthFrames+=1;if(decision.kind==='keyframe')this.maybeRecordVisualEvidence(time,decision.keyframeId,view);
+      if(decision.kind==='keyframe')this.maybeRecordVisualEvidence(time,decision.keyframeId,view);
       const context:DepthFusionFrameContext={keyframeId:decision.keyframeId,evidenceKeyframe:decision.kind==='keyframe',frameWeight:decision.frameWeight,cameraProjectPosition:projectCameraPosition(pose)};
-      const fusionStarted=performance.now();const result=this.pointCloud.sampleDepthFrame(depth,depthGeometry(depth,view),context);this.performanceProfiler.record('fusion',performance.now()-fusionStarted);if(result.changedPoints>0)this.pointCloudVersion+=1;this.refreshCoverageGuide(time);
+      const fusionStarted=performance.now();const outcome=this.pointCloud.submitFrame(depth,depthGeometry(depth,view),context,this.state.depthDataFormat as WebXrDepthDataFormat,time);this.performanceProfiler.record('fusion',performance.now()-fusionStarted);if(outcome==='accepted')this.sampledDepthFrames+=1;this.refreshCoverageGuide(time);
     }catch(error){if(!this.depthFailureReported){this.depthFailureReported=true;const message=`Depth access failed: ${errorText(error)}`;clientDiagnostics.error('XR_DEPTH_ACCESS_FAILED',message);this.publish({depthError:message});}}
   }
 

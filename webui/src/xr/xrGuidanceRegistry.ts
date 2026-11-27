@@ -1,4 +1,5 @@
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
+import { getFreshRgbGuidance, latestRgbGuidance, setLatestRgbGuidance } from './rgbGuidanceStore';
 import { liveComputeScheduler } from './liveComputeScheduler';
 import {
   setVisualLineDetectionDeferred,
@@ -7,7 +8,6 @@ import {
 import { PoseDiverseVisualEvidenceStore } from './visualEvidenceReservoir';
 import { VisualLineEvidenceClient } from './visualLineEvidenceClient';
 
-let latestRgb: RgbDepthGuidanceFrame | null = null;
 const visualStore = new PoseDiverseVisualEvidenceStore(64);
 // Live XR never runs Hough on the UI/XR thread. The worker is allocated lazily
 // after the pre-scan compute capability promise resolves; if no worker slot is
@@ -21,38 +21,20 @@ function createVisualClient(): VisualLineEvidenceClient {
 let visualClient = createVisualClient();
 let visualClientGeneration = 1;
 let visualDetectionError: string | null = null;
-const POSE_TAGGED_RGB_MAX_AGE_MS = 650;
 
 // WebXrRuntime still calls detectVisualLines() for compatibility, but production
 // uses that call only as a cheap handoff marker. The real detector runs here in
 // a module worker against the same pose-synchronized RGB frame.
 setVisualLineDetectionDeferred(true);
 
-export function setLatestRgbGuidance(frame: RgbDepthGuidanceFrame | null): void {
-  latestRgb = frame;
-}
-
-export function getFreshRgbGuidance(nowMs: number, maximumAgeMs = 450): RgbDepthGuidanceFrame | null {
-  if (latestRgb === null) return null;
-  // Raw Camera Access frames carry their exact capture projection and pose. Such
-  // a frame can safely remain available a little longer for historical 2D↔3D
-  // reprojection. Live physical-depth fusion still applies rgbGuidanceMatchesView
-  // before using it, so this grace period cannot attach stale RGB to a moved
-  // camera pose. Legacy/unposed frames keep the caller's strict requested TTL.
-  const poseTagged = latestRgb.projectionMatrix !== undefined && latestRgb.worldFromView !== undefined;
-  const allowedAgeMs = poseTagged
-    ? Math.max(maximumAgeMs, POSE_TAGGED_RGB_MAX_AGE_MS)
-    : maximumAgeMs;
-  if (nowMs - latestRgb.capturedAtMs > allowedAgeMs) return null;
-  return latestRgb;
-}
+export { getFreshRgbGuidance, setLatestRgbGuidance };
 
 function usefulVisualFrame(frame: VisualEvidenceFrame): boolean {
   return frame.lines.length > 0 || frame.junctions.length > 0;
 }
 
 export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
-  const guidance = latestRgb;
+  const guidance = latestRgbGuidance();
   const deferredMarker = frame.lines.length === 0 && frame.junctions.length === 0;
   if (
     deferredMarker && guidance !== null &&
@@ -100,7 +82,7 @@ export function getVisualEvidenceClientGeneration(): number { return visualClien
 
 /** Release the role-owned live worker at Finish while keeping the registry reusable. */
 export function releaseXrGuidanceRegistryWorkers(): void {
-  latestRgb = null;
+  setLatestRgbGuidance(null);
   visualStore.reset();
   visualClient.dispose();
   visualClient = createVisualClient();
@@ -119,7 +101,7 @@ export function releaseXrGuidanceRegistryWorkers(): void {
  * earn the extra slot back.
  */
 export function resetXrGuidanceRegistry(): void {
-  latestRgb = null;
+  setLatestRgbGuidance(null);
   visualStore.reset();
   releaseXrGuidanceRegistryWorkers();
   liveComputeScheduler.beginScan();

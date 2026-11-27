@@ -350,16 +350,17 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     // This is deliberately the raw one-shot worker handoff. Structural-family
     // clustering/PCA/local certification now run after transfer off the XR/UI
     // thread. The certified getter remains reserved for fresh corner validation.
-    const snapshot = runtime.getStructuralWorkerSnapshot();
+    // The accumulated state lives in the depth-fusion worker, so the handoff is asked for.
+    void runtime.requestStructuralWorkerSnapshot().then((snapshot) => {
     const snapshotMs = performance.now() - snapshotStarted;
     if (snapshot.positions.length < MIN_RAW_STRUCTURAL_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) {
       setResult(null);
       setValidationSnapshot(null);
-      return;
+      return undefined;
     }
 
     const workerStarted = performance.now();
-    void client.analyze({
+    return client.analyze({
       positions: snapshot.positions,
       normals: snapshot.normals,
       confidence: snapshot.confidence,
@@ -368,7 +369,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       viewpoint,
       freeSpacePositions: snapshot.freeSpacePositions,
       freeSpaceVoxelSizeMeters: snapshot.freeSpaceVoxelSizeMeters,
-    }).then((next) => {
+    }).then(async (next) => {
       const workerResult = next as StructuralGuideResultWithReadiness;
       const nextSurfaceReadiness = workerResult.surfaceReadiness ?? null;
       setSurfaceReadiness(nextSurfaceReadiness);
@@ -403,7 +404,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       let certificateSnapshotMs = 0;
       if (next.corners.length > 0) {
         const certificateStarted = performance.now();
-        setValidationSnapshot(runtime.getStructuralGuideSnapshot());
+        setValidationSnapshot(await runtime.requestStructuralGuideSnapshot());
         certificateSnapshotMs = performance.now() - certificateStarted;
       } else {
         setValidationSnapshot(null);
@@ -428,7 +429,11 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       void clientDiagnostics.flush();
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('reset for a new scan')) clientDiagnostics.warn('XR_GUIDE_ANALYSIS_FAILED', error);
+      if (!message.includes('reset for a new scan') && !message.includes('superseded')) clientDiagnostics.warn('XR_GUIDE_ANALYSIS_FAILED', error);
+    });
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('superseded') && !message.includes('disposed')) clientDiagnostics.warn('XR_GUIDE_SNAPSHOT_FAILED', error);
     });
   }, [client, runtime, runtimeState]);
 

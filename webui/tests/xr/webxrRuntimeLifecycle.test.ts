@@ -246,7 +246,7 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
       const internals=runtime as unknown as MeshInternals;
       const requests:number[]=[];
-      const client={request:vi.fn((build:()=>unknown,_minIntervalMs?:number)=>{requests.push(1);return build!==undefined;}),dispose:vi.fn(),busy:false,isDisabled:false};
+      const client={request:vi.fn((build:()=>unknown,_minIntervalMs?:number)=>{requests.push(1);return build!==undefined;}),acceptsAt:()=>true,dispose:vi.fn(),busy:false,isDisabled:false};
       const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
       internals.liveMeshClient=client;internals.liveMeshRenderer=renderer;
       vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockReturnValue(pressure);
@@ -487,7 +487,7 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       const ending=session.deferEnd();xr.queue(session);const runtime=createRuntime();await runtime.start();
       const internal=runtime as unknown as {
         keyframeSelector:{evaluate:(time:number,pose:unknown)=>unknown};
-        pointCloud:{sampleDepthFrame:(...args:any[])=>unknown};
+        pointCloud:{submitFrame:(...args:any[])=>unknown};
         captureNativePlaneGuidance:(...args:any[])=>void;captureRgbGuidance:(...args:any[])=>void;
         captureTagGuidance:(time:number,view:unknown)=>void;maybeRecordVisualEvidence:(...args:any[])=>void;
         acceptTagFrame:(frame:TagCameraFrame|null)=>void;
@@ -499,7 +499,7 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       internal.captureRgbGuidance=()=>{admitted.rgb+=1;};
       internal.captureTagGuidance=(time)=>{admitted.tag+=1;internal.acceptTagFrame(fakeTagFrame(time));};
       internal.maybeRecordVisualEvidence=()=>{admitted.visual+=1;};
-      const sampleDepth=vi.spyOn(internal.pointCloud,'sampleDepthFrame');
+      const sampleDepth=vi.spyOn(internal.pointCloud,'submitFrame');       /* the fusion hand-off (the accumulated state is owned by the fusion worker, inline in this test) */
       const tagFrames:TagCameraFrame[]=[];runtime.subscribeTagFrames((frame)=>tagFrames.push(frame));
       for(const time of [16,200,400,600])session.driveNextFrame(time,evidenceFrame(session));
       expect(runtime.getState().depthFrameCount).toBe(4);expect(runtime.getState().sampledDepthFrames).toBe(4);
@@ -638,7 +638,9 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     for(let i=0;i<30;i+=1)for(let j=0;j<30;j+=1){points.push(i*0.04,j*0.04,0.8);normals.push(0,0,1);}
     return{positions:Float32Array.from(points),normals:Float32Array.from(normals),confidence:new Float32Array(900).fill(0.9),voxelSizeMeters:0.04};
   }
-  interface Rig{session:FakeXrSession;runtime:WebXrRuntime;internals:{originResetPaused:boolean;liveMeshOff:boolean;livePerformancePressure:()=>string;pointCloud:{liveMeshInput:()=>unknown}};renderer:{update:ReturnType<typeof vi.fn>;render:ReturnType<typeof vi.fn>;clear:ReturnType<typeof vi.fn>;dispose:ReturnType<typeof vi.fn>;triangleCount:number};pressure:{value:Pressure};info:ReturnType<typeof vi.spyOn>;warn:ReturnType<typeof vi.spyOn>}
+  interface Rig{session:FakeXrSession;runtime:WebXrRuntime;internals:{originResetPaused:boolean;liveMeshOff:boolean;livePerformancePressure:()=>string;pointCloud:{requestLiveMeshInput:()=>void;takeLiveMeshInput:()=>unknown}};renderer:{update:ReturnType<typeof vi.fn>;render:ReturnType<typeof vi.fn>;clear:ReturnType<typeof vi.fn>;dispose:ReturnType<typeof vi.fn>;triangleCount:number};pressure:{value:Pressure};info:ReturnType<typeof vi.spyOn>;warn:ReturnType<typeof vi.spyOn>}
+  /** The live-mesh input is fetched from the fusion owner and handed to the mesh worker; these tests stand in for the owner. */
+  function provideLive(internals:Rig['internals'],provider:()=>unknown):void{internals.pointCloud.requestLiveMeshInput=()=>undefined;internals.pointCloud.takeLiveMeshInput=()=>provider();}
   async function rig(mode:Mode,pressureValue:Pressure):Promise<Rig>{
     liveMeshWorkerBox.failNext=0;liveMeshWorkerBox.created=0;liveMeshWorkerBox.requests=0;clock=1_000_000;
     vi.spyOn(performance,'now').mockImplementation(()=>clock);
@@ -646,7 +648,7 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     const internals=runtime as unknown as Rig['internals'];
     const pressure={value:pressureValue};
     vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockImplementation(()=>pressure.value);
-    internals.pointCloud.liveMeshInput=()=>plane();
+    provideLive(internals,()=>plane());
     const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
     (runtime as unknown as {liveMeshRenderer:unknown}).liveMeshRenderer=renderer;
     const info=vi.spyOn(clientDiagnostics,'info');const warn=vi.spyOn(clientDiagnostics,'warn');
@@ -728,10 +730,10 @@ describe('the live mesh across every setting (mode x pressure x session state)',
 
   it('asks for no worker while there is nothing with a measured orientation to mesh',async()=>{
     const r=await rig('on','low');
-    r.internals.pointCloud.liveMeshInput=()=>null;
+    provideLive(r.internals,()=>null);
     expect(await run(r,10_000)).toBe(0);
     expect(liveMeshWorkerBox.created).toBe(0);
-    r.internals.pointCloud.liveMeshInput=()=>plane();
+    provideLive(r.internals,()=>plane());
     expect(await run(r,5000)).toBeGreaterThan(0);                                                 /* it picks up as soon as the surface exists */
   });
 
