@@ -49,7 +49,7 @@ import {
 } from '../xr/scanViewportScene';
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
-import { TsdfMeshCache, tsdfSettingsKey } from '../xr/tsdfMeshCache';
+import { TsdfMeshCache, tsdfGeometryFingerprint, tsdfSettingsKey } from '../xr/tsdfMeshCache';
 import { Esp32VoxelScene, esp32VoxelSource, type Esp32VoxelView, type VoxelPick } from './Esp32VoxelLayers';
 import { Esp32VoxelOverlay } from './Esp32VoxelOverlay';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
@@ -113,6 +113,9 @@ type TsdfRequestSnapshot = Pick<ScanPointCloudSnapshot,
   'voxelSizeMeters' | 'freeAirPositions' | 'occupancyVoxelSizeMeters' | 'occupancyFineVoxelSizeMeters'>;
 
 /** Build the exact post-scan TSDF input, keeping fine FREE spacing separate from coarsened UNKNOWN spacing. */
+/** Shared by every viewer: the same scan opened in another viewer component is a hit, not a second reconstruction (TASK 06). */
+export const sharedTsdfMeshCache = new TsdfMeshCache<SparseTsdfMesh>((mesh) => mesh.trianglePositions.byteLength * 2);
+
 export function buildTsdfRequestArgs(snapshot: TsdfRequestSnapshot) {
   return {
     // Use ONLY locally certified geometry for the implicit surface. Display
@@ -506,7 +509,7 @@ export function ScanPointCloudViewport({
     display.freeAir || display.unknownSpace,
   ), [candidateVolume, display.freeAir, display.unknownSpace, prepared, sourceHighlights]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
-  const tsdfCache = useMemo(() => new TsdfMeshCache<ScanPointCloudSnapshot, SparseTsdfMesh>(), []);
+  const tsdfCache = sharedTsdfMeshCache;
   const onMeshReadyRef = useRef(onMeshReady);
   onMeshReadyRef.current = onMeshReady;
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
@@ -556,6 +559,11 @@ export function ScanPointCloudViewport({
     }
   }, [admission.bytes.underMemoryPressure, display.mesh, optionalMonocularPrior.hasStagedPostScanFrame, optionalMonocularPrior.isEnabled, snapshot.tsdfPointCount]);
   useEffect(() => {
+    /* Justified eviction: under memory pressure the held meshes are given back (the next view recomputes). */
+    if (admission.bytes.underMemoryPressure) sharedTsdfMeshCache.clear();
+  }, [admission.bytes.underMemoryPressure]);
+
+  useEffect(() => {
     let cancelled = false;
     if (snapshot.tsdfPointCount < MESH_MIN_POINTS) {
       tsdfClient.cancel('Scan does not meet the TSDF minimum point count.', true);
@@ -566,7 +574,8 @@ export function ScanPointCloudViewport({
 
     /* Idempotent by scan identity and settings: showing the Mesh layer again, an admission change or a re-render never recomputes a mesh we hold. */
     const settingsKey = tsdfSettingsKey({ allowOptionalAi: admission.admitted.optionalAi });
-    const cachedMesh = display.mesh && admission.admitted.tsdfReconstruction ? tsdfCache.get(snapshot, settingsKey) : null;
+    const fingerprint = tsdfGeometryFingerprint({ ...snapshot, occupancyFineVoxelSizeMeters: fineOccupancyVoxelSizeMeters(snapshot) });
+    const cachedMesh = display.mesh && admission.admitted.tsdfReconstruction ? tsdfCache.get(fingerprint, settingsKey) : null;
     if (cachedMesh !== null) {
       tsdfClient.cancel('TSDF result already held for this scan.', true);
       setTsdfMesh(cachedMesh);
@@ -599,7 +608,7 @@ export function ScanPointCloudViewport({
     setTsdfError(null);
     void reconstruction.then((result) => {
       if (cancelled) return;
-      tsdfCache.set(snapshot, settingsKey, result);
+      tsdfCache.set(fingerprint, settingsKey, result);
       setTsdfMesh(result);
       onMeshReadyRef.current?.(snapshot, result.trianglePositions);
       clientDiagnostics.info('SCAN_TSDF_READY', {

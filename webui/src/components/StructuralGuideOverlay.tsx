@@ -31,7 +31,7 @@ import {
   type StructuralGuideResult,
   type StructuralGuideViewpoint,
 } from '../xr/structuralGuide';
-import { StructuralGuideClient } from '../xr/structuralGuideClient';
+import { useStructuralGuideClient } from '../xr/useStructuralGuideClient';
 import { applyStructuralVisualCorroboration } from '../xr/structuralVisualCorroboration';
 import type { VisualEvidenceFrame } from '../xr/visualLineEvidence';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
@@ -248,7 +248,7 @@ function mergeCornerCandidates(
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const { locale } = useLocale();
   const t = useT();
-  const client = useMemo(() => new StructuralGuideClient(), []);
+  const client = useStructuralGuideClient();
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
   const [validationSnapshot, setValidationSnapshot] = useState<StructuralGuideSnapshot | null>(null);
   const [surfaceReadiness, setSurfaceReadiness] = useState<SurfaceComponentReadinessSummary | null>(null);
@@ -261,7 +261,6 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   const viewpointHistory = useRef(new ScanViewpointHistory());
 
   useEffect(() => () => {
-    client.dispose();
     deactivateCertifiedGuideRegistry();
   }, [client]);
 

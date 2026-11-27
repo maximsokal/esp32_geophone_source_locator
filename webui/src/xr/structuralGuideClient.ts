@@ -154,6 +154,11 @@ export class StructuralGuideClient {
     }
   }
 
+  /** Undoes a dispose() of this same client: React StrictMode runs cleanup and setup again on the same object. Not a restart of a pending analysis (dispose rejected it). */
+  activate(): void {
+    this.disposed = false;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.terminateWorker();
