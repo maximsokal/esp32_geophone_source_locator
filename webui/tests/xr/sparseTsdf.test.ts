@@ -69,6 +69,19 @@ describe('sparse weighted TSDF reconstruction', () => {
     expect(maxAbsZ).toBeLessThan(mesh.voxelSizeMeters * 0.35);
   });
 
+  it('MUT-10 / TASK 09: the verified free space decides which side of the surface is outside: a patch whose normals point the wrong way does not tear the surface', () => {
+    const consistent = cloud();
+    addPlane(consistent, 0); addPlane(consistent, 0.36);
+    const mixed = cloud();
+    addPlane(mixed, 0); addPlane(mixed, 0.36, [0, 0, -1]);                 /* the second patch has its normals reversed; free air is measured above the plane */
+    const reference = buildSparseTsdfMesh(input(consistent));
+    const repaired = buildSparseTsdfMesh(input(mixed));
+    expect(reference.triangleCount).toBeGreaterThan(40);
+    expect(repaired.orientationConflictCount, 'no orientation conflict: the free space turned the reversed normals').toBe(0);
+    expect(repaired.triangleCount, 'the surface is as complete as with correct normals').toBeGreaterThanOrEqual(reference.triangleCount * 0.9);
+    expect(repaired.meshTopologyComponentCount).toBe(reference.meshTopologyComponentCount);
+  });
+
   it('does not manufacture a surface from low-confidence points', () => {
     const source = cloud();
     addPlane(source, 0, [0, 0, 1], 0.30);

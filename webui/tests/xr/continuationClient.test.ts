@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient } from '../../src/xr/continuationClient';
+import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient, ContinuationTimeoutError } from '../../src/xr/continuationClient';
 import {
   CONTINUATION_TRANSIENT_BUDGET_BYTES,
   estimateContinuationBudget,
@@ -260,6 +260,51 @@ describe('ContinuationClient', () => {
     await Promise.resolve();
     expect(second.request?.options).not.toHaveProperty('seed');
     other.cancel('test');
+  });
+
+  it('MUT-18 / TASK 09: an answer that carries the right request id but another generation is not accepted; the right answer then is', async () => {
+    const worker = new DeferredWorker();
+    const client = clientFor(worker);
+    const settled = vi.fn();
+    const promise = client.continue(makeValidScanSnapshot(), makeValidScanSnapshot(), { generation: 7 }).then((r) => { settled(r); return r; });
+    await Promise.resolve();
+    const request = worker.request!;
+    const stale = { type: 'result', requestId: request.requestId, generation: 6, result: { ok: false, reason: 'stale', diagnostics: null } } as unknown as ContinuationWorkerResponse;
+    worker.send(stale);
+    await Promise.resolve(); await Promise.resolve();
+    expect(settled, 'a late answer of an older owner must not settle the request').not.toHaveBeenCalled();
+    worker.send({ type: 'result', requestId: request.requestId, generation: 7, result: { ok: false, reason: 'current', diagnostics: null } } as unknown as ContinuationWorkerResponse);
+    await expect(promise).resolves.toMatchObject({ ok: false, reason: 'current' });
+  });
+
+  it('CONT-15: a worker that never answers is terminated and rejected with a timeout error', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new DeferredWorker();
+      const client = clientFor(worker);
+      const outcome = client.continue(makeValidScanSnapshot(), makeValidScanSnapshot(), { timeoutMs: 5_000 }).then(() => 'resolved', (error: Error) => error);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(worker.terminated).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(ContinuationTimeoutError);
+      expect(worker.terminated).toBe(true);
+      expect(client.busy).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('an answer that arrives in time cancels the timer: no late timeout, the worker is terminated once', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new DeferredWorker();
+      const client = clientFor(worker);
+      const promise = client.continue(makeValidScanSnapshot(), makeValidScanSnapshot(), { timeoutMs: 5_000, generation: 3 });
+      await Promise.resolve();
+      worker.send({ type: 'result', requestId: worker.request!.requestId, generation: 3, result: { ok: false, reason: 'quick', diagnostics: null } } as unknown as ContinuationWorkerResponse);
+      await expect(promise).resolves.toMatchObject({ reason: 'quick' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it('estimates each array family and rejects an over-budget request before creating or posting to a worker', async () => {
