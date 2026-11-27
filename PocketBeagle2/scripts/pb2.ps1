@@ -20,9 +20,12 @@ param(
         "benchmark-storage",
         "benchmark-transport",
         "pull-logs",
-        "clean"
+        "clean",
+        "flash-sd"
     )]
     [string]$Action,
+
+    [int]$DiskNumber = -1,
 
     [string]$Pb2Host = $(if ($env:PB2_HOST) { $env:PB2_HOST } else { "192.168.7.2" }),
     [string]$Pb2User = $(if ($env:PB2_USER) { $env:PB2_USER } else { "debian" }),
@@ -86,6 +89,15 @@ switch ($Action) {
         } else {
             Write-Host "[pb2] Nothing to clean ($buildDir absent)"
         }
+    }
+    "flash-sd" {
+        if ($DiskNumber -lt 0) {
+            Get-Disk | Where-Object { $_.BusType -eq "USB" -or $_.BusType -eq "SD" } | Format-Table Number,FriendlyName,BusType,@{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}}
+            throw "Specify -DiskNumber <N> (only USB/SD removable disks are allowed)."
+        }
+        $flashScript = Join-Path $PSScriptRoot "deploy\flash_sd.ps1"
+        & $flashScript -DiskNumber $DiskNumber
+        exit $LASTEXITCODE
     }
     "doctor" {
         Assert-BoardReachable

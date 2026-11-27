@@ -1523,6 +1523,33 @@
             },
             "problemMatcher": [],
             "detail": "Remove only PocketBeagle2/build artifacts."
+        },
+        {
+            "label": "PB2: Flash SD Image",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "flash-sd",
+                "-DiskNumber",
+                "${input:pb2SdDiskNumber}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Download, verify SHA-256, and flash PocketBeagle 2 Debian 13.3 image to a USB/SD disk (requires Admin)."
         }
     ],
     "inputs": [
@@ -1542,6 +1569,12 @@
             "id": "nrfMonitorPort",
             "type": "promptString",
             "description": "Enter the current XIAO nRF54L15 COM port shown by Windows (list with [System.IO.Ports.SerialPort]::GetPortNames())"
+        },
+        {
+            "id": "pb2SdDiskNumber",
+            "type": "promptString",
+            "description": "Windows Disk Number for PocketBeagle 2 microSD (check with Get-Disk; e.g. 3)",
+            "default": "3"
         }
     ]
 }
