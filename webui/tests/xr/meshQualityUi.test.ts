@@ -1,3 +1,4 @@
+import { uk } from '../../src/i18n/catalog.uk.gen';
 import { describe, expect, it } from 'vitest';
 
 import { translate } from '../../src/i18n';
@@ -71,10 +72,19 @@ describe('mesh quality UI status', () => {
       meshNoiseScore: 0.18,
     }));
     expect(result).toEqual({
-      label: 'MESH REPAIRED · H1 · 116△',
+      label: 'MESH CLEANED · NOISE SPOTS REMOVED: 1 · 116△',
       severity: 'warning',
       rescanRecommended: false,
     });
+  });
+
+  it('TASK 07: a noise cleanup is not worded as a repair of gaps, in either language', () => {
+    const result = describeMeshQuality(mesh({ triangleCount: 116, quarantinedTriangleCount: 4, localNoiseHotspotCount: 1, localNoiseHotspotTriangleCount: 4, meshNoiseScore: 0.18 }));
+    expect(result.label).not.toMatch(/REPAIR/i);
+    expect(result.label).toMatch(/CLEANED/);
+    /* the Ukrainian text is checked in the generated catalog itself (the runtime loads it lazily) */
+    expect(uk['xr.mesh.cleaned']).toMatch(/ОЧИЩЕНО/);
+    expect(uk['xr.mesh.cleaned']).not.toMatch(/ВІДНОВЛ/i);
   });
 
   it('still forces rescan when local repair exists but additional whole-component quarantine remains', () => {

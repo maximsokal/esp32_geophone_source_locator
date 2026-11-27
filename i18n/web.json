@@ -987,7 +987,7 @@
     "xr.mesh.partial_noisy": { "en": "MESH PARTIAL · {count}△ · {noise} noise · Q{quarantined}", "uk": "ЧАСТКОВА СІТКА · {count}△ · шум {noise} · Q{quarantined}" },
     "xr.mesh.noisy_rescan": { "en": "MESH NOISY {noise} · Q{quarantined} · RESCAN", "uk": "ШУМНА СІТКА {noise} · Q{quarantined} · ПЕРЕСКАНУЙТЕ" },
     "xr.mesh.empty_rescan": { "en": "MESH EMPTY · RESCAN", "uk": "СІТКА ПОРОЖНЯ · ПЕРЕСКАНУЙТЕ" },
-    "xr.mesh.repaired": { "en": "MESH REPAIRED · H{hotspots} · {count}△", "uk": "СІТКУ ВІДНОВЛЕНО · H{hotspots} · {count}△" },
+    "xr.mesh.cleaned": {"en": "MESH CLEANED · NOISE SPOTS REMOVED: {hotspots} · {count}△","uk": "\u0421\u0406\u0422\u041a\u0423 \u041e\u0427\u0418\u0429\u0415\u041d\u041e \u00b7 \u0412\u0418\u0414\u0410\u041b\u0415\u041d\u041e \u0417\u041e\u041d \u0428\u0423\u041c\u0423: {hotspots} \u00b7 {count}\u25b3"},
     "xr.mesh.check": { "en": "MESH CHECK {noise} · {count}△", "uk": "ПЕРЕВІРКА СІТКИ {noise} · {count}△" },
     "xr.mesh.ok": { "en": "MESH OK · {count}△", "uk": "СІТКА ГОТОВА · {count}△" },
     "xr.readiness.move": { "en": "MOVE", "uk": "ЗМІНІТЬ РАКУРС" },

@@ -693,14 +693,36 @@ export function ScanPointCloudViewport({
 
   return <div ref={shellRef} className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers voxelView={esp32Voxels} onVoxelPick={setPickedVoxel} prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} panMode={panMode} hud={hud} /></Canvas>
-    <div className="scan-camera-hud" role="group" aria-label={t('scan.camera.hud_label')}>
-      {(['perspective', 'top', 'front'] as const).map((preset) => <button key={preset} type="button" data-camera-action={`view-${preset}`} aria-pressed={viewCommand.preset === preset} onClick={() => requestPreset(preset)}>{preset === 'perspective' ? '3D' : t(preset === 'top' ? 'scan.view.top' : 'scan.view.front')}</button>)}
-      <button type="button" data-camera-action="fit" onClick={() => requestHud('fit')}>{t('scan.camera.fit')}</button>
-      <button type="button" data-camera-action="reset" onClick={() => requestHud('reset')}>{t('scan.camera.reset')}</button>
-      <button type="button" data-camera-action="pan" aria-pressed={panMode} onClick={() => setPanMode((value) => !value)}>{t('scan.camera.pan')}</button>
-      <button type="button" data-camera-action="focus" disabled={focusTarget === null} onClick={() => requestHud('focus')}>{t('scan.camera.focus')}</button>
-      {fullscreenSupported && <button type="button" data-camera-action="fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen ? t('scan.camera.exit_fullscreen') : t('scan.camera.fullscreen')}</button>}
+    {/* Layout (TASK 07): the hints stack from the top, the inset, the voxel details, the camera strip and the axis note stack from the bottom, in normal flow, so a text that wraps can never slide under a button. */}
+    <div className="scan-viewport-badges">
+      <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
+      {postScanDeferred && !display.mesh && <div className="scan-mesh-overlay" role="status" aria-live="polite">{t('scan.badge.building_after_save')}</div>}
+      {esp32Voxels === null && !voxelsSelected
+        ? <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
+        : esp32Voxels !== null ? <Esp32VoxelOverlay part="badge" view={esp32Voxels} picked={pickedVoxel} /> : null}
+      {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
+      {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
+      {selectedMarker !== null && <section className="scan-sensor-details" aria-label={t('scan.selected_sensor_details')} data-sensor-status={selectedMarker.status}>
+        <h3>{selectedMarker.node} · {t(`scan.marker_status.${selectedMarker.status}` as 'scan.marker_status.anchored' | 'scan.marker_status.cs_projected' | 'scan.marker_status.visual_only' | 'scan.marker_status.cs_unregistered')}</h3>
+        <dl>
+          <div><dt>{t('scan.source')}</dt><dd>{selectedMarker.source === 'channel_sounding_baro'
+            ? t('scan.channel_sounding_baro')
+            : selectedMarker.source === 'channel_sounding' ? t('scan.channel_sounding') : selectedMarker.source === 'apriltag' ? t('scan.tag_apriltag') : selectedMarker.source ?? '—'}</dd></div>
+          <div><dt>{t('scan.uncertainty')}</dt><dd>{selectedMarker.uncertaintyM === null ? '—' : formatDistance(locale, selectedMarker.uncertaintyM, 3)}</dd></div>
+          <div><dt>{t('scan.residual')}</dt><dd>{selectedMarker.residualM === null ? '—' : formatDistance(locale, selectedMarker.residualM, 3)}</dd></div>
+          <div><dt>{t('scan.tag_id')}</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>
+        </dl>
+        <p>{t(`scan.marker_detail.${selectedMarker.status}` as 'scan.marker_detail.anchored' | 'scan.marker_detail.cs_projected' | 'scan.marker_detail.visual_only' | 'scan.marker_detail.cs_unregistered')}</p>
+        {selectedMarker.provisional === true && <p data-marker-provisional="true">{t('scan.marker_provisional')}</p>}
+      </section>}
     </div>
+    {candidateVolume.candidateDepthUnavailable && <div className="scan-source-candidate-depth" role="status">{t('scan.candidate_depth_unavailable')}</div>}
+    {sourceReasonLabel !== null && <div className="scan-source-highlight-status" role="status">{sourceReasonLabel}</div>}
+    {sourceHighlights.historyRuns.length > 0 && <div className="scan-source-history" aria-label={t('scan.source_history')}>
+      {sourceHighlights.historyRuns.map(({ run, currency }) => <span key={`${run.method_name}-${run.computed_at_ms}`}>
+        {run.method_name} · {t(currency === 'history_previous_scan' ? 'scan.source_history.previous_scan' : 'scan.source_history.scan_unknown')}
+      </span>)}
+    </div>}
     {overlayFailure !== null && <div className="xr-runtime-warning scan-overlay-failure" role="alert">
       <div>{t('scan.overlay.failed')}</div>
       <div>{overlayFailure.message}</div>
@@ -708,53 +730,37 @@ export function ScanPointCloudViewport({
         <button type="button" onClick={overlayFailure.retry}>{t('scan.renderer.retry')}</button>
       )}
     </div>}
-    <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
-    {candidateVolume.candidateDepthUnavailable && <div className="scan-source-candidate-depth" role="status">{t('scan.candidate_depth_unavailable')}</div>}
-    {postScanDeferred && !display.mesh && <div className="scan-mesh-overlay" role="status" aria-live="polite">{t('scan.badge.building_after_save')}</div>}
-    {sourceReasonLabel !== null && <div className="scan-source-highlight-status" role="status">{sourceReasonLabel}</div>}
-    {sourceHighlights.historyRuns.length > 0 && <div className="scan-source-history" aria-label={t('scan.source_history')}>
-      {sourceHighlights.historyRuns.map(({ run, currency }) => <span key={`${run.method_name}-${run.computed_at_ms}`}>
-        {run.method_name} · {t(currency === 'history_previous_scan' ? 'scan.source_history.previous_scan' : 'scan.source_history.scan_unknown')}
-      </span>)}
-    </div>}
-    {esp32Voxels === null && !voxelsSelected
-      ? <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
-      : esp32Voxels !== null ? <Esp32VoxelOverlay view={esp32Voxels} picked={pickedVoxel} /> : null}
-    {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
-    {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
-    {selectedMarker !== null && <section className="scan-sensor-details" aria-label={t('scan.selected_sensor_details')} data-sensor-status={selectedMarker.status}>
-      <h3>{selectedMarker.node} · {t(`scan.marker_status.${selectedMarker.status}` as 'scan.marker_status.anchored' | 'scan.marker_status.cs_projected' | 'scan.marker_status.visual_only' | 'scan.marker_status.cs_unregistered')}</h3>
-      <dl>
-        <div><dt>{t('scan.source')}</dt><dd>{selectedMarker.source === 'channel_sounding_baro'
-          ? t('scan.channel_sounding_baro')
-          : selectedMarker.source === 'channel_sounding' ? t('scan.channel_sounding') : selectedMarker.source === 'apriltag' ? t('scan.tag_apriltag') : selectedMarker.source ?? '—'}</dd></div>
-        <div><dt>{t('scan.uncertainty')}</dt><dd>{selectedMarker.uncertaintyM === null ? '—' : formatDistance(locale, selectedMarker.uncertaintyM, 3)}</dd></div>
-        <div><dt>{t('scan.residual')}</dt><dd>{selectedMarker.residualM === null ? '—' : formatDistance(locale, selectedMarker.residualM, 3)}</dd></div>
-        <div><dt>{t('scan.tag_id')}</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>
-      </dl>
-      <p>{t(`scan.marker_detail.${selectedMarker.status}` as 'scan.marker_detail.anchored' | 'scan.marker_detail.cs_projected' | 'scan.marker_detail.visual_only' | 'scan.marker_detail.cs_unregistered')}</p>
-      {selectedMarker.provisional === true && <p data-marker-provisional="true">{t('scan.marker_provisional')}</p>}
-    </section>}
-    {sensorFrameScene !== null && <ViewportFailureBoundary
-      key={viewportIdentityKey}
-      resetKeys={overlayResetKeys}
-      diagnosticEvent="SCAN_RESULT_OVERLAY_RENDER_FAILED"
-      renderFailure={({ message, attempts, retry }) => (
-        <div className="xr-runtime-warning scan-overlay-failure" role="alert">
-          <div>{t('scan.overlay.failed')}</div>
-          <div>{message}</div>
-          {attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
-            <button type="button" onClick={retry}>{t('scan.renderer.retry')}</button>
-          )}
-        </div>
-      )}
-    >
-      <section className="scan-sensor-inset" aria-label={t('scan.unregistered_geometry')}>
-        <div className="scan-sensor-inset-caption">{t('scan.unregistered_geometry')}</div>
-        <SceneViewport scene={sensorFrameScene} selectedId={selectedNode ?? ''} viewCommand={viewCommand}
-          onSelect={(node) => { const selected = sensorNode(node); if (selected !== null) selectSensorNode(selected); }} />
-      </section>
-    </ViewportFailureBoundary>}
-    <div className="axis-note">{t('scan.axis_note')}</div>
+    <div className="scan-viewport-bottom">
+      {sensorFrameScene !== null && <ViewportFailureBoundary
+        key={viewportIdentityKey}
+        resetKeys={overlayResetKeys}
+        diagnosticEvent="SCAN_RESULT_OVERLAY_RENDER_FAILED"
+        renderFailure={({ message, attempts, retry }) => (
+          <div className="xr-runtime-warning scan-overlay-failure" role="alert">
+            <div>{t('scan.overlay.failed')}</div>
+            <div>{message}</div>
+            {attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
+              <button type="button" onClick={retry}>{t('scan.renderer.retry')}</button>
+            )}
+          </div>
+        )}
+      >
+        <section className="scan-sensor-inset" aria-label={t('scan.unregistered_geometry')}>
+          <div className="scan-sensor-inset-caption">{t('scan.unregistered_geometry')}</div>
+          <SceneViewport scene={sensorFrameScene} selectedId={selectedNode ?? ''} viewCommand={viewCommand}
+            onSelect={(node) => { const selected = sensorNode(node); if (selected !== null) selectSensorNode(selected); }} />
+        </section>
+      </ViewportFailureBoundary>}
+      {esp32Voxels !== null && <Esp32VoxelOverlay part="details" view={esp32Voxels} picked={pickedVoxel} />}
+      <div className="scan-camera-hud" role="group" aria-label={t('scan.camera.hud_label')}>
+        {(['perspective', 'top', 'front'] as const).map((preset) => <button key={preset} type="button" data-camera-action={`view-${preset}`} aria-pressed={viewCommand.preset === preset} onClick={() => requestPreset(preset)}>{preset === 'perspective' ? '3D' : t(preset === 'top' ? 'scan.view.top' : 'scan.view.front')}</button>)}
+        <button type="button" data-camera-action="fit" onClick={() => requestHud('fit')}>{t('scan.camera.fit')}</button>
+        <button type="button" data-camera-action="reset" onClick={() => requestHud('reset')}>{t('scan.camera.reset')}</button>
+        <button type="button" data-camera-action="pan" aria-pressed={panMode} onClick={() => setPanMode((value) => !value)}>{t('scan.camera.pan')}</button>
+        <button type="button" data-camera-action="focus" disabled={focusTarget === null} onClick={() => requestHud('focus')}>{t('scan.camera.focus')}</button>
+        {fullscreenSupported && <button type="button" data-camera-action="fullscreen" aria-pressed={fullscreen} onClick={toggleFullscreen}>{fullscreen ? t('scan.camera.exit_fullscreen') : t('scan.camera.fullscreen')}</button>}
+      </div>
+      <div className="axis-note">{t('scan.axis_note')}</div>
+    </div>
   </div>;
 }

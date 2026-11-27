@@ -65,9 +65,10 @@ export function describeMeshQuality(mesh: SparseTsdfMesh, locale: I18nLocale = '
       rescanRecommended: true,
     };
   }
+  /* The sanitizer removed correlated noise spots; that says nothing about gaps in the surface, so the label names what was done (cleaned), not "repaired". */
   if (mesh.localNoiseHotspotTriangleCount > 0) {
     return {
-      label: translate(locale, 'xr.mesh.repaired', { hotspots: formatNumber(locale, mesh.localNoiseHotspotCount), count: triangles }),
+      label: translate(locale, 'xr.mesh.cleaned', { hotspots: formatNumber(locale, mesh.localNoiseHotspotCount), count: triangles }),
       severity: 'warning',
       rescanRecommended: false,
     };
