@@ -6,7 +6,7 @@ import type {
 import { DepthFusionClient, type DepthFusionClientOptions, type SubmitOutcome } from './depthFusionClient';
 import type { FusionGuidancePacket, FusionStats } from './depthFusionProtocol';
 import { createDepthFusionKeeper, createDepthFusionWorker } from './depthFusionWorkerFactory';
-import { FusionCaptureGovernor, type FusionCaptureStep } from './fusionCaptureGovernor';
+import { FUSION_BASE_INTERVAL_MS, FusionCaptureGovernor, type FusionCaptureStep } from './fusionCaptureGovernor';
 import type { FusionPoseLike, WebXrFusionKeyframeSelector } from './webxrFusionQuality';
 import { registerManualPlacementResolver, solveManualPlacementOnStableSurface } from './manualPlacementSurface';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
@@ -108,6 +108,9 @@ export class RuntimeFusion {
   /** True while not even a new viewpoint can be taken: the operator is asked to hold still. */
   get catchingUp(): boolean { return this.governor.catchingUp; }
 
+  /** True while the fusion cannot keep its normal rate: the tasks that share its worker or the CPU yield to it. */
+  get behind(): boolean { return this.governor.catchingUp || this.governor.intervalMs > FUSION_BASE_INTERVAL_MS * 1.5; }
+
   /**
    * Hands one XR depth frame to the fusion. Called inside the frame callback: the device buffer is COPIED here and nothing of the XR frame leaves it.
    * RGB guidance is matched exactly as the synchronous path matched it, and the monocular (AI) staging, which needs the live depth, is done here.
@@ -131,7 +134,7 @@ export class RuntimeFusion {
     this.coverageFetching = true;
     const generation = this.client.currentGeneration;
     this.client.request<LiveCoverageSnapshot>('coverage', { budget }).then((snapshot) => {
-      if (generation === this.client.currentGeneration) this.coverage = snapshot;
+      this.coverage = snapshot;
     }, () => undefined).finally(() => { if (generation === this.client.currentGeneration) this.coverageFetching = false; });
   }
 

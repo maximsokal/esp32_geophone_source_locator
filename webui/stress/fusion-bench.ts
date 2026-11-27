@@ -87,7 +87,7 @@ async function runWorker(pack: Pack, paceMs: number) {
   const result = await fusion.finish(pack.frames.length, accepted);
   const finishMs = performance.now() - t0;
   const counters = fusion.client.counters;
-  const out = { mainMs, finishMs, endToEndLatencyMs: counters.frameRoundTripMs.slice(), workerMsTotal: counters.workerMsTotal, points: result.snapshot.pointCount, promoted: fusion.promotedCount, dropped: counters.droppedOptional, droppedKeyframes: counters.droppedKeyframes, maxQueue: counters.maxQueueDepth, heapDeltaMb: heap() - heapStart, drained: result.drained };
+  const out = { mainMs, finishMs, endToEndLatencyMs: counters.frameRoundTripMs.slice(), workerMsTotal: counters.workerMsTotal, checkpointMsTotal: counters.checkpointMsTotal, checkpointEveryMax: counters.checkpointEveryMax, points: result.snapshot.pointCount, promoted: fusion.promotedCount, dropped: counters.droppedOptional, droppedKeyframes: counters.droppedKeyframes, maxQueue: counters.maxQueueDepth, heapDeltaMb: heap() - heapStart, drained: result.drained };
   fusion.dispose();
   return out;
 }
@@ -183,7 +183,7 @@ async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFr
     },
     artifactBytes: { scan: byteLengthOf(expectedArtifacts.scan), occupancy: byteLengthOf(expectedArtifacts.occupancy), preview: byteLengthOf(expectedArtifacts.preview), error: expectedArtifacts.error },
     recovery: restartAt === null ? null : { restartAt, restarted, checkpointsBeforeRestart, recoveryMs, reports: recoveryReports, lostFrames: counters.lostFrames, recoveries: counters.recoveries, replayedFrames: counters.replayedFrames },
-    checkpoint: { stored: counters.checkpointsStored, finalStateCloneMs: checkpointCloneMs },
+    checkpoint: { stored: counters.checkpointsStored, finalStateCloneMs: checkpointCloneMs, serialiseMsTotal: counters.checkpointMsTotal, serialiseMsMax: counters.checkpointMsMax, everyMax: counters.checkpointEveryMax, fusionMsTotal: counters.workerMsTotal },
     maxJournal: counters.maxJournal,
   };
   fusion.dispose();
@@ -195,7 +195,7 @@ async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFr
   load: async (url: string) => parsePack(await (await fetch(url)).arrayBuffer()),
   run: async (pack: Pack, variant: 'sync' | 'worker', paceMs: number) => {
     const r = variant === 'sync' ? await runSync(pack, paceMs) : await runWorker(pack, paceMs);
-    return { variant, frames: pack.frames.length, main: summarize(r.mainMs), latency: summarize(r.endToEndLatencyMs), finishMs: r.finishMs, workerMsTotal: r.workerMsTotal, mainMsTotal: r.mainMs.reduce((a, b) => a + b, 0), points: r.points, promoted: r.promoted, dropped: r.dropped, droppedKeyframes: r.droppedKeyframes, maxQueue: r.maxQueue, heapDeltaMb: r.heapDeltaMb };
+    return { variant, frames: pack.frames.length, main: summarize(r.mainMs), latency: summarize(r.endToEndLatencyMs), finishMs: r.finishMs, workerMsTotal: r.workerMsTotal, checkpointMsTotal: 'checkpointMsTotal' in r ? r.checkpointMsTotal : 0, mainMsTotal: r.mainMs.reduce((a, b) => a + b, 0), points: r.points, promoted: r.promoted, dropped: r.dropped, droppedKeyframes: r.droppedKeyframes, maxQueue: r.maxQueue, heapDeltaMb: r.heapDeltaMb };
   },
 };
 document.getElementById('state')!.textContent = 'ready';

@@ -34,6 +34,8 @@ import type { WebXrDepthDataFormat } from './cpuDepthSampler';
 import { LiveMeshStats } from './liveMeshStats';
 import { LIVE_MESH_MAX_POINTS } from './liveMeshCore';
 import { LIVE_MESH_MIN_INTERVAL_MS } from './liveMeshClient';
+import { AdaptiveCadence, COVERAGE_CADENCE, LIVE_MESH_CADENCE, TAG_CADENCE, type CadenceLoad } from './adaptiveCadence';
+import { liveComputeScheduler } from './liveComputeScheduler';
 import { activeXrPerformancePressure } from './xrPerformanceProfiler';
 import {
   ManualControlPointStore,
@@ -247,11 +249,9 @@ type RuntimeListener=(state:WebXrRuntimeState)=>void;
 type TagFrameListener=(frame:TagCameraFrame)=>void;
 type DepthConfiguration = NegotiatedXrDepthCapability & { enabled:boolean; };
 
-const COVERAGE_GPU_UPLOAD_INTERVAL_MS=550;
 const LIGHT_ESTIMATE_INTERVAL_MS=500;
 const CLIENT_TELEMETRY_INTERVAL_MS=5000;
 const RGB_CAPTURE_INTERVAL_MS=520;
-const TAG_CAPTURE_INTERVAL_MS=330;
 /* 1280x720, up from 960x540 (board 2026-11-17: a 32 mm tag was lost beyond ~0.6 m on a soft image). The tag detector needs >=12 px per edge,
    so the reach grows with the frame width: x1.33. The busy gate in XrRuntimePanel keeps a slower detection from queueing frames. */
 export const TAG_CAPTURE_WIDTH=1280;
@@ -371,9 +371,13 @@ export class WebXrRuntime{
   private coverageWeakPoints=0;private coverageImprovingPoints=0;private coverageStablePoints=0;private coverageGuideError:string|null=null;
   private lightingEstimateAvailable=false;private primaryLightIntensity:number|null=null;
   private rgbGuidanceAvailable=false;private rgbGuidanceWidth:number|null=null;private rgbGuidanceHeight:number|null=null;
-  private readonly pointCloud:RuntimeFusion=new RuntimeFusion({onFrameDone:(changed)=>{if(changed>0)this.pointCloudVersion+=1;},onFailure:(reason)=>this.handleFusionFailure(reason),onRecovered:(report)=>this.handleFusionRecovery(report)});private readonly keyframeSelector=new WebXrFusionKeyframeSelector();
+  private readonly pointCloud:RuntimeFusion=new RuntimeFusion({onFrameDone:(changed)=>{if(changed>0)this.pointCloudVersion+=1;},onFailure:(reason)=>this.handleFusionFailure(reason),onRecovered:(report)=>this.handleFusionRecovery(report),onRequestTiming:(kind,workMs)=>{if(kind==='coverage')this.coverageWorkerMs=workMs;}});private readonly keyframeSelector=new WebXrFusionKeyframeSelector();
   private readonly manualPoints=new ManualControlPointStore();private readonly operatorEdges=new OperatorEdgeStore();
   private readonly coverageCompositionBuffers={positions:new Float32Array(0),confidence:new Float32Array(0)};
+  /* How often the periodic live tasks run: their measured cost, the scheduler's sustained pressure and the fusion's backlog (adaptiveCadence.ts). */
+  private readonly computeScheduler=liveComputeScheduler;
+  private readonly meshCadence=new AdaptiveCadence(LIVE_MESH_CADENCE);private readonly coverageCadence=new AdaptiveCadence(COVERAGE_CADENCE);private readonly tagCadence=new AdaptiveCadence(TAG_CADENCE);
+  private coverageWorkerMs=0;
   private readonly performanceProfiler=new XrPerformanceProfiler();private readonly latestProjectionMatrix=new Float32Array(16);
   private readonly latestWorldFromView=new Float32Array(16);private hasLatestProjection=false;
 
@@ -627,7 +631,7 @@ export class WebXrRuntime{
   }
 
   private resetScanState():void{
-    this.finalSnapshot=null;this.evidenceEpoch+=1;this.evidenceFrozen=false;this.frozenVisualEvidenceFrames=0;this.frameFaultCounts.clear();this.loggedFrameFaults.clear();this.frameFaultedGeneration=null;this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
+    this.finalSnapshot=null;this.evidenceEpoch+=1;this.evidenceFrozen=false;this.frozenVisualEvidenceFrames=0;this.frameFaultCounts.clear();this.loggedFrameFaults.clear();this.frameFaultedGeneration=null;this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();this.meshCadence.reset();this.coverageCadence.reset();this.tagCadence.reset();this.coverageWorkerMs=0;resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
     this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.originResetPaused=false;this.depthSensingPausedByApp=false;this.frameCount=0;this.lastUiUpdateMs=0;this.fusionLostFrames=0;
     this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.lastLightEstimateMs=Number.NEGATIVE_INFINITY;this.lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
     this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
@@ -796,7 +800,7 @@ export class WebXrRuntime{
     /* The coverage snapshot is built by the fusion worker; one asked for earlier is applied here, in the frame, and the next one is asked for when due. */
     const arrived=this.pointCloud.takeCoverage();
     if(arrived!==null)this.applyCoverageSnapshot(arrived);
-    const adaptiveIntervalMs=Math.max(COVERAGE_GPU_UPLOAD_INTERVAL_MS,this.performanceProfiler.recommendedCoverageIntervalMs());if(!force&&time-this.lastCoverageGpuUploadMs<adaptiveIntervalMs)return;
+    const adaptiveIntervalMs=Math.max(this.coverageCadence.intervalMs(time,this.cadenceLoad()),this.performanceProfiler.recommendedCoverageIntervalMs());if(!force&&time-this.lastCoverageGpuUploadMs<adaptiveIntervalMs)return;
     this.lastCoverageGpuUploadMs=time;
     try{
       const manualPositions=this.manualPoints.xrReferencePositions();const pointBudget=this.performanceProfiler.renderPolicy().pointBudget;
@@ -813,7 +817,8 @@ export class WebXrRuntime{
       this.coverageGuideActive=coverage.active&&this.coverageRenderer!==null;this.coverageVisibleCells=coverage.visibleCoverageCells;this.coverageReadyCells=coverage.readyCoverageCells;this.coverageTotalCells=coverage.totalCoverageCells;
       this.coverageTargetIndependentViews=coverage.targetFrameHits;this.coverageAverageConfidence=coverage.averageCoverageConfidence;this.coverageWeakPoints=counts.weak;this.coverageImprovingPoints=counts.improving;this.coverageStablePoints=counts.stable;
       if(this.coverageRenderer!==null){const renderSnapshot=composeCoverageRenderSnapshot(coverage,manualPositions,this.coverageCompositionBuffers);if(renderSnapshot.pointCount>0)this.coverageRenderer.update(renderSnapshot);else this.coverageRenderer.clear();this.coverageGuideRenderPoints=coverage.pointCount;}else this.coverageGuideRenderPoints=0;
-      this.performanceProfiler.record('coverage',performance.now()-started);
+      const applyMs=performance.now()-started;this.performanceProfiler.record('coverage',applyMs);
+      this.coverageCadence.recordCost(this.coverageWorkerMs+applyMs);this.coverageWorkerMs=0;
     }catch(error){this.disableCoverageGuide(error);}
   }
 
@@ -850,7 +855,7 @@ export class WebXrRuntime{
     if(this.evidenceFrozen||this.originResetPaused||!this.tagCaptureEnabled)return;
     const capture=this.tagCameraCapture;if(capture===null)return;
     try{this.acceptTagFrame(capture.pollReadyTag());}catch(error){this.disableCameraGuidance('tag',error,'tag-camera-readback');return;}
-    if(this.cameraBinding===null||view.camera==null||time-this.lastTagCaptureMs<TAG_CAPTURE_INTERVAL_MS)return;
+    if(this.cameraBinding===null||view.camera==null||time-this.lastTagCaptureMs<this.tagCadence.intervalMs(time,this.cadenceLoad()))return;
     this.lastTagCaptureMs=time;
     /* The capture target follows the camera image aspect (same pixel budget), so tags are not stretched. */
     const wanted=tagCaptureSizeFor(view.camera.width,view.camera.height);
@@ -923,9 +928,11 @@ export class WebXrRuntime{
   /** 'on' builds at the normal pace. 'auto' follows the phone: the busier it is, the less often (never switched off by pressure alone: a phone that is busy while scanning is the normal case). */
   private liveMeshIntervalMs():number{
     if(this.liveMeshMode==='on')return LIVE_MESH_MIN_INTERVAL_MS;
-    const pressure=this.livePerformancePressure();
-    return pressure==='low'?LIVE_MESH_MIN_INTERVAL_MS:pressure==='medium'?LIVE_MESH_MIN_INTERVAL_MS*2:LIVE_MESH_MIN_INTERVAL_MS*3.5;
+    return this.meshCadence.intervalMs(performance.now(),this.cadenceLoad());
   }
+  private cadenceLoad():CadenceLoad{return{pressure:this.computeScheduler.sustainedPressure(),fusionBehind:this.pointCloud.behind};}
+  /** The AprilTag detector's time for one frame (capture to answer): frames are not captured faster than they can be decoded. */
+  reportTagDecode(durationMs:number):void{this.tagCadence.recordCost(durationMs);}
   private tickReferenceMesh(layer:XrWebGlLayerLike,views:readonly CoverageRenderView[]):void{
     const mesh=this.referenceMesh;
     if(mesh===null||this.originResetPaused||this.gl===null)return;
@@ -952,7 +959,7 @@ export class WebXrRuntime{
     try{
       if(this.liveMeshClient===null){
         this.liveMeshClient=new LiveMeshClient({
-          onResult:(result,elapsedMs)=>{this.liveMeshPending={trianglesXr:result.trianglesXr,triangleCount:result.triangleCount};this.liveMeshStats.recordBuild(elapsedMs,result.triangleCount,result.acceptedPointCount);if(!this.liveMeshLoggedActive){this.liveMeshLoggedActive=true;clientDiagnostics.info('XR_LIVE_MESH_ACTIVE',{triangles:result.triangleCount,points:result.acceptedPointCount,buildMs:Math.round(elapsedMs),mode:this.liveMeshMode});}},
+          onResult:(result,elapsedMs)=>{this.meshCadence.recordCost(elapsedMs);this.liveMeshPending={trianglesXr:result.trianglesXr,triangleCount:result.triangleCount};this.liveMeshStats.recordBuild(elapsedMs,result.triangleCount,result.acceptedPointCount);if(!this.liveMeshLoggedActive){this.liveMeshLoggedActive=true;clientDiagnostics.info('XR_LIVE_MESH_ACTIVE',{triangles:result.triangleCount,points:result.acceptedPointCount,buildMs:Math.round(elapsedMs),mode:this.liveMeshMode});}},
           onDisabled:(reason)=>{this.liveMeshOff=true;this.stopLiveMesh();clientDiagnostics.warn('XR_LIVE_MESH_DISABLED',{reason});},
         });
       }
@@ -1003,7 +1010,7 @@ export class WebXrRuntime{
 
   private reportClientTelemetry(time:number):void{
     if(time-this.lastClientTelemetryMs<CLIENT_TELEMETRY_INTERVAL_MS)return;this.lastClientTelemetryMs=time;
-    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',visualEvidenceFrames:getVisualEvidenceFrameCount(),nativePlanePriors:getLatestStructuralPlanePriorCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
+    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',visualEvidenceFrames:getVisualEvidenceFrameCount(),nativePlanePriors:getLatestStructuralPlanePriorCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),cadenceMs:{depth:Math.round(this.pointCloud.governor.intervalMs),coverage:Math.round(this.coverageCadence.currentMs),mesh:Math.round(this.meshCadence.currentMs),tag:Math.round(this.tagCadence.currentMs)},cadenceChanges:{coverage:this.coverageCadence.changes,mesh:this.meshCadence.changes,tag:this.tagCadence.changes},sustainedPressure:this.computeScheduler.sustainedPressure(),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
   }
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
@@ -1017,6 +1024,7 @@ export class WebXrRuntime{
         return;
       }
       this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
+      this.computeScheduler.observeRuntimePressure(this.livePerformancePressure());   /* sampled by the scheduler at its own bounded cadence */
       // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
       // XR animation frame is active. Visibility handlers only change scanPaused.
       this.syncDepthSensingPauseInsideFrame();

@@ -17,7 +17,9 @@ class FakeEndpoint {
 }
 
 export class HandlerWorker extends FakeEndpoint {
-  readonly handler = createDepthFusionHandler((message: FusionWorkerResponse) => { if (!this.silent) this.emit('message', { data: message }); });
+  /** When set, every checkpoint is reported as having taken this long to serialise. */
+  checkpointCostMs: number | null = null;
+  readonly handler = createDepthFusionHandler((message: FusionWorkerResponse) => { if (!this.silent) this.emit('message', { data: message.type === 'checkpointed' && this.checkpointCostMs !== null ? { ...message, workMs: this.checkpointCostMs } : message }); });
   /** A hung worker: takes messages, never answers. */
   silent = false;
   framesSeen = 0;

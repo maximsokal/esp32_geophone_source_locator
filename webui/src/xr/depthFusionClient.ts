@@ -19,7 +19,8 @@ import type {
  * A worker that cannot be started falls back to running the SAME core inline on the main thread (CPU fallback).
  *
  * Recovery: every `checkpointEveryFrames` fused frames the worker sends its state to the keeper worker (never through the main thread), and the client keeps
- * a bounded JOURNAL of the accepted frames since the last stored checkpoint. When the worker dies, a replacement restores the checkpoint, fuses the journal
+ * a bounded JOURNAL of the accepted frames since the last stored checkpoint. A checkpoint gets dearer as the scan grows, so the interval stretches (up to
+ * `checkpointMaxStretch` times) to keep serialising it within `checkpointOverheadShare` of the fusion time; the journal bound grows with it. When the worker dies, a replacement restores the checkpoint, fuses the journal
  * again and answers whatever was still pending. Frames that could not be kept (journal overflow) are counted and reported, never hidden; when no
  * replacement can be had, the failure is terminal and reported.
  */
@@ -36,11 +37,15 @@ export interface DepthFusionClientOptions {
   onFrameDone?: (changedPoints: number, stats: FusionStats) => void;
   /** Also told the worker's fusion time of every frame (drives the capture rate). */
   onFrameTiming?: (workMs: number, queueDepth: number) => void;
+  /** Told the worker's time for every answered request (coverage and live-mesh input compete with the fusion for the same worker). */
+  onRequestTiming?: (kind: FusionRequestKind, workMs: number) => void;
   /** Holds checkpoints; without one a crash can only be recovered while the journal still holds every frame. */
   keeperFactory?: () => Worker | null;
   channelFactory?: () => { port1: unknown; port2: unknown };
   checkpointEveryFrames?: number;
   journalLimit?: number;
+  checkpointOverheadShare?: number;
+  checkpointMaxStretch?: number;
   maxRestarts?: number;
   /** How long a replacement worker may wait for the keeper's checkpoint before it is replaced again without one. */
   restoreTimeoutMs?: number;
@@ -58,6 +63,8 @@ export interface FusionRecoveryReport {
 }
 
 export const FUSION_DEFAULT_CHECKPOINT_EVERY = 20;
+export const FUSION_DEFAULT_CHECKPOINT_SHARE = 0.05;
+export const FUSION_DEFAULT_CHECKPOINT_MAX_STRETCH = 4;
 export const FUSION_DEFAULT_MAX_RESTARTS = 2;
 
 export const FUSION_DEFAULT_MAX_IN_FLIGHT = 3;
@@ -85,6 +92,12 @@ export interface FusionCounters {
   recoveries: number;
   replayedFrames: number;
   checkpointsStored: number;
+  /** Time the fusion worker spent serialising checkpoints (the keeper spends about as much again reading them). */
+  checkpointMsTotal: number;
+  checkpointMsMax: number;
+  /** The interval in use, and the longest this client has used (the journal is bounded by the latter). */
+  checkpointEvery: number;
+  checkpointEveryMax: number;
   maxJournal: number;
   maxInFlight: number;
   maxQueueDepth: number;
@@ -118,7 +131,7 @@ export class DepthFusionClient {
   private failed: string | null = null;
   private disposed = false;
   private mirror: FusionStats = ZERO_STATS;
-  readonly counters: FusionCounters = { submitted: 0, accepted: 0, droppedOptional: 0, droppedKeyframes: 0, lostFrames: 0, lostKeyframes: 0, recoveries: 0, replayedFrames: 0, checkpointsStored: 0, maxJournal: 0, maxInFlight: 0, maxQueueDepth: 0, workerMsTotal: 0, frameRoundTripMs: [] };
+  readonly counters: FusionCounters = { submitted: 0, accepted: 0, droppedOptional: 0, droppedKeyframes: 0, lostFrames: 0, lostKeyframes: 0, recoveries: 0, replayedFrames: 0, checkpointsStored: 0, checkpointMsTotal: 0, checkpointMsMax: 0, checkpointEvery: 0, checkpointEveryMax: 0, maxJournal: 0, maxInFlight: 0, maxQueueDepth: 0, workerMsTotal: 0, frameRoundTripMs: [] };
   private readonly options: DepthFusionClientOptions;
   private keeper: Worker | null = null;
   private readonly journal = new Map<number, FusionFrameMessage>();
@@ -128,6 +141,7 @@ export class DepthFusionClient {
   private storedThroughSeq = -1;
   private checkpointPending = false;
   private framesSinceCheckpoint = 0;
+  private frameWorkEwmaMs = 0;
   private restarts = 0;
   private recovering: { reason: string; replayed: number } | null = null;
   private restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -141,6 +155,7 @@ export class DepthFusionClient {
     this.onFailure = options.onFailure;
     this.onFrameDone = options.onFrameDone;
     this.options = options;
+    this.counters.checkpointEvery = this.counters.checkpointEveryMax = options.checkpointEveryFrames ?? FUSION_DEFAULT_CHECKPOINT_EVERY;
     this.pool = new DepthBufferPool(this.maxInFlight + this.mandatoryReserve);
     let worker: Worker | null = null;
     try { worker = options.workerFactory?.() ?? null; } catch { worker = null; }
@@ -323,12 +338,26 @@ export class DepthFusionClient {
     this.clearRestoreTimer();
     this.journal.clear(); this.evicted.clear();
     this.storedThroughSeq = -1; this.checkpointPending = false; this.framesSinceCheckpoint = 0; this.recovering = null;
+    this.frameWorkEwmaMs = 0;
+    this.counters.checkpointEvery = this.counters.checkpointEveryMax = this.options.checkpointEveryFrames ?? FUSION_DEFAULT_CHECKPOINT_EVERY;
+  }
+
+  /** The interval that keeps serialising within its share of the fusion time, from the last checkpoint's cost. */
+  private paceCheckpoints(costMs: number): void {
+    this.counters.checkpointMsTotal += costMs;
+    this.counters.checkpointMsMax = Math.max(this.counters.checkpointMsMax, costMs);
+    if (!(this.frameWorkEwmaMs > 0)) return;
+    const base = this.options.checkpointEveryFrames ?? FUSION_DEFAULT_CHECKPOINT_EVERY;
+    const wanted = Math.ceil(costMs / ((this.options.checkpointOverheadShare ?? FUSION_DEFAULT_CHECKPOINT_SHARE) * this.frameWorkEwmaMs));
+    this.counters.checkpointEvery = Math.min(base * (this.options.checkpointMaxStretch ?? FUSION_DEFAULT_CHECKPOINT_MAX_STRETCH), Math.max(base, wanted));
+    this.counters.checkpointEveryMax = Math.max(this.counters.checkpointEveryMax, this.counters.checkpointEvery);
   }
 
   /** Keeps a copy of an accepted frame until a stored checkpoint contains it (the original buffer is transferred away). */
   private remember(message: FusionFrameMessage): void {
     this.journal.set(message.seq, { ...message, frame: { ...message.frame, data: message.frame.data.slice(0) } });
-    const limit = this.options.journalLimit ?? (this.options.checkpointEveryFrames ?? FUSION_DEFAULT_CHECKPOINT_EVERY) * 2 + this.maxInFlight + this.mandatoryReserve;
+    /* Bounded by the LONGEST interval used: shrinking the bound would throw away frames that no stored checkpoint holds yet. */
+    const limit = this.options.journalLimit ?? this.counters.checkpointEveryMax * 2 + this.maxInFlight + this.mandatoryReserve;
     while (this.journal.size > limit) {
       const oldest = this.journal.keys().next().value as number;
       this.evicted.set(oldest, this.journal.get(oldest)!.mandatory);
@@ -437,6 +466,10 @@ export class DepthFusionClient {
       if (message.type === 'frameDone' && message.buffer !== null) this.pool.release(message.buffer, message.buffer.byteLength);
       return;                                                                                    /* a late answer of an older scan changes nothing */
     }
+    if (message.type === 'checkpointed') {
+      this.paceCheckpoints(message.workMs);
+      return;
+    }
     if (message.type === 'restored') {
       this.clearRestoreTimer();
       this.mirror = message.stats;
@@ -450,12 +483,13 @@ export class DepthFusionClient {
       this.pool.release(message.buffer, entry.byteLength);
       this.mirror = message.stats;
       this.counters.workerMsTotal += message.workMs;
+      if (message.workMs > 0) this.frameWorkEwmaMs = this.frameWorkEwmaMs === 0 ? message.workMs : this.frameWorkEwmaMs + 0.2 * (message.workMs - this.frameWorkEwmaMs);
       this.counters.frameRoundTripMs.push(this.clock() - entry.sentAt);
       if (this.counters.frameRoundTripMs.length > 512) this.counters.frameRoundTripMs.shift();
       this.onFrameDone?.(message.changedPoints, message.stats);
       this.options.onFrameTiming?.(message.workMs, this.inFlight.size);
       this.framesSinceCheckpoint += 1;
-      if (this.keeper !== null && !this.checkpointPending && this.framesSinceCheckpoint >= (this.options.checkpointEveryFrames ?? FUSION_DEFAULT_CHECKPOINT_EVERY)) {
+      if (this.keeper !== null && !this.checkpointPending && this.framesSinceCheckpoint >= this.counters.checkpointEvery) {
         this.framesSinceCheckpoint = 0;
         this.checkpointPending = true;
         this.post({ type: 'checkpoint', generation: this.generation });
@@ -469,6 +503,7 @@ export class DepthFusionClient {
       this.pending.delete(message.id);
       if (pending.timer !== null) clearTimeout(pending.timer);
       this.mirror = message.stats;
+      this.options.onRequestTiming?.(message.kind, message.workMs);
       pending.resolve(message.payload);
       return;
     }

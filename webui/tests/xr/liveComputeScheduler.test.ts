@@ -214,3 +214,39 @@ describe('live XR compute scheduler', () => {
     visual!.release();
   });
 });
+
+describe('sustained pressure (the hysteretic level periodic tasks use for their rate)', () => {
+  const at = (scheduler: LiveComputeScheduler, pressure: LiveComputePressure, ...times: number[]) => { for (const time of times) scheduler.observeRuntimePressure(pressure, time); };
+
+  it('high holds at once; medium only after three spaced samples; it clears only after five spaced calm samples', () => {
+    const scheduler = new LiveComputeScheduler(async () => 1);
+    at(scheduler, 'medium', 0, 800);
+    expect(scheduler.sustainedPressure()).toBe('low');
+    at(scheduler, 'medium', 1600);
+    expect(scheduler.sustainedPressure()).toBe('medium');
+    at(scheduler, 'high', 1601);
+    expect(scheduler.sustainedPressure()).toBe('high');
+    at(scheduler, 'low', 2400, 3200, 4000, 4800);
+    expect(scheduler.sustainedPressure()).toBe('high');
+    at(scheduler, 'low', 5600);
+    expect(scheduler.sustainedPressure()).toBe('low');
+  });
+
+  it('samples closer together than the window count once, so a per-frame caller cannot hurry either direction', () => {
+    const scheduler = new LiveComputeScheduler(async () => 1);
+    for (let time = 0; time < 1500; time += 16) at(scheduler, 'medium', time);
+    expect(scheduler.sustainedPressure()).toBe('low');
+    at(scheduler, 'high', 1500);
+    for (let time = 1516; time < 4000; time += 16) at(scheduler, 'low', time);
+    expect(scheduler.sustainedPressure()).toBe('high');
+  });
+
+  it('a sustained medium after high steps down to medium, and a device with a one-worker ceiling reports it too', async () => {
+    const scheduler = new LiveComputeScheduler(async () => 1);
+    await scheduler.prepare();
+    at(scheduler, 'high', 0);
+    at(scheduler, 'medium', 800, 1600, 2400);
+    expect(scheduler.sustainedPressure()).toBe('medium');
+    expect(scheduler.snapshot().degraded, 'a ceiling of one worker cannot degrade, which is why the level is separate').toBe(false);
+  });
+});

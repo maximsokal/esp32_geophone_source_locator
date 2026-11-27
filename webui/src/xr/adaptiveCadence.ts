@@ -29,9 +29,9 @@ export interface CadenceLoad {
 const COST_WEIGHT = 0.3;
 /** A target within this band of the current interval changes nothing. */
 const DEAD_BAND = 0.15;
-export const CADENCE_CALM_EVALUATIONS = 4;
+export const CADENCE_CALM_EVALUATIONS = 3;
 export const CADENCE_EVALUATION_SPACING_MS = 750;
-const RECOVERY_STEP = 0.7;
+const RECOVERY_STEP = 0.5;
 
 export class AdaptiveCadence {
   private costEwmaMs = 0;

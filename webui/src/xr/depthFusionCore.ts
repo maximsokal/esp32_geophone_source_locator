@@ -29,6 +29,7 @@ export class DepthFusionCore {
   constructor(private readonly clock: () => number = () => performance.now()) {}
 
   get currentGeneration(): number { return this.generation; }
+  now(): number { return this.clock(); }
 
   stats(): FusionStats {
     return { pointCount: this.accumulator.pointCount, promotedCount: this.accumulator.promotedCount, polishFrameCount: this.accumulator.polishFrameCount, keyframeCount: this.accumulator.keyframeCount, integratedFrames: this.integratedFrames };
@@ -101,7 +102,14 @@ export function createDepthFusionHandler(post: FusionPost, core: DepthFusionCore
     try {
       if (message.type === 'reset') { waiting = null; core.reset(message.generation); return; }
       if (message.type === 'attachKeeper') { keeper?.close?.(); keeper = message.port; return; }
-      if (message.type === 'checkpoint') { keeper?.postMessage(core.checkpoint()); return; }
+      if (message.type === 'checkpoint') {
+        if (keeper === null) return;
+        const started = core.now();
+        const checkpoint = core.checkpoint();
+        keeper.postMessage(checkpoint);                             /* the structured clone happens here, synchronously */
+        post({ type: 'checkpointed', generation: message.generation, throughSeq: checkpoint.throughSeq, workMs: core.now() - started });
+        return;
+      }
       if (message.type === 'restore') {
         const port = message.port;
         const generation = message.generation;

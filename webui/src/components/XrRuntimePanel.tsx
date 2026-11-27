@@ -349,7 +349,7 @@ export function XrRuntimePanel({
       // The capture marks its fresh RGBA buffer as owned; detect transfers that buffer to the worker.
       const task=client.detect(frame).then((detected)=>{
         if(detected===null||(!tagModeActiveRef.current&&!tagAcceptPendingRef.current)||tagSessionToken.current!==token||!tagMountedRef.current)return;
-        const nowMs=performance.now();stats.decodeMs.push(nowMs-decodeStartedMs);if(stats.decodeMs.length>120)stats.decodeMs.shift();
+        const nowMs=performance.now();stats.decodeMs.push(nowMs-decodeStartedMs);runtime.reportTagDecode(nowMs-decodeStartedMs);if(stats.decodeMs.length>120)stats.decodeMs.shift();
         if(detected.workerMs!==undefined){stats.workerMs.push(detected.workerMs);if(stats.workerMs.length>120)stats.workerMs.shift();}if(detected.pass==='full')stats.fullPasses+=1;else if(detected.pass==='coarse')stats.coarsePasses+=1;
         for(const detection of detected.detections){
           const size=defaultRegistrationTagSizes()[String(detection.tagId) as '0'|'1'|'2'|'3'|'4'];

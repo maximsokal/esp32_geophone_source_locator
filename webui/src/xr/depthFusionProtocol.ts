@@ -97,7 +97,15 @@ export interface FusionRestored {
   stats: FusionStats;
 }
 
-export type FusionWorkerResponse = FusionFrameDone | FusionResponse | FusionWorkerError | FusionRestored;
+/** A checkpoint left for the keeper; `workMs` is the time this worker spent serialising it (it is not part of any frame's workMs). */
+export interface FusionCheckpointed {
+  type: 'checkpointed';
+  generation: number;
+  throughSeq: number;
+  workMs: number;
+}
+
+export type FusionWorkerResponse = FusionFrameDone | FusionResponse | FusionWorkerError | FusionRestored | FusionCheckpointed;
 
 /** Every ArrayBuffer behind the typed arrays that are direct properties of `value` (one level), each once: what a reply transfers instead of copying. */
 export function transferablesOf(value: unknown): ArrayBuffer[] {

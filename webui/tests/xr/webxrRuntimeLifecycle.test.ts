@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DepthPointCloudAccumulator } from '../../src/xr/depthPointCloud';
 import { WebXrRuntime } from '../../src/xr/webxrRuntime';
 import { LIVE_MESH_MIN_INTERVAL_MS } from '../../src/xr/liveMeshClient';
+import { LiveComputeScheduler, type LiveComputePressure } from '../../src/xr/liveComputeScheduler';
 import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import type { TagCameraFrame } from '../../src/xr/fiducial/tagDetectorClient';
 import { activeXrPerformancePressure, activeXrRenderPolicy, recordActiveXrPerformanceMetric } from '../../src/xr/xrPerformanceProfiler';
@@ -104,6 +105,16 @@ function installEnvironment(makeCompatible?:()=>Promise<void>):void{
 }
 
 function createRuntime():WebXrRuntime{const runtime=new WebXrRuntime();runtimes.push(runtime);runtime.attach();return runtime;}
+/**
+ * Gives the runtime its own scheduler (the production one is shared and keeps its cap across scans on purpose) on which `pressure` has already lasted:
+ * the scheduler's hysteresis holds 'medium' only after several spaced samples.
+ */
+function schedulerUnder(runtime:WebXrRuntime,pressure:LiveComputePressure):LiveComputeScheduler{
+  const scheduler=new LiveComputeScheduler(async()=>2);const now=performance.now();
+  for(let sample=0;sample<3;sample+=1)scheduler.observeRuntimePressure(pressure,now-(3-sample)*800);
+  (runtime as unknown as{computeScheduler:LiveComputeScheduler}).computeScheduler=scheduler;
+  return scheduler;
+}
 async function flushMicrotasks():Promise<void>{for(let i=0;i<8;i+=1)await Promise.resolve();}
 async function until(check:()=>boolean):Promise<void>{for(let i=0;i<20&&!check();i+=1)await Promise.resolve();if(!check())throw new Error('Expected lifecycle operation did not reach its deferred boundary.');}
 function emptyPose(){return{transform:{position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1},matrix:new Float32Array(16)},views:[]};}
@@ -249,6 +260,7 @@ describe('WebXrRuntime lifecycle ownership',()=>{
       const client={request:vi.fn((build:()=>unknown,_minIntervalMs?:number)=>{requests.push(1);return build!==undefined;}),acceptsAt:()=>true,dispose:vi.fn(),busy:false,isDisabled:false};
       const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
       internals.liveMeshClient=client;internals.liveMeshRenderer=renderer;
+      schedulerUnder(runtime,pressure as LiveComputePressure);
       vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockReturnValue(pressure);
       runtime.setLiveMeshMode(mode);
       return{session,runtime,internals,client,renderer};
@@ -647,6 +659,7 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
     const internals=runtime as unknown as Rig['internals'];
     const pressure={value:pressureValue};
+    schedulerUnder(runtime,pressureValue);
     vi.spyOn(internals as unknown as {livePerformancePressure:()=>string},'livePerformancePressure').mockImplementation(()=>pressure.value);
     provideLive(internals,()=>plane());
     const renderer={update:vi.fn(),render:vi.fn(),clear:vi.fn(),dispose:vi.fn(),triangleCount:0};
@@ -712,11 +725,39 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     r.pressure.value='high';
     const busy=await run(r,20_000);
     r.pressure.value='low';
+    const settling=await run(r,10_000);                                                           /* the scheduler needs its calm windows, then the rate steps back up */
     const recovered=await run(r,20_000);
+    expect(settling,'speeds up while settling, never stalls').toBeGreaterThanOrEqual(2);
     expect(quiet).toBe(12);                                                                       /* builds at 0, 1.8 s, ... 19.8 s */
     expect(busy,'every 6.3 s, counted from the last quiet build').toBeGreaterThanOrEqual(3);expect(busy).toBeLessThanOrEqual(4);
     expect(recovered,'back to every 1.8 s').toBeGreaterThanOrEqual(11);
     expect(quiet).toBeGreaterThan(busy);                                                          /* slower under load, but never off */
+  });
+
+  it('HYSTERESIS: a momentary medium pressure (a few frames) does not change the rate, and pressure that flips between high and low does not make it oscillate',async()=>{
+    const r=await rig('auto','low');
+    await run(r,5000);
+    r.pressure.value='medium';await run(r,500);r.pressure.value='low';
+    expect(await run(r,18_000),'still every 1.8 s').toBeGreaterThanOrEqual(10);
+    const flipping=[];
+    for(let flip=0;flip<20;flip+=1){r.pressure.value=flip%2===0?'high':'low';flipping.push(await run(r,1000));}
+    expect(flipping.reduce((a,b)=>a+b,0),'held at the slow rate while pressure keeps returning: 20 s hold at most 4 builds').toBeLessThanOrEqual(4);
+    const cadence=(r.runtime as unknown as{meshCadence:{changes:number;currentMs:number}}).meshCadence;
+    expect(cadence.changes).toBeLessThanOrEqual(1);expect(cadence.currentMs).toBe(LIVE_MESH_MIN_INTERVAL_MS*3.5);
+  });
+
+  it('the coverage guide and AprilTag capture follow their own measured cost and yield to the fusion backlog; tags keep their rate under medium pressure',async()=>{
+    const r=await rig('off','low');
+    const internals=r.runtime as unknown as{cadenceLoad:()=>{pressure:string;fusionBehind:boolean};tagCadence:{intervalMs:(t:number,l:unknown)=>number};coverageCadence:{intervalMs:(t:number,l:unknown)=>number};coverageWorkerMs:number;applyCoverageSnapshot:(c:unknown)=>void;pointCloud:{governor:{frameDone:(ms:number,q:unknown)=>void};behind:boolean}};
+    expect(internals.cadenceLoad()).toEqual({pressure:'low',fusionBehind:false});
+    for(let i=0;i<30;i+=1)r.runtime.reportTagDecode(600);
+    expect(internals.tagCadence.intervalMs(clock,internals.cadenceLoad()),'frames are not captured faster than 600 ms detections can take them').toBeCloseTo(600/0.9,0);
+    for(let i=0;i<20;i+=1)internals.pointCloud.governor.frameDone(900,{queueDepth:3,maxInFlight:3,mandatoryReserve:5});
+    expect(internals.cadenceLoad().fusionBehind).toBe(true);
+    expect(internals.coverageCadence.intervalMs(clock,internals.cadenceLoad())).toBe(1100);
+    schedulerUnder(r.runtime,'medium');
+    expect(internals.cadenceLoad().pressure).toBe('medium');
+    expect(internals.tagCadence.intervalMs(clock+1,internals.cadenceLoad())).toBeCloseTo(600/0.9,0);
   });
 
   it('builds nothing while the reference space has been reset, and resumes when it is back',async()=>{

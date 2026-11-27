@@ -65,6 +65,7 @@ export class LiveComputeScheduler {
   private effectiveBudget: number | null = null;
   private pressure: LiveComputePressure = 'low';
   private pressureCap: number | null = null;
+  private cappedAt: LiveComputePressure = 'low';
   private mediumSamples = 0;
   private lowRecoverySamples = 0;
   private lastHysteresisSampleMs = Number.NEGATIVE_INFINITY;
@@ -115,6 +116,7 @@ export class LiveComputeScheduler {
 
     if (pressure === 'high') {
       this.pressureCap = 1;
+      this.cappedAt = 'high';
       this.mediumSamples = 0;
       this.lowRecoverySamples = 0;
       this.lastHysteresisSampleMs = Number.isFinite(timeMs) ? timeMs : this.lastHysteresisSampleMs;
@@ -131,7 +133,7 @@ export class LiveComputeScheduler {
     if (pressure === 'medium') {
       this.lowRecoverySamples = 0;
       this.mediumSamples += 1;
-      if (this.mediumSamples >= MEDIUM_SAMPLES_TO_DEGRADE) this.pressureCap = 1;
+      if (this.mediumSamples >= MEDIUM_SAMPLES_TO_DEGRADE) { this.pressureCap = 1; this.cappedAt = 'medium'; }
       this.refreshEffectiveBudget();
       return;
     }
@@ -148,6 +150,14 @@ export class LiveComputeScheduler {
       this.lowRecoverySamples = 0;
     }
     this.refreshEffectiveBudget();
+  }
+
+  /**
+   * The pressure with the same hysteresis as the worker cap, for periodic tasks that adjust their RATE rather than take a lease: 'high' at once, 'medium'
+   * only when it has lasted, and back to 'low' only after the recovery windows. Unlike `degraded` it also works on a device whose ceiling is one worker.
+   */
+  sustainedPressure(): LiveComputePressure {
+    return this.pressureCap === null ? 'low' : this.cappedAt;
   }
 
   async tryAcquire(kind: LiveComputeTaskKind): Promise<LiveComputeLease | null> {

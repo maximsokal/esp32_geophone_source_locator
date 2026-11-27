@@ -28,6 +28,7 @@ function rig(options: RuntimeFusionOptions & { onWorker?: (worker: HandlerWorker
   const { onWorker, noKeeper, ...rest } = options;
   const fusion = new RuntimeFusion({
     checkpointEveryFrames: 8,
+    checkpointMaxStretch: 1,
     ...rest,
     workerFactory: () => { const worker = new HandlerWorker(); onWorker?.(worker, workers.length); workers.push(worker); return worker as unknown as Worker; },
     keeperFactory: noKeeper ? () => null : () => { const keeper = new KeeperWorker(); keepers.push(keeper); return keeper as unknown as Worker; },
@@ -167,6 +168,31 @@ describe('the worker dies mid-scan', () => {
     expect(r.failures).toHaveLength(1);
     await expect(r.fusion.finish(12, 12)).rejects.toThrow(/failed/);
   });
+
+  it('a DEAR checkpoint stretches the interval (bounded), the journal bound grows with it, and a late crash still loses nothing', async () => {
+    const reference = await uninterrupted();
+    const r = rig({ checkpointMaxStretch: 4, onWorker: (worker, index) => { worker.checkpointCostMs = 10_000; if (index === 0) worker.crashAtFrame = 54; } });
+    await r.feed(0, FRAMES);
+    const result = await r.fusion.finish(FRAMES, FRAMES);
+    expect(r.fusion.client.counters.checkpointEveryMax).toBe(8 * 4);
+    expect(r.fusion.client.counters.checkpointMsTotal).toBeGreaterThanOrEqual(10_000);
+    expect(r.fusion.client.counters.maxJournal).toBeLessThanOrEqual(8 * 4 * 2 + 8);
+    expect(r.recoveries[0]).toMatchObject({ lostFrames: 0, lostKeyframes: 0 });
+    expect(snapshotDigest(result.snapshot)).toEqual(reference);
+  }, 120_000);
+
+  it('a CHEAP checkpoint keeps the base interval, and a new scan starts again from it', async () => {
+    const r = rig({ checkpointMaxStretch: 4, onWorker: (worker) => { worker.checkpointCostMs = 0; } });
+    await r.feed(0, 30);
+    expect(r.fusion.client.counters.checkpointsStored).toBeGreaterThanOrEqual(3);
+    expect(r.fusion.client.counters.checkpointEveryMax).toBe(8);
+    r.workers[0].checkpointCostMs = 10_000;
+    await r.feed(30, FRAMES);
+    expect(r.fusion.client.counters.checkpointEvery).toBe(32);
+    r.fusion.client.reset();
+    expect(r.fusion.client.counters.checkpointEvery).toBe(8);
+    expect(r.fusion.client.counters.checkpointEveryMax).toBe(8);
+  }, 120_000);
 
   it('the journal is bounded and pruned by stored checkpoints (no unbounded memory on the main thread)', async () => {
     const r = rig();
