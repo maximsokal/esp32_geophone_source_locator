@@ -746,7 +746,7 @@ describe('the live mesh across every setting (mode x pressure x session state)',
     expect(cadence.changes).toBeLessThanOrEqual(1);expect(cadence.currentMs).toBe(LIVE_MESH_MIN_INTERVAL_MS*3.5);
   });
 
-  it('the coverage guide and AprilTag capture follow their own measured cost and yield to the fusion backlog; tags keep their rate under medium pressure',async()=>{
+  it('the coverage guide and AprilTag capture follow their own measured cost and yield to the fusion backlog; tags keep their rate under pressure',async()=>{
     const r=await rig('off','low');
     const internals=r.runtime as unknown as{cadenceLoad:()=>{pressure:string;fusionBehind:boolean};tagCadence:{intervalMs:(t:number,l:unknown)=>number};coverageCadence:{intervalMs:(t:number,l:unknown)=>number};coverageWorkerMs:number;applyCoverageSnapshot:(c:unknown)=>void;pointCloud:{governor:{frameDone:(ms:number,q:unknown)=>void};behind:boolean}};
     expect(internals.cadenceLoad()).toEqual({pressure:'low',fusionBehind:false});

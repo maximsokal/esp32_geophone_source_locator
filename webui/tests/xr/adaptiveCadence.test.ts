@@ -32,12 +32,16 @@ describe('AdaptiveCadence', () => {
     expect(cadence.measuredCostMs).toBeGreaterThan(4900);
   });
 
-  it('backs off at once under sustained pressure, and the order of yielding is live mesh, coverage, then tags', () => {
+  it('backs off at once under sustained pressure: the live mesh yields most, then the coverage guide, and AprilTag capture not at all', () => {
     const factors = [LIVE_MESH_CADENCE, COVERAGE_CADENCE, TAG_CADENCE].map((options) => new AdaptiveCadence(options).intervalMs(0, HIGH) / options.baseMs);
     expect(factors[0]).toBeGreaterThan(factors[1]);
     expect(factors[1]).toBeGreaterThan(factors[2]);
-    const tags = new AdaptiveCadence(TAG_CADENCE);
-    expect(tags.intervalMs(0, { pressure: 'medium', fusionBehind: true }), 'tags keep their rate under medium pressure and a fusion backlog').toBe(TAG_CADENCE.baseMs);
+    for (const pressure of ['medium', 'high'] as const) {
+      expect(new AdaptiveCadence(TAG_CADENCE).intervalMs(0, { pressure, fusionBehind: true }), `NO APRILTAG REGRESSION: tags keep their rate under ${pressure} pressure and a fusion backlog`).toBe(TAG_CADENCE.baseMs);
+    }
+    const slowDecoder = new AdaptiveCadence(TAG_CADENCE);
+    for (let i = 0; i < 20; i += 1) slowDecoder.recordCost(600);
+    expect(slowDecoder.intervalMs(0, HIGH), 'only a decoder that cannot keep up slows the capture').toBeCloseTo(600 / TAG_CADENCE.dutyShare, 0);
   });
 
   it('yields to a fusion backlog (the fusion worker also builds the coverage and live-mesh input)', () => {

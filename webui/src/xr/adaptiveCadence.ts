@@ -93,7 +93,11 @@ export class AdaptiveCadence {
   }
 }
 
-/** The live tasks, least important first to yield: live mesh, then the coverage guide, then AprilTag capture (tags tie a scan to its saved one). */
+/**
+ * The live tasks in the order they yield to pressure: the live mesh most, then the coverage guide. AprilTag capture does NOT slow for pressure or for the
+ * fusion (tags tie a scan to its saved one, and slowing it cost a third of the captures under load with no measured gain: replay 2026-11-27); it only
+ * follows the measured decode time, so frames are not captured faster than they can be decoded.
+ */
 export const LIVE_MESH_CADENCE: AdaptiveCadenceOptions = { baseMs: 1800, maxMs: 6300, dutyShare: 0.25, pressureFactor: { low: 1, medium: 2, high: 3.5 }, backlogFactor: 2 };
 export const COVERAGE_CADENCE: AdaptiveCadenceOptions = { baseMs: 550, maxMs: 2200, dutyShare: 0.1, pressureFactor: { low: 1, medium: 780 / 550, high: 2 }, backlogFactor: 2 };
-export const TAG_CADENCE: AdaptiveCadenceOptions = { baseMs: 330, maxMs: 1000, dutyShare: 0.9, pressureFactor: { low: 1, medium: 1, high: 1.5 }, backlogFactor: 1 };
+export const TAG_CADENCE: AdaptiveCadenceOptions = { baseMs: 330, maxMs: 1000, dutyShare: 0.9, pressureFactor: { low: 1, medium: 1, high: 1 }, backlogFactor: 1 };
