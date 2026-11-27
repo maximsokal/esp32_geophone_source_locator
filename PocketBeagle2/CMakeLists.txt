@@ -40,8 +40,32 @@ add_library(pb2_core STATIC
     src/diagnostics/runtime_info.cpp
     src/hardware/pinmap_a0.cpp
     src/power/shutdown_fsm.cpp
+    src/storage/geoseis_v2_writer.cpp
     src/transport/uart_transport.cpp
 )
+
+set(PB2_EVENTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../components/geophone_events")
+set(PB2_LOC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../components/localization")
+
+add_library(pb2_shared_math STATIC
+    "${PB2_EVENTS_DIR}/geophone_event_energy_trigger.c"
+    "${PB2_EVENTS_DIR}/geophone_event_sta_lta.c"
+    "${PB2_EVENTS_DIR}/geophone_event_arrival_refine.c"
+    "${PB2_EVENTS_DIR}/geophone_event_cross_correlation.c"
+    "${PB2_EVENTS_DIR}/geophone_event_quality.c"
+    "${PB2_EVENTS_DIR}/geophone_event_pick.c"
+    "${PB2_EVENTS_DIR}/geophone_event_secondary_pick.c"
+    "${PB2_LOC_DIR}/localization.c"
+)
+
+target_include_directories(pb2_shared_math
+    PUBLIC
+        "${PB2_EVENTS_DIR}/include"
+        "${PB2_LOC_DIR}/include"
+        "${PB2_LOC_DIR}/tests/stubs"
+)
+
+target_link_libraries(pb2_shared_math PRIVATE m)
 
 target_include_directories(pb2_core
     PUBLIC
@@ -104,4 +128,18 @@ if(PB2_BUILD_TESTS)
     target_link_libraries(pb2_phase3_4_tests PRIVATE pb2_core)
     target_compile_options(pb2_phase3_4_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME pb2_phase3_4_tests COMMAND pb2_phase3_4_tests)
+
+    add_executable(pb2_geoseis_v2_tests
+        tests/unit/test_geoseis_v2.cpp
+    )
+    target_link_libraries(pb2_geoseis_v2_tests PRIVATE pb2_core)
+    target_compile_options(pb2_geoseis_v2_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME pb2_geoseis_v2_tests COMMAND pb2_geoseis_v2_tests)
+
+    add_executable(pb2_shared_math_tests
+        tests/unit/test_shared_math.cpp
+    )
+    target_link_libraries(pb2_shared_math_tests PRIVATE pb2_shared_math)
+    target_compile_options(pb2_shared_math_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME pb2_shared_math_tests COMMAND pb2_shared_math_tests)
 endif()
