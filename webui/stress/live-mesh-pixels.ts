@@ -82,4 +82,26 @@ function run(spec: Spec): { pixels: number[][]; before: Record<string, unknown> 
   return { pixels, before, after, contexts: document.querySelectorAll('canvas').length };
 }
 
-(window as unknown as { __liveMeshPixels: { run: typeof run; ready: boolean } }).__liveMeshPixels = { run, ready: gl !== null };
+/** Wall-clock cost of drawing one mesh, per frame, with the GPU (here: SwiftShader, software) finished before the clock stops. Relative numbers only. */
+function bench(spec: { triangles: number[]; mode: LiveMeshBlendMode; frames: number; size?: number }): { msPerFrame: number; p95: number } {
+  const size = spec.size ?? 256;
+  canvas.width = size; canvas.height = size;
+  gl.viewport(0, 0, size, size);
+  const layer = { framebuffer: null, getViewport: () => ({ x: 0, y: 0, width: size, height: size }) };
+  const views = [{ projectionMatrix: projection, transform: { matrix: identity } }];
+  const renderer = new LiveMeshRenderer(gl, { mode: spec.mode });
+  renderer.update(Float32Array.from(spec.triangles), spec.triangles.length / 9);
+  const samples: number[] = [];
+  for (let frame = 0; frame < spec.frames + 3; frame += 1) {
+    gl.clearColor(0, 0, 0, 1); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const t0 = performance.now();
+    renderer.render(layer, views);
+    gl.finish();
+    if (frame >= 3) samples.push(performance.now() - t0);
+  }
+  renderer.dispose();
+  samples.sort((a, b) => a - b);
+  return { msPerFrame: samples.reduce((x, y) => x + y, 0) / samples.length, p95: samples[Math.min(samples.length - 1, Math.ceil(0.95 * samples.length) - 1)] };
+}
+
+(window as unknown as { __liveMeshPixels: { run: typeof run; bench: typeof bench; ready: boolean } }).__liveMeshPixels = { run, bench, ready: gl !== null };

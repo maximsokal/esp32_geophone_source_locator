@@ -138,6 +138,23 @@ test.describe('live mesh opacity on the real framebuffer', () => {
     expect(result.pixels[2].slice(0, 3), 'outside the mesh nothing changed').toEqual([0, 0, 0]);
   });
 
+  test('TASK 08 cost: the depth prepass costs a bounded multiple of the old single pass on the same mesh (software WebGL, relative numbers; not a phone benchmark)', async ({ page }, info) => {
+    /* ~20,000 triangles of a gently folded surface: the limit of the live mesh */
+    const triangles: number[] = [];
+    const n = 100;
+    for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) {
+      const x0 = -1 + (2 * i) / n; const x1 = -1 + (2 * (i + 1)) / n; const y0 = -1 + (2 * j) / n; const y1 = -1 + (2 * (j + 1)) / n;
+      const z = (x: number, y: number): number => 0.5 + 0.2 * Math.sin(3 * x) * Math.cos(3 * y);
+      triangles.push(x0, y0, z(x0, y0), x1, y0, z(x1, y0), x1, y1, z(x1, y1), x0, y0, z(x0, y0), x1, y1, z(x1, y1), x0, y1, z(x0, y1));
+    }
+    const measure = (mode: string) => page.evaluate((args) => (window as unknown as { __liveMeshPixels: { bench: (x: unknown) => { msPerFrame: number; p95: number } } }).__liveMeshPixels.bench(args), { triangles, mode, frames: 30 });
+    await measure('accumulate'); await measure('single-layer');                                  /* warm up both programs */
+    const accumulate = await measure('accumulate');
+    const single = await measure('single-layer');
+    await info.attach('live-mesh-render-cost', { contentType: 'application/json', body: JSON.stringify({ triangles: triangles.length / 9, accumulate, singleLayer: single, ratio: single.msPerFrame / accumulate.msPerFrame, evidence: 'SwiftShader software WebGL, 256x256; relative only' }, null, 2) });
+    expect(single.msPerFrame / accumulate.msPerFrame, 'two passes over the same triangles cost at most about twice (plus slack for the software rasteriser)').toBeLessThanOrEqual(3);
+  });
+
   test('the saved scan\'s mesh (amber) and the live mesh (blue) together stay within the opacity budget, whatever the number of shells, and the live one wins a coincident surface', async ({ page }) => {
     const both = await draw(page, {
       background: solid([0, 0, 0]),
