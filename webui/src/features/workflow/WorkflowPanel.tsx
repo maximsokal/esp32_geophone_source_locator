@@ -706,7 +706,6 @@ export default function WorkflowPanel({
       <article className="console-card">
         <div className="card-heading">
           <div>
-            <span className="eyebrow">{t('workflow.eyebrow')}</span>
             <h1>{objectName?.trim() || WORKFLOW_UNKNOWN}</h1>
           </div>
           <h2>{t(model.titleKey)}</h2>

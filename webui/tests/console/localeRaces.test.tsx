@@ -301,7 +301,7 @@ describe('locale changes during WebUI state transitions', () => {
       await sessionA.promise;
     });
 
-    const tree = expectLocaleLabels(renderer, 'uk', ['nav.objects', 'objects.sessions', 'objects.saved_measurements']);
+    const tree = expectLocaleLabels(renderer, 'uk', ['nav.objects', 'objects.saved_measurements']);
     expect(tree).toContain('Stone arch');
     expect(tree).toContain(SESSION_B);
     expect(tree).toContain(formatNumber('uk', 12000));

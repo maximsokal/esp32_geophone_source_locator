@@ -56,7 +56,6 @@ export default function DeviceDashboard({
       )}
 
       <article className="console-card hero-card">
-        <div className="eyebrow">{t('dashboard.eyebrow')}</div>
         <h1>{t('dashboard.title')}</h1>
         <p>{t('dashboard.description')}</p>
         <div className="console-actions">

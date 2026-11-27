@@ -113,8 +113,7 @@ export default function SensorsFeature({ status, object, error, statusStale = fa
       ))}
 
       <div className="section-heading">
-        <div><span className="eyebrow">{t('sensors.hardware_diagnostics')}</span><h1>{t('sensors.acquisition_four_remotes')}</h1></div>
-        <p>{t('sensors.ready_evidence')}</p>
+        <h1>{t('sensors.acquisition_four_remotes')}</h1>
       </div>
 
       <article className="console-card wide-card">
@@ -145,7 +144,7 @@ export default function SensorsFeature({ status, object, error, statusStale = fa
       {(nodeLinks.length > 0 || status?.topology?.stale === true) && (
         <article className="console-card wide-card node-link-card">
           <div className="card-heading">
-            <div><span className="eyebrow">{t('sensors.node_link.heading')}</span><h2>{t('sensors.node_link.mapping')}</h2></div>
+            <div><h2>{t('sensors.node_link.mapping')}</h2></div>
           </div>
           {status?.topology?.stale === true && (
             <p className="console-alert warning" role="status">

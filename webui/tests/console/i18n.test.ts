@@ -107,7 +107,7 @@ describe('i18n catalog translation', () => {
       onBindGps: async () => ({ latitude: 0, longitude: 0, accuracy_m: 0 }),
       onCable: noop, onDefaultCable: noop, onAcquisition: noop, onRecording: noop, onOpenScanner: () => undefined,
     })));
-    expect(objects).toContain(translate(locale, 'objects.database'));
+    expect(objects).toContain(translate(locale, 'nav.objects'));
     expect(objects).toContain(translate(locale, 'objects.create'));
     expect(hasLeakedKey(objects)).toBe(false);
   });

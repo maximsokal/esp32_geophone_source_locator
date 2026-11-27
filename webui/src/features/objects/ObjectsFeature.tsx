@@ -165,7 +165,7 @@ export default function ObjectsFeature(props: Props) {
 
       <aside className="console-card object-list-card">
         <div className="card-heading">
-          <div><span className="eyebrow">{t('objects.database')}</span><h2>{t('nav.objects')}</h2></div>
+          <div><h2>{t('nav.objects')}</h2></div>
           <span>{store?.objects.length ?? 0}</span>
         </div>
         {active !== null && (
@@ -269,7 +269,7 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">{t('objects.base_station')}</span><h2>{t('objects.phone_gps')}</h2></div>
+                <div><h2>{t('objects.phone_gps')}</h2></div>
                 <button
                   disabled={objectMutationDisabled}
                   onClick={() => {
@@ -294,7 +294,7 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">{t('objects.geometry')}</span><h2>{t('objects.cable_lengths')}</h2></div>
+                <div><h2>{t('objects.cable_lengths')}</h2></div>
                 <small>{t('objects.object_override')}</small>
               </div>
               <div className="cable-grid">
@@ -322,13 +322,11 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">{t('objects.seismic')}</span><h2>{t('objects.acquisition_recording')}</h2></div>
+                <div><h2>{t('objects.acquisition_recording')}</h2></div>
                 <span className={`state-pill ${selectedRecording ? 'ready' : status?.acquisition.running ? 'ready' : 'offline'}`}>
                   {selectedRecording ? t('objects.recording') : status?.acquisition.running ? t('objects.live') : t('objects.stopped')}
                 </span>
               </div>
-              <p>{t('objects.recording_description')}</p>
-
               {selectedRecording && (
                 <dl className="console-dl">
                   <div><dt>{t('objects.session')}</dt><dd>{recording?.session_id ?? '—'}</dd></div>
@@ -410,7 +408,7 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">{t('objects.sessions')}</span><h2>{t('objects.saved_measurements')}</h2></div>
+                <div><h2>{t('objects.saved_measurements')}</h2></div>
                 <span>{selectedSessions.length}</span>
               </div>
               {sessions?.available === false && sessions.object_id === selected.id ? (
