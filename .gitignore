@@ -64,7 +64,8 @@ logs/nrf/
 .claude
 .github
 .kilo
-.vscode
+.vscode/*
+!.vscode/tasks.json
 docs
 logs
 memory

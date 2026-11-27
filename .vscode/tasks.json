@@ -1,0 +1,1547 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Tests: ast-grep",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/run_local_verify.py",
+                "--scope",
+                "ast"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Test structural rules and scan project sources with the installed ast-grep CLI."
+        },
+        {
+            "label": "Tests: Host C",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "Host"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build and run all manifest-driven native C contract suites with the local compiler and print a final SUITE_RESULT report."
+        },
+        {
+            "label": "Tests: Host C (Clang ASan+UBSan)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/run_host_tests.py",
+                "--compiler",
+                "${workspaceFolder}/.tools/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin/clang.exe",
+                "--sanitizers",
+                "address,undefined",
+                "--keep-going"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Optional native Clang sanitizer pass; no ESP-IDF or hardware action."
+        },
+        {
+            "label": "Tests: Virtual Board Stress",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_virtual_board_stress.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Software-only virtual-board stress + scheduler-replay determinism check (no flash, no serial port, no physical I/O). Already included in 'Tests: Host C' and 'Tests: All'; this task is a fast standalone re-run of just those two suites."
+        },
+        {
+            "label": "Tests: Python",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-m",
+                "pytest",
+                "-q"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run deterministic pytest checks; the HIL-marked test remains gated by explicit --hil and GEOLOCATOR_HIL=1."
+        },
+        {
+            "label": "Tests: Web Console",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "test:console"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "Tests: Web XR",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "test:xr"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "Tests: Web Typecheck",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "typecheck"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "Tests: Web",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "Web"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "detail": "Run Web Console, WebXR, and typecheck sequentially and print a final SUITE_RESULT report."
+        },
+        {
+            "label": "Build: ESP production",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "build",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Jobs",
+                "2"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Build the production ESP32-S3 firmware with ESP-IDF 5.5.4."
+        },
+        {
+            "label": "Build: ESP Unity",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "build",
+                "-ProjectPath",
+                "tests/target/test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Target",
+                "esp32s3",
+                "-Jobs",
+                "2"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Build the standalone Unity target application; this task does not flash hardware."
+        },
+        {
+            "label": "Build: nRF54L15 production (NCS)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/ncs.ps1",
+                "-Action",
+                "build"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Canonical nRF54L15 production build: NCS v3.4.0 / upstream XIAO board. The wrapper self-launches the pinned Nordic toolchain."
+        },
+        {
+            "label": "Tests: nRF54L15",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/run_local_verify.py",
+                "--scope",
+                "nrf"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run nRF host-policy tests plus the canonical NCS v3.4.0 production build. Physical/HIL tests remain excluded."
+        },
+        {
+            "label": "nRF54L15: Flash firmware",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/ncs.ps1",
+                "-Action",
+                "flash"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit hardware write: build and flash the canonical NCS v3.4.0 nRF54L15 production image."
+        },
+        {
+            "label": "nRF54L15: Monitor logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/ncs.ps1",
+                "-Action",
+                "monitor",
+                "-Port",
+                "${input:nrfMonitorPort}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": [],
+            "detail": "Open the nRF serial log port at 115200 baud. Monitoring alone is not HIL acceptance."
+        },
+        {
+            "label": "nRF54L15: Monitor + Save Logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/monitor_nrf_logs.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": false,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "detail": "Choose a COM port (nRF console is on XIAO D6/D7 at 115200); wait/retry through resets and unplugging; save UART to one UTF-8 file in logs/nrf/. Ctrl+C stops. Does not build or flash."
+        },
+        {
+            "label": "nRF54L15: PlatformIO compatibility build",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/pio.ps1",
+                "-Action",
+                "build"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Compatibility smoke only. This PlatformIO/Zephyr 4.2.1 artifact is not the production firmware and must not be flashed as the canonical image."
+        },
+        {
+            "label": "nRF54L15: PlatformIO native software tests",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/pio.ps1",
+                "-Action",
+                "test"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run only qualified test_sw_* native suites without uploading or touching a board; reports BLOCKED when the host GCC toolchain is unavailable."
+        },
+        {
+            "label": "nRF54L15: MAX-45 Channel Sounding proof",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/ncs.ps1",
+                "-Action",
+                "cs-proof"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Reproduce the historical MAX-45 SoftDevice Channel Sounding build proof; it is not the canonical production configuration."
+        },
+        {
+            "label": "Tests: All (no flash)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "All"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "detail": "Run host C, Python, canonical NCS nRF54L15 build, WebUI, Unity-target, and ESP production-build steps; never flashes hardware."
+        },
+        {
+            "label": "ESP: Check COM4",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/check_serial_ports.ps1",
+                "-Ports",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Confirm that the programming port COM4 is live before a flash task."
+        },
+        {
+            "label": "ESP: Check COM6",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/check_serial_ports.ps1",
+                "-Ports",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Confirm that the passive log port COM6 is live before a monitor task."
+        },
+        {
+            "label": "ESP: Check serial ports",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "ESP: Check COM6"
+            ],
+            "problemMatcher": [],
+            "detail": "Confirm the programming port COM4 and passive log port COM6 before a combined HIL task."
+        },
+        {
+            "label": "ESP: Flash production (COM4)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "flash",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Port",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "Build: ESP production"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit hardware write: flash the ESP32 production image through COM4."
+        },
+        {
+            "label": "ESP: Flash Unity app (COM4)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "flash",
+                "-ProjectPath",
+                "tests/target/test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Port",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "Build: ESP Unity"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit hardware write: flash the standalone Unity test app through COM4."
+        },
+        {
+            "label": "ESP: Production pipeline HIL (COM4 + COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_pipeline_hil.ps1",
+                "-FlashPort",
+                "COM4",
+                "-LogPort",
+                "COM6",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-RequireFullPipeline",
+                "-BaseUrl",
+                "${input:pipelineBaseUrl}",
+                "-Record",
+                "-ObjectId",
+                "${input:pipelineObjectId}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Build: ESP production"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit ESP32 production HIL: monitor COM6, flash production through COM4, and require full serial/API pipeline checks."
+        },
+        {
+            "label": "ESP-IDF: Monitor + Save Logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/monitor_esp32_logs.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": false,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true,
+                "clear": false
+            },
+            "problemMatcher": [],
+            "detail": "Choose a COM port; wait/retry through startup and reconnects; save UART to one UTF-8 file in logs/esp32/. Ctrl+] stops an active monitor; Ctrl+C stops while retrying. Does not build or flash."
+        },
+        {
+            "label": "ESP: Monitor logs (COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "monitor",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Port",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "ESP: Check COM6"
+            ],
+            "isBackground": true,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "owner": "esp-monitor",
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".*"
+                }
+            },
+            "detail": "Passive 115200-baud ESP32 log monitor on COM6; stop it with Ctrl+C or the task stop control."
+        },
+        {
+            "label": "ESP: Monitor Unity logs (COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "monitor",
+                "-ProjectPath",
+                "tests/target/test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Port",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "ESP: Check COM6"
+            ],
+            "isBackground": true,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "owner": "esp-monitor",
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".*"
+                }
+            },
+            "detail": "Passive Unity test-result monitor on COM6; start this before flashing the Unity app when using separate tasks."
+        },
+        {
+            "label": "ESP: Unity tests (flash COM4 + logs COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_unity_hil.ps1",
+                "-FlashPort",
+                "COM4",
+                "-LogPort",
+                "COM6",
+                "-ProjectPath",
+                "tests/target/test_app",
+                "-BuildDir",
+                "build-s3"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "Build: ESP Unity"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run all Unity cases on the ESP32 board and require TEST_APP_RESULT: PASS."
+        },
+        {
+            "label": "Tag Lab: Start Webcam + Logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_tag_lab.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": {
+                "owner": "tag-lab",
+                "pattern": {
+                    "regexp": "^\\[tag-lab\\] (ERROR).*$",
+                    "message": 0
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^\\[tag-lab\\] starting",
+                    "endsPattern": "^\\[tag-lab\\] stop :"
+                }
+            },
+            "detail": "Development-only: loopback log receiver + webcam AprilTag page at http://127.0.0.1:5188/tag-lab.html; logs go to logs/tag-lab/<run>/. No ESP32 needed. Stop the task to close the camera page server and the log receiver."
+        },
+        {
+            "label": "Tag Lab: Run Tests",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_tag_lab.ps1",
+                "-Tests"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run only the Tag Lab vitest suites (log server, pipeline, overlay mapping, webcam lifecycle) and the existing fiducial tag suites."
+        },
+        {
+            "label": "Phone Lab: Start Dev Server + QR",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_phone_lab.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": {
+                "owner": "phone-lab",
+                "pattern": {
+                    "regexp": "^\\[phone-lab\\] ERROR.*$",
+                    "message": 0
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^\\[phone-lab\\] starting",
+                    "endsPattern": "^\\[phone-lab\\] stop :"
+                }
+            },
+            "detail": "Development-only: serves the real WebUI over HTTPS on the home Wi-Fi with a fake ESP32 API, prints a QR for the phone, and writes phone logs/telemetry/saved scans to logs/phone-lab/<run>/. No ESP32 needed."
+        },
+        {
+            "label": "Phone Lab: Start (self-signed cert)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_phone_lab.ps1",
+                "-SelfSigned"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Same as Phone Lab: Start, with a self-signed certificate (the phone must be told to continue past the warning)."
+        },
+        {
+            "label": "Phone Lab: Run Tests",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_phone_lab.ps1",
+                "-Tests"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run only the Phone Lab vitest suites (LAN pick, QR, certificate issuing on a throwaway CA, fake device API, telemetry receiver)."
+        },
+        {
+            "label": "AprilTag: open sheet generator (browser)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/apriltag_sheet/apriltag_sheet.py",
+                "serve"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": [],
+            "detail": "Start the loopback AprilTag binding page and open it in the default browser."
+        },
+        {
+            "label": "AprilTag: write sheet PDF",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/apriltag_sheet/apriltag_sheet.py",
+                "pdf",
+                "--out",
+                "${workspaceFolder}/.test-build/apriltag_sheet.pdf"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": [],
+            "detail": "Write the current A4 AprilTag sheet to .test-build/apriltag_sheet.pdf."
+        },
+        {
+            "label": "PB2: Doctor",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "doctor"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Check PocketBeagle 2 A0 environment, kernel, remoteproc, and UART over SSH."
+        },
+        {
+            "label": "PB2: Build Host",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "build-host"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Build PocketBeagle2 host x86_64 binaries via WSL2 CMake/Ninja.",
+            "group": "build"
+        },
+        {
+            "label": "PB2: Test Host",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-host"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Build and run PocketBeagle2 host CTest unit tests (no board required).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: Build ARM64",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "build-arm64"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Cross-compile PocketBeagle2 aarch64 binaries for PocketBeagle 2 A0.",
+            "group": "build"
+        },
+        {
+            "label": "PB2: Deploy",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "deploy"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Cross-compile and deploy pb2_node to PocketBeagle 2 A0 via SSH."
+        },
+        {
+            "label": "PB2: Run",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "run"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Run pb2_node smoke test on PocketBeagle 2 A0 via SSH."
+        },
+        {
+            "label": "PB2: Stop",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "stop"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Stop pb2_node on PocketBeagle 2 A0 via SSH."
+        },
+        {
+            "label": "PB2: Monitor",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "monitor"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "View recent journalctl logs on PocketBeagle 2 A0."
+        },
+        {
+            "label": "PB2: Debug",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Deploy ARM64 debug build and start gdbserver on PocketBeagle 2 A0."
+        },
+        {
+            "label": "PB2: Build PRU",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "build-pru"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Build PRU-SS firmware ELF (Phase 4)."
+        },
+        {
+            "label": "PB2: Load PRU",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "load-pru"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicitly load PRU firmware via remoteproc (Phase 4)."
+        },
+        {
+            "label": "PB2: Stop PRU",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "stop-pru"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicitly stop PRU firmware via remoteproc (Phase 4)."
+        },
+        {
+            "label": "PB2: Install Overlay",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "install-overlay"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Install verified PocketBeagle 2 A0 device tree overlay (Phase 2+)."
+        },
+        {
+            "label": "PB2: HIL UART",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "hil-uart"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Run UART HIL test between PocketBeagle 2 A0 and ESP32-S3 (Phase 2).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: HIL ADC",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "hil-adc"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Run AD7606 PRU HIL test on PocketBeagle 2 A0 (Phase 4).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: Benchmark ADC",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "benchmark-adc"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Benchmark AD7606 acquisition cadence and drops (Phase 4).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: Benchmark Storage",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "benchmark-storage"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Benchmark microSD RAW recording throughput and latency (Phase 5).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: Benchmark Transport",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "benchmark-transport"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Benchmark ESP32 <-> PB2 transport throughput (Phase 2).",
+            "group": "test"
+        },
+        {
+            "label": "PB2: Pull Logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "pull-logs"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Download journalctl boot logs from PocketBeagle 2 A0."
+        },
+        {
+            "label": "PB2: Clean",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "clean"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Remove only PocketBeagle2/build artifacts."
+        }
+    ],
+    "inputs": [
+        {
+            "id": "pipelineBaseUrl",
+            "type": "promptString",
+            "description": "Base URL for the production /api checks",
+            "default": "https://geolocator.local"
+        },
+        {
+            "id": "pipelineObjectId",
+            "type": "promptString",
+            "description": "Existing object ID used for recording start/stop",
+            "default": "OBJ_0001"
+        },
+        {
+            "id": "nrfMonitorPort",
+            "type": "promptString",
+            "description": "Enter the current XIAO nRF54L15 COM port shown by Windows (list with [System.IO.Ports.SerialPort]::GetPortNames())"
+        }
+    ]
+}

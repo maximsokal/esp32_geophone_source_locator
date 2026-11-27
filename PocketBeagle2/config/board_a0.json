@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "board": {
+    "name": "PocketBeagle 2",
+    "revision": "A0",
+    "soc": "TI AM6232",
+    "cores": "2x ARM Cortex-A53",
+    "ram_mb": 512,
+    "pru_subsystem": "PRU-SS",
+    "arch": "aarch64"
+  },
+  "linux_image": {
+    "distro": "Debian 13.3 Minimal TI 6.12.x",
+    "url": "https://www.beagleboard.org/distros/pocketbeagle-2-debian-13-3-2026-02-12-minimal-v6-12-x-ti",
+    "sha256": "84966ed33217a3db803a049b16f357575f062a1c591eca88115e4ab5ca4f3bbd",
+    "default_host": "192.168.7.2",
+    "default_user": "debian",
+    "remote_dir": "/home/debian/pb2_locator"
+  },
+  "uart2": {
+    "pb2_tx": "P2.04",
+    "pb2_rx": "P2.02",
+    "gnd": "P2.15",
+    "mux_mode": 4,
+    "initial_baud": 115200,
+    "esp32_profiles": {
+      "devkitc_v1_0": {
+        "active": false,
+        "verified": false,
+        "esp32_tx_gpio": 7,
+        "esp32_rx_gpio": 38,
+        "notes": "RGB LED on GPIO48 in v1.0; do not activate until physical revision verified"
+      },
+      "devkitc_v1_1": {
+        "active": false,
+        "verified": false,
+        "esp32_tx_gpio": 7,
+        "esp32_rx_gpio": 48,
+        "notes": "RGB LED on GPIO38 in v1.1; do not activate until physical revision verified"
+      }
+    }
+  },
+  "ad7606": {
+    "channel_count": 4,
+    "target_max_rate_hz": 200000,
+    "vdrive_v": 3.3,
+    "pru_pins": {
+      "convst_ab": { "header": "P2.06", "pru1": "R30.2", "mux_mode": 2 },
+      "reset":     { "header": "P2.08", "pru1": "R30.3", "mux_mode": 2 },
+      "cs":        { "header": "P2.30", "pru1": "R30.12", "mux_mode": 2 },
+      "rd_sclk":   { "header": "P2.32", "pru1": "R30.11", "mux_mode": 2 },
+      "busy":      { "header": "P2.10", "pru1": "R31.4", "mux_mode": 4 },
+      "douta":     { "header": "P2.24", "pru1": "R31.6", "mux_mode": 3 },
+      "doutb":     { "header": "P2.33", "pru1": "R31.7", "mux_mode": 3 },
+      "frstdata":  { "header": "P2.28", "pru1": "R31.15", "mux_mode": 3 },
+      "gnd":       { "header": "P2.15" }
+    },
+    "reserved_conflicts": ["P2.20"],
+    "profiles": {
+      "SERIAL_SINGLE_DOUT": {
+        "sclk_cycles_per_sample": 64,
+        "logical_to_adc_channel": [1, 2, 3, 4],
+        "dout_lines": ["DOUTA"]
+      },
+      "SERIAL_DUAL_DOUT": {
+        "sclk_cycles_per_sample": 32,
+        "logical_to_adc_channel": [1, 2, 5, 6],
+        "dout_lines": ["DOUTA", "DOUTB"],
+        "priority": true
+      }
+    }
+  }
+}

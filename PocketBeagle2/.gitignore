@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+out/
+.cache/
+
+# Local private overrides (never commit credentials or keys)
+*.local.json
+*.local.toml
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+logs/
