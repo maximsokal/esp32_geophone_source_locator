@@ -36,13 +36,17 @@ target_compile_options(pb2_protocol PRIVATE
 
 add_library(pb2_core STATIC
     src/acquisition/mock_source.cpp
+    src/acquisition/pru_ring_consumer.cpp
     src/diagnostics/runtime_info.cpp
+    src/hardware/pinmap_a0.cpp
+    src/power/shutdown_fsm.cpp
     src/transport/uart_transport.cpp
 )
 
 target_include_directories(pb2_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/pru/include
 )
 
 target_link_libraries(pb2_core
@@ -93,4 +97,11 @@ if(PB2_BUILD_TESTS)
     target_link_libraries(pb2_pty_tests PRIVATE pb2_core util)
     target_compile_options(pb2_pty_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME pb2_pty_tests COMMAND pb2_pty_tests)
+
+    add_executable(pb2_phase3_4_tests
+        tests/unit/test_phase3_4.cpp
+    )
+    target_link_libraries(pb2_phase3_4_tests PRIVATE pb2_core)
+    target_compile_options(pb2_phase3_4_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME pb2_phase3_4_tests COMMAND pb2_phase3_4_tests)
 endif()
