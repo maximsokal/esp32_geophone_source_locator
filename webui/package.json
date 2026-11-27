@@ -65,6 +65,7 @@
     "fontkit": "2.0.4",
     "jsdom": "28.1.0",
     "react-test-renderer": "19.2.8",
+    "three-mesh-bvh": "0.10.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"

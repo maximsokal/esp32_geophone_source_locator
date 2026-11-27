@@ -234,6 +234,8 @@ export interface MeshTopologyStats {
   boundaryEdges: number;
   boundaryEdgeLengthMeters: number;
   nonManifoldEdges: number;
+  /** Edges of exactly two triangles that both walk it in the same direction. */
+  orientationConflicts: number;
   degenerateTriangles: number;
 }
 
@@ -245,15 +247,17 @@ export function analyzeMeshTopology(soup: Float32Array, weldMeters: number): Mes
   const parent = mesh.vertices.map((_, index) => index);
   const find = (a: number): number => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
   const edges = new Map<string, number>();
+  const direction = new Map<string, number>();                       /* sum of +1 / -1 per walk of the edge */
   for (const t of mesh.triangles) {
     parent[find(t[0])] = find(t[1]); parent[find(t[1])] = find(t[2]);
-    for (let e = 0; e < 3; e += 1) { const key = edgeKey(t[e], t[(e + 1) % 3]); edges.set(key, (edges.get(key) ?? 0) + 1); }
+    for (let e = 0; e < 3; e += 1) { const key = edgeKey(t[e], t[(e + 1) % 3]); edges.set(key, (edges.get(key) ?? 0) + 1); direction.set(key, (direction.get(key) ?? 0) + (t[e] < t[(e + 1) % 3] ? 1 : -1)); }
   }
   const sizes = new Map<number, number>();
   for (const t of mesh.triangles) sizes.set(find(t[0]), (sizes.get(find(t[0])) ?? 0) + 1);
   const ordered = [...sizes.values()].sort((a, b) => b - a);
-  let boundary = 0; let boundaryLength = 0; let nonManifold = 0;
+  let boundary = 0; let boundaryLength = 0; let nonManifold = 0; let orientationConflicts = 0;
   for (const [key, uses] of edges) {
+    if (uses === 2 && direction.get(key) !== 0) orientationConflicts += 1;
     if (uses === 1) {
       boundary += 1;
       const [a, b] = key.split('_').map(Number);
@@ -263,6 +267,6 @@ export function analyzeMeshTopology(soup: Float32Array, weldMeters: number): Mes
   return {
     triangles: mesh.triangles.length, weldedVertices: mesh.vertices.length, components: ordered.length, componentSizes: ordered.slice(0, 10),
     largestComponentRatio: mesh.triangles.length === 0 ? 0 : ordered[0] / mesh.triangles.length, boundaryEdges: boundary,
-    boundaryEdgeLengthMeters: boundaryLength, nonManifoldEdges: nonManifold, degenerateTriangles: degenerate,
+    boundaryEdgeLengthMeters: boundaryLength, nonManifoldEdges: nonManifold, orientationConflicts, degenerateTriangles: degenerate,
   };
 }

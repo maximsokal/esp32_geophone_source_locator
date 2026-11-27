@@ -209,11 +209,13 @@ describe('the budgets that decide how much of a scan becomes mesh', () => {
   });
 
   it('scales the pair budgets with the mesh, never below the old fixed ones and never above a ceiling', () => {
-    expect(selfIntersectionBudgets(1000)).toEqual({ broadPhasePairs: 60_000, exactTests: 12_000 });
-    expect(selfIntersectionBudgets(20_000).broadPhasePairs).toBe(240_000);
-    expect(selfIntersectionBudgets(20_000).exactTests).toBe(60_000);
-    expect(selfIntersectionBudgets(10_000_000).broadPhasePairs).toBe(600_000);
-    expect(selfIntersectionBudgets(10_000_000).exactTests).toBe(150_000);
+    /* self-intersection: the candidate pairs come from a BVH and are not capped; only the exact tests are */
+    expect(selfIntersectionBudgets(100)).toEqual({ exactTests: 12_000 });
+    expect(selfIntersectionBudgets(1000)).toEqual({ exactTests: 32_000 });
+    expect(selfIntersectionBudgets(10_000_000)).toEqual({ exactTests: 600_000 });
+    for (const triangles of [100, 1000, 7000, 20_000, 34_000, 100_000, 10_000_000]) {
+      expect(selfIntersectionBudgets(triangles).exactTests, `${triangles} triangles: not below the earlier budget`).toBeGreaterThanOrEqual(Math.min(150_000, Math.max(12_000, triangles * 3)));
+    }
     expect(normalIntrusionBudgets(1000)).toEqual({ candidatePairs: 40_000, exactTests: 8_000 });
     expect(normalIntrusionBudgets(20_000)).toEqual({ candidatePairs: 160_000, exactTests: 40_000 });
     expect(normalIntrusionBudgets(10_000_000)).toEqual({ candidatePairs: 400_000, exactTests: 100_000 });

@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDirectionalTsdfMesh,
+  measureSelfIntersections,
   finalizeDirectionalTsdfPlan,
   prepareDirectionalTsdfPlan,
   prepareHybridTsdfPlan,
 } from '../../src/xr/directionalTsdf';
+import { diagnoseMeshSelfIntersections } from '../../src/xr/meshSelfIntersection';
 import { buildSparseTsdfMesh } from '../../src/xr/sparseTsdf';
 
 function appendPlane(
@@ -242,5 +244,45 @@ describe('hybrid reconstruction: scalar surface first, directional pass only for
     expect(mesh.meshTopologyComponentCount).toBe(mesh.finalTopology!.components);
     expect(mesh.finalTopology!.triangles).toBe(mesh.triangleCount);
     expect(mesh.finalTopology!.degenerateTriangles).toBe(0);
+  });
+
+  it.each([
+    ['a corner (base surface only)', () => planes([[0, 0, [1, 0, 0]], [1, 0, [0, 1, 0]], [2, 0, [0, 0, 1]]])],
+    ['a thin board (the directional pass adds the surface)', () => {
+      const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+      for (const [z, n] of [[0.01, 1], [-0.01, -1]] as const) for (let a = 0; a <= 32; a += 1) for (let b = 0; b <= 32; b += 1) { positions.push(a * 0.05, b * 0.05, z); normals.push(0, 0, n); confidence.push(0.92); }
+      return { positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence), voxelSizeMeters: 0.048, maxTriangles: 40000 };
+    }],
+  ])('every reported defect figure is MEASURED on the displayed mesh, after the stitching: %s', (_name, input) => {
+    const mesh = buildDirectionalTsdfMesh(input());
+    const soup = mesh.trianglePositions;
+    const triangles = Array.from({ length: mesh.triangleCount }, (_, t) => {
+      const vertices = [0, 1, 2].map((c) => [soup[t * 9 + c * 3], soup[t * 9 + c * 3 + 1], soup[t * 9 + c * 3 + 2]] as [number, number, number]) as [[number, number, number], [number, number, number], [number, number, number]];
+      return { vertices, keys: vertices.map((p) => p.map((v) => Math.round(v * 1e5)).join(',')) as [string, string, string] };
+    });
+    const independent = diagnoseMeshSelfIntersections(triangles, new Int32Array(triangles.length), 1, mesh.voxelSizeMeters);
+    expect(mesh.selfIntersectionExactTestedPairs, 'the displayed mesh was really examined').toBeGreaterThan(mesh.triangleCount);
+    expect(mesh.selfIntersectionTruncated).toBe(false);
+    expect(mesh.selfIntersectionPairCount).toBe(independent.intersectingPairCount);
+    expect(mesh.selfIntersectionAffectedTriangleCount).toBe(independent.affectedTriangleCount);
+    expect(mesh.nonManifoldEdgeCount).toBe(mesh.finalTopology!.nonManifoldEdges);
+    expect(mesh.orientationConflictCount).toBe(mesh.finalTopology!.orientationConflicts);
+  });
+
+  it('defect figures reported BEFORE the stitching never reach the result', () => {
+    const input = planes([[0, 0, [1, 0, 0]], [1, 0, [0, 1, 0]]]);
+    const plan = prepareHybridTsdfPlan(input, true);
+    const { channelInputs, ...summary } = plan;
+    const stale = { ...summary.baseMesh!, selfIntersectionPairCount: 999, selfIntersectionAffectedTriangleCount: 999, selfIntersectionExactTestedPairs: 999, selfIntersectionOversizedTriangleCount: 999, nonManifoldEdgeCount: 999, orientationConflictCount: 999 };
+    const mesh = finalizeDirectionalTsdfPlan({ ...summary, baseMesh: stale }, channelInputs.map((channelInput) => buildSparseTsdfMesh(channelInput)));
+    expect([mesh.selfIntersectionPairCount, mesh.selfIntersectionAffectedTriangleCount, mesh.selfIntersectionOversizedTriangleCount, mesh.nonManifoldEdgeCount, mesh.orientationConflictCount])
+      .toEqual([0, 0, 0, mesh.finalTopology!.nonManifoldEdges, mesh.finalTopology!.orientationConflicts]);
+    expect(mesh.selfIntersectionExactTestedPairs).toBeGreaterThan(mesh.triangleCount);
+  });
+
+  it('in the final check two corners are the same vertex only when all three coordinates are equal', () => {
+    /* the second triangle crosses the first; one of its corners differs from a corner of the first in height only */
+    const soup = Float32Array.from([0, 0, 0, 0.1, 0, 0, 0, 0, 0.1,   0, 0, 0.5, 0.03, -0.05, 0.02, 0.03, 0.05, 0.02]);
+    expect(measureSelfIntersections(soup, 0.04)).toMatchObject({ intersectingPairCount: 1, affectedTriangleCount: 2, truncated: false });
   });
 });

@@ -1,3 +1,4 @@
+import { diagnoseMeshSelfIntersections, type MeshIntersectionTriangle } from './meshSelfIntersection';
 import { sanitizeMeshTopology } from './meshTopologySanity';
 import { analyzeMeshTopology, defaultMeshRefineOptions, refineScanMesh, type MeshTopologyStats } from './meshRefine';
 import {
@@ -469,11 +470,59 @@ function refineAndMeasure(mesh: DirectionalTsdfMesh): DirectionalTsdfMesh {
   const refined = refineScanMesh(mesh.trianglePositions, mesh.voxelSizeMeters);
   const weld = defaultMeshRefineOptions(mesh.voxelSizeMeters).weldMeters;
   const topology = analyzeMeshTopology(refined.trianglePositions, weld);
+  /* The stitching changes the geometry, so every reported defect figure is measured again, on the triangles that are displayed. */
+  const selfIntersection = measureSelfIntersections(refined.trianglePositions, mesh.voxelSizeMeters);
   return {
     ...mesh,
     trianglePositions: refined.trianglePositions, triangleCount: refined.triangleCount, meshRefine: summaryOf(refined), finalTopology: topology,
     meshTopologyComponentCount: topology.components,
+    nonManifoldEdgeCount: topology.nonManifoldEdges,
+    orientationConflictCount: topology.orientationConflicts,
+    selfIntersectionPairCount: selfIntersection.intersectingPairCount,
+    selfIntersectionAffectedTriangleCount: selfIntersection.affectedTriangleCount,
+    selfIntersectionExactTestedPairs: selfIntersection.exactTestedPairs,
+    selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
+    selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
+    /* also stays set when the earlier, pre-stitching screening of the components could not finish its checks */
+    selfIntersectionTruncated: selfIntersection.truncated || mesh.selfIntersectionTruncated,
   };
+}
+
+/**
+ * A number per distinct corner position of a soup, compared bit for bit (open addressing over the 32-bit floats): the stitching emits a shared vertex with
+ * identical coordinates in every triangle that uses it. Formatting the coordinates into strings cost more than the check itself.
+ */
+function vertexIds(soup: Float32Array): Int32Array {
+  const corners = Math.floor(soup.length / 3);
+  const bits = new Uint32Array(soup.buffer, soup.byteOffset, corners * 3);
+  let size = 16; while (size < corners * 2) size *= 2;
+  const table = new Int32Array(size).fill(-1);
+  const ids = new Int32Array(corners);
+  for (let corner = 0; corner < corners; corner += 1) {
+    const x = bits[corner * 3]; const y = bits[corner * 3 + 1]; const z = bits[corner * 3 + 2];
+    let slot = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0;
+    slot = (slot ^ (slot >>> 15)) & (size - 1);
+    for (;;) {
+      const first = table[slot];
+      if (first < 0) { table[slot] = corner; ids[corner] = corner; break; }
+      if (bits[first * 3] === x && bits[first * 3 + 1] === y && bits[first * 3 + 2] === z) { ids[corner] = first; break; }
+      slot = (slot + 1) & (size - 1);
+    }
+  }
+  return ids;
+}
+
+/** The complete self-intersection check of a finished soup. */
+export function measureSelfIntersections(soup: Float32Array, voxelSizeMeters: number) {
+  const ids = vertexIds(soup);
+  const triangles: MeshIntersectionTriangle[] = [];
+  for (let t = 0, offset = 0; offset + 8 < soup.length; t += 1, offset += 9) {
+    triangles.push({
+      vertices: [[soup[offset], soup[offset + 1], soup[offset + 2]], [soup[offset + 3], soup[offset + 4], soup[offset + 5]], [soup[offset + 6], soup[offset + 7], soup[offset + 8]]],
+      keys: [ids[t * 3], ids[t * 3 + 1], ids[t * 3 + 2]],
+    });
+  }
+  return diagnoseMeshSelfIntersections(triangles, new Int32Array(triangles.length), 1, voxelSizeMeters);
 }
 
 export function finalizeDirectionalTsdfPlan(

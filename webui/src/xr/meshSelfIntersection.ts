@@ -1,8 +1,10 @@
 export type MeshIntersectionPoint = readonly [number, number, number];
 
+/** Equal keys mean the same mesh vertex: that is what makes two triangles neighbours. */
+export type MeshVertexKey = string | number;
 export interface MeshIntersectionTriangle {
   vertices: readonly [MeshIntersectionPoint, MeshIntersectionPoint, MeshIntersectionPoint];
-  keys: readonly [string, string, string];
+  keys: readonly [MeshVertexKey, MeshVertexKey, MeshVertexKey];
 }
 
 export interface MeshSelfIntersectionComponentStats {
@@ -22,23 +24,22 @@ export interface MeshSelfIntersectionDiagnostic {
   componentStats: readonly MeshSelfIntersectionComponentStats[];
 }
 
-export const MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS = 60_000;
-export const MAX_SELF_INTERSECTION_EXACT_TESTS = 12_000;
-export const MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE = 64;
 /**
- * The pair budgets grow with the mesh: a fixed 60k/12k budget was spent after about 7,000 triangles, the diagnostic then reported itself incomplete and
- * every component of a LARGER, cleaner mesh was withheld (phone run 2026-11-22: a full floor was dropped for exactly that reason). Per triangle the work
- * stays bounded, and the hard ceilings keep a pathological soup from monopolising the worker.
+ * Candidate pairs come from a uniform grid over the boxes (widened by the tolerance); a triangle spanning too many cells is compared with every other one,
+ * so no pair is missed and no triangle is "too big". three-mesh-bvh checks this in the tests; it is not shipped, because every TSDF worker would carry its
+ * own copy of it and of three (+191 kB gzip of ESP32 assets, measured). Only the number of EXACT tests is capped,
+ * against a pathological soup in which everything overlaps everything: it grows with the mesh (a manifold mesh needs about a dozen per triangle) and a
+ * result that hit it says so (`truncated`).
  */
-const BROAD_PHASE_PAIRS_PER_TRIANGLE = 12;
-const EXACT_TESTS_PER_TRIANGLE = 3;
-export const MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS_CEILING = 600_000;
-export const MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING = 150_000;
-export function selfIntersectionBudgets(triangleCount: number): { broadPhasePairs: number; exactTests: number } {
-  return {
-    broadPhasePairs: Math.min(MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS_CEILING, Math.max(MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS, triangleCount * BROAD_PHASE_PAIRS_PER_TRIANGLE)),
-    exactTests: Math.min(MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING, Math.max(MAX_SELF_INTERSECTION_EXACT_TESTS, triangleCount * EXACT_TESTS_PER_TRIANGLE)),
-  };
+export const MAX_SELF_INTERSECTION_EXACT_TESTS = 12_000;
+export const MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING = 600_000;
+const EXACT_TESTS_PER_TRIANGLE = 32;
+/** A triangle spanning more grid cells than this is compared directly with the others. */
+export const MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE = 64;
+/** Ceiling of those direct comparisons, reached only by a soup made mostly of huge triangles; the result then says it is truncated. */
+export const MAX_SELF_INTERSECTION_LARGE_COMPARISONS = 4_000_000;
+export function selfIntersectionBudgets(triangleCount: number): { exactTests: number } {
+  return { exactTests: Math.min(MAX_SELF_INTERSECTION_EXACT_TESTS_CEILING, Math.max(MAX_SELF_INTERSECTION_EXACT_TESTS, triangleCount * EXACT_TESTS_PER_TRIANGLE)) };
 }
 const BARYCENTRIC_EPSILON = 1e-6;
 
@@ -89,12 +90,6 @@ function aabbOverlap(a: Aabb, b: Aabb, epsilon: number): boolean {
     a.maxY < b.minY - epsilon || b.maxY < a.minY - epsilon ||
     a.maxZ < b.minZ - epsilon || b.maxZ < a.minZ - epsilon
   );
-}
-
-function sharedVertex(a: MeshIntersectionTriangle, b: MeshIntersectionTriangle): boolean {
-  return a.keys[0] === b.keys[0] || a.keys[0] === b.keys[1] || a.keys[0] === b.keys[2] ||
-    a.keys[1] === b.keys[0] || a.keys[1] === b.keys[1] || a.keys[1] === b.keys[2] ||
-    a.keys[2] === b.keys[0] || a.keys[2] === b.keys[1] || a.keys[2] === b.keys[2];
 }
 
 function dominantAxis(normal: MeshIntersectionPoint): 0 | 1 | 2 {
@@ -233,18 +228,98 @@ export function trianglesIntersect(
   return false;
 }
 
+/** A segment that crosses the INTERIOR of a triangle: touching its border or ending on it does not count (used between neighbours, which touch by design). */
+function segmentPiercesTriangle(start: MeshIntersectionPoint, end: MeshIntersectionPoint, triangle: MeshIntersectionTriangle): boolean {
+  const direction = subtract(end, start);
+  const edge1 = subtract(triangle.vertices[1], triangle.vertices[0]);
+  const edge2 = subtract(triangle.vertices[2], triangle.vertices[0]);
+  const h = cross(direction, edge2);
+  const determinant = dot(edge1, h);
+  if (Math.abs(determinant) <= 1e-12) return false;
+  const inverse = 1 / determinant;
+  const s = subtract(start, triangle.vertices[0]);
+  const u = inverse * dot(s, h);
+  const q = cross(s, edge1);
+  const v = inverse * dot(direction, q);
+  const t = inverse * dot(edge2, q);
+  return u > BARYCENTRIC_EPSILON && v > BARYCENTRIC_EPSILON && u + v < 1 - BARYCENTRIC_EPSILON && t > BARYCENTRIC_EPSILON && t < 1 - BARYCENTRIC_EPSILON;
+}
+
+/** Whether two corners at the same 2-D origin overlap with some area (touching along a ray does not count). */
+function cornersOverlap(a1: readonly [number, number], a2: readonly [number, number], b1: readonly [number, number], b2: readonly [number, number]): boolean {
+  const turn = (p: readonly [number, number], q: readonly [number, number]): number => Math.atan2(p[0] * q[1] - p[1] * q[0], p[0] * q[0] + p[1] * q[1]);
+  const spanA = turn(a1, a2); const from = spanA >= 0 ? a1 : a2; const widthA = Math.abs(spanA);
+  const spanB = turn(b1, b2); const widthB = Math.abs(spanB);
+  /* angles of corner B measured from the first ray of corner A: the corners are [0, widthA] and [start, start + widthB] on the circle */
+  const start = turn(from, spanB >= 0 ? b1 : b2);
+  const ANGLE_EPSILON = 1e-4;
+  const overlap = (offset: number): number => Math.min(widthA, offset + widthB) - Math.max(0, offset);
+  return Math.max(overlap(start), overlap(start - 2 * Math.PI), overlap(start + 2 * Math.PI)) > ANGLE_EPSILON;
+}
+
+/**
+ * The common case between neighbours, decided without allocating: the corners of `other` that are not shared (those not in the `matched` mask) lie off the
+ * plane of `triangle`, all on one side of it, so the two meet only in what they share.
+ */
+function separatedByPlane(triangle: MeshIntersectionTriangle, other: MeshIntersectionTriangle, matched: number, normals: Float64Array, index: number): boolean {
+  const at = index * 4;
+  const origin = triangle.vertices[0];
+  if (normals[at + 3] === 0) {
+    const b = triangle.vertices[1]; const c = triangle.vertices[2];
+    const ux = b[0] - origin[0]; const uy = b[1] - origin[1]; const uz = b[2] - origin[2];
+    const vx = c[0] - origin[0]; const vy = c[1] - origin[1]; const vz = c[2] - origin[2];
+    const nx = uy * vz - uz * vy; const ny = uz * vx - ux * vz; const nz = ux * vy - uy * vx;
+    const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (length <= 1e-12) return false;
+    normals[at] = nx / length; normals[at + 1] = ny / length; normals[at + 2] = nz / length; normals[at + 3] = 1;
+  }
+  let side = 0;
+  for (let corner = 0; corner < 3; corner += 1) {
+    if ((matched & (1 << corner)) !== 0) continue;
+    const p = other.vertices[corner];
+    const distance = (p[0] - origin[0]) * normals[at] + (p[1] - origin[1]) * normals[at + 1] + (p[2] - origin[2]) * normals[at + 2];
+    if (Math.abs(distance) <= 1e-6) return false;                     /* on the plane: the full test decides */
+    const sign = distance > 0 ? 1 : -1;
+    if (side !== 0 && sign !== side) return false;
+    side = sign;
+  }
+  return side !== 0;
+}
+
+/**
+ * Two triangles that share vertices touch by design; they intersect only if they ALSO overlap away from what they share: a duplicate face, a face folded back
+ * flat onto its edge neighbour, or, with one shared vertex, an opposite edge piercing the other face or two flat corners covering each other.
+ */
+function neighboursIntersect(a: MeshIntersectionTriangle, b: MeshIntersectionTriangle, sharedInA: number[], epsilonMeters: number): boolean {
+  const normalA = cross(subtract(a.vertices[1], a.vertices[0]), subtract(a.vertices[2], a.vertices[0]));
+  const normalB = cross(subtract(b.vertices[1], b.vertices[0]), subtract(b.vertices[2], b.vertices[0]));
+  const lengthA = Math.hypot(...normalA); const lengthB = Math.hypot(...normalB);
+  if (lengthA <= 1e-12 || lengthB <= 1e-12) return false;
+  if (sharedInA.length >= 3) return true;
+  const sine = Math.hypot(...cross(normalA, normalB)) / (lengthA * lengthB);
+  const ownA = [0, 1, 2].filter((i) => !sharedInA.includes(i)).map((i) => a.vertices[i]);
+  const ownB = [0, 1, 2].filter((i) => !sharedInA.some((j) => a.keys[j] === b.keys[i])).map((i) => b.vertices[i]);
+  const offPlane = Math.max(...ownB.map((point) => Math.abs(dot(subtract(point, a.vertices[0]), normalA)) / lengthA));
+  const coplanar = sine <= 1e-5 || offPlane <= Math.min(epsilonMeters, 1e-6);
+  const corner = a.vertices[sharedInA[0]];
+  if (sharedInA.length === 2) {
+    if (!coplanar) return false;                                   /* two planes through the same edge meet only along it */
+    const edge = subtract(a.vertices[sharedInA[1]], corner);
+    return dot(cross(edge, subtract(ownA[0], corner)), cross(edge, subtract(ownB[0], corner))) > 0;
+  }
+  if (!coplanar) return segmentPiercesTriangle(ownA[0], ownA[1], b) || segmentPiercesTriangle(ownB[0], ownB[1], a);
+  const axis = dominantAxis(normalA);
+  const ray = (point: MeshIntersectionPoint): readonly [number, number] => { const p = project2(point, axis); const o = project2(corner, axis); return [p[0] - o[0], p[1] - o[1]]; };
+  return cornersOverlap(ray(ownA[0]), ray(ownA[1]), ray(ownB[0]), ray(ownB[1]));
+}
+
 function grid(value: number, cellSizeMeters: number): number {
   return Math.floor(value / cellSizeMeters);
 }
 
-function cellKey(x: number, y: number, z: number): string {
-  return `${x}:${y}:${z}`;
-}
-
-function pairKey(a: number, b: number, triangleCount: number): number {
-  const low = Math.min(a, b);
-  const high = Math.max(a, b);
-  return low * triangleCount + high;
+/** One number per grid cell: 17 bits per axis around the origin (hundreds of kilometres at the smallest cell). */
+function cellKey(x: number, y: number, z: number): number {
+  return ((x + 65536) * 131072 + (y + 65536)) * 131072 + (z + 65536);
 }
 
 function stableTrianglePriority(
@@ -270,14 +345,9 @@ function stableTrianglePriority(
 }
 
 /**
- * Bounded self-intersection diagnostic for mobile-generated triangle soup.
- *
- * A spatial AABB hash eliminates the O(T^2) all-pairs scan. Faces sharing any
- * quantized vertex are deliberately skipped: a legitimate sharp 90-degree fold
- * is adjacent geometry, not self-intersection noise. The exact triangle tests are
- * globally capped, so even a pathological 50k-face soup cannot monopolize the
- * worker indefinitely. Positive intersections are still useful when truncated;
- * a truncated zero count must never be interpreted as proof of a clean mesh.
+ * Self-intersection diagnostic for mobile-generated triangle soup. A grid finds every pair whose boxes overlap; faces that share quantized vertices
+ * are judged as neighbours (a legitimate sharp fold is not an intersection). Positive findings stay useful when truncated; a truncated zero count must never
+ * be read as proof of a clean mesh.
  */
 export function diagnoseMeshSelfIntersections(
   triangles: readonly MeshIntersectionTriangle[],
@@ -291,76 +361,90 @@ export function diagnoseMeshSelfIntersections(
   const aabbs = triangles.map(aabbForTriangle);
   const cellSizeMeters = clamp(Math.abs(voxelSizeMeters) * 2.5, 0.065, 0.24);
   const epsilonMeters = clamp(Math.abs(voxelSizeMeters) * 0.015, 1e-5, 8e-4);
+  /* The order in which pairs are tested is fixed by the geometry, not by the order of the triangles, so a truncated result does not depend on it. */
   const priorities = triangles.map((triangle, index) => stableTrianglePriority(triangle, aabbs[index], cellSizeMeters));
-  const buckets = new Map<string, number[]>();
-  const seenPairs = new Set<number>();
   const order = Array.from({ length: triangleCount }, (_, index) => index).sort((left, right) =>
     priorities[left] - priorities[right] || left - right
   );
+  const rank = new Int32Array(triangleCount);
+  order.forEach((triangleIndex, position) => { rank[triangleIndex] = position; });
   const budgets = selfIntersectionBudgets(triangleCount);
   let broadPhaseCandidatePairs = 0;
   let exactTestedPairs = 0;
   let intersectingPairCount = 0;
-  let oversizedTriangleCount = 0;
+  const oversizedTriangleCount = 0;
   let truncated = false;
 
-  outer: for (const triangleIndex of order) {
-    const bounds = aabbs[triangleIndex];
-    const minX = grid(bounds.minX, cellSizeMeters);
-    const minY = grid(bounds.minY, cellSizeMeters);
-    const minZ = grid(bounds.minZ, cellSizeMeters);
-    const maxX = grid(bounds.maxX, cellSizeMeters);
-    const maxY = grid(bounds.maxY, cellSizeMeters);
-    const maxZ = grid(bounds.maxZ, cellSizeMeters);
-    const cellCount = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
-    if (cellCount > MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE) {
-      oversizedTriangleCount += 1;
-      truncated = true;
-      continue;
-    }
+  const positions = new Float32Array(triangleCount * 9);
+  triangles.forEach((triangle, index) => triangle.vertices.forEach((vertex, corner) => positions.set(vertex, index * 9 + corner * 3)));
+  const normals = new Float64Array(triangleCount * 4);                /* unit normal and 1 once computed */
+  const margin = epsilonMeters;
+  const buckets = new Map<number, number[]>();
+  const large: number[] = [];                                          /* triangles too wide for the grid: every later one is compared with them */
+  const inserted: number[] = [];
+  const seenBy = new Int32Array(triangleCount).fill(-1);
+  let largeComparisons = 0;
+  const candidates: number[] = [];
+  const consider = (otherIndex: number, current: number): void => {
+    if (seenBy[otherIndex] === current) return;
+    seenBy[otherIndex] = current;
+    if (aabbOverlap(aabbs[current], aabbs[otherIndex], epsilonMeters)) candidates.push(otherIndex);
+  };
 
-    for (let x = minX; x <= maxX; x += 1) {
-      for (let y = minY; y <= maxY; y += 1) {
-        for (let z = minZ; z <= maxZ; z += 1) {
-          const key = cellKey(x, y, z);
-          const bucket = buckets.get(key);
-          if (bucket !== undefined) {
-            for (const otherIndex of bucket) {
-              const triangle = triangles[triangleIndex];
-              const other = triangles[otherIndex];
-              // Adjacent manifold faces and cell-coincident but non-overlapping
-              // AABBs are cheap rejects and must not consume the bounded pair budget.
-              if (sharedVertex(triangle, other) || !aabbOverlap(bounds, aabbs[otherIndex], epsilonMeters)) continue;
-              const encoded = pairKey(triangleIndex, otherIndex, triangleCount);
-              if (seenPairs.has(encoded)) continue;
-              if (broadPhaseCandidatePairs >= budgets.broadPhasePairs) {
-                truncated = true;
-                break outer;
-              }
-              seenPairs.add(encoded);
-              broadPhaseCandidatePairs += 1;
-              if (exactTestedPairs >= budgets.exactTests) {
-                truncated = true;
-                break outer;
-              }
-              exactTestedPairs += 1;
-              if (!trianglesIntersect(triangle, other, epsilonMeters)) continue;
-              intersectingPairCount += 1;
-              if (triangleIntersectionHits[triangleIndex] < 0xffff) triangleIntersectionHits[triangleIndex] += 1;
-              if (triangleIntersectionHits[otherIndex] < 0xffff) triangleIntersectionHits[otherIndex] += 1;
-              const firstComponent = componentByTriangle[triangleIndex] ?? -1;
-              const secondComponent = componentByTriangle[otherIndex] ?? -1;
-              if (firstComponent >= 0 && firstComponent < componentPairCounts.length) componentPairCounts[firstComponent] += 1;
-              if (
-                secondComponent >= 0 && secondComponent < componentPairCounts.length &&
-                secondComponent !== firstComponent
-              ) componentPairCounts[secondComponent] += 1;
-            }
-          }
-          if (bucket === undefined) buckets.set(key, [triangleIndex]);
-          else bucket.push(triangleIndex);
-        }
+  for (const triangleIndex of order) {
+    if (truncated) break;
+    const bounds = aabbs[triangleIndex];
+    const minX = grid(bounds.minX - margin, cellSizeMeters); const maxX = grid(bounds.maxX + margin, cellSizeMeters);
+    const minY = grid(bounds.minY - margin, cellSizeMeters); const maxY = grid(bounds.maxY + margin, cellSizeMeters);
+    const minZ = grid(bounds.minZ - margin, cellSizeMeters); const maxZ = grid(bounds.maxZ + margin, cellSizeMeters);
+    candidates.length = 0;
+    if ((maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1) > MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE) {
+      largeComparisons += inserted.length;
+      if (largeComparisons > MAX_SELF_INTERSECTION_LARGE_COMPARISONS) truncated = true;
+      for (const otherIndex of inserted) consider(otherIndex, triangleIndex);
+      large.push(triangleIndex);
+    } else {
+      for (const otherIndex of large) consider(otherIndex, triangleIndex);
+      for (let x = minX; x <= maxX; x += 1) for (let y = minY; y <= maxY; y += 1) for (let z = minZ; z <= maxZ; z += 1) {
+        const key = cellKey(x, y, z);
+        const bucket = buckets.get(key);
+        if (bucket === undefined) { buckets.set(key, [triangleIndex]); continue; }
+        for (const otherIndex of bucket) consider(otherIndex, triangleIndex);
+        bucket.push(triangleIndex);
       }
+    }
+    inserted.push(triangleIndex);
+    if (exactTestedPairs + candidates.length > budgets.exactTests) candidates.sort((left, right) => rank[left] - rank[right]);   /* the order matters only when the cap cuts */
+    for (const otherIndex of candidates) {
+      const triangle = triangles[triangleIndex];
+      const other = triangles[otherIndex];
+      broadPhaseCandidatePairs += 1;
+      if (exactTestedPairs >= budgets.exactTests) { truncated = true; break; }
+      exactTestedPairs += 1;
+      /* which corners of this triangle the other one has too, and which corners of the other one those are (bit masks) */
+      let sharedCount = 0; let matched = 0;
+      for (let corner = 0; corner < 3; corner += 1) {
+        const key = triangle.keys[corner];
+        const at = key === other.keys[0] ? 0 : key === other.keys[1] ? 1 : key === other.keys[2] ? 2 : -1;
+        if (at >= 0) { sharedCount += 1; matched |= 1 << at; }
+      }
+      if (sharedCount === 0) {
+        if (!trianglesIntersect(triangle, other, epsilonMeters)) continue;
+      } else {
+        if (sharedCount < 3 && separatedByPlane(triangle, other, matched, normals, triangleIndex)) continue;
+        const shared = [0, 1, 2].filter((corner) => other.keys.includes(triangle.keys[corner]));
+        if (!neighboursIntersect(triangle, other, shared, epsilonMeters)) continue;
+      }
+      intersectingPairCount += 1;
+      if (triangleIntersectionHits[triangleIndex] < 0xffff) triangleIntersectionHits[triangleIndex] += 1;
+      if (triangleIntersectionHits[otherIndex] < 0xffff) triangleIntersectionHits[otherIndex] += 1;
+      const firstComponent = componentByTriangle[triangleIndex] ?? -1;
+      const secondComponent = componentByTriangle[otherIndex] ?? -1;
+      if (firstComponent >= 0 && firstComponent < componentPairCounts.length) componentPairCounts[firstComponent] += 1;
+      if (
+        secondComponent >= 0 && secondComponent < componentPairCounts.length &&
+        secondComponent !== firstComponent
+      ) componentPairCounts[secondComponent] += 1;
     }
   }
 
