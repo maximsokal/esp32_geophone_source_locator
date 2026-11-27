@@ -135,6 +135,15 @@ function toSample(timeMs: number, pose: FusionPoseLike): PoseSample | null {
   };
 }
 
+/** What {@link WebXrFusionKeyframeSelector.withdraw} puts back: the keyframe bookkeeping, not the motion estimate. */
+export interface FusionSelectorMark {
+  hadSample: boolean;
+  lastKeyframe: PoseSample | null;
+  lastKeyframeTimeMs: number;
+  lastPolishTimeMs: number;
+  keyframeId: number;
+}
+
 /**
  * Selects independent integration keyframes from ARCore/WebXR 6DoF poses.
  *
@@ -164,6 +173,19 @@ export class WebXrFusionKeyframeSelector {
     this.filteredLinearSpeed = 0;
     this.filteredAngularSpeed = 0;
     this.keyframeId = 0;
+  }
+
+  mark(): FusionSelectorMark {
+    return { hadSample: this.previousSample !== null, lastKeyframe: this.lastKeyframe, lastKeyframeTimeMs: this.lastKeyframeTimeMs, lastPolishTimeMs: this.lastPolishTimeMs, keyframeId: this.keyframeId };
+  }
+
+  /** The frame of the last evaluate() was not captured: its viewpoint is not taken. Motion tracking keeps what it learnt from that pose. */
+  withdraw(mark: FusionSelectorMark): void {
+    this.lastKeyframe = mark.lastKeyframe;
+    this.lastKeyframeTimeMs = mark.lastKeyframeTimeMs;
+    this.lastPolishTimeMs = mark.lastPolishTimeMs;
+    this.keyframeId = mark.keyframeId;
+    if (!mark.hadSample) this.previousSample = null;
   }
 
   evaluate(timeMs: number, pose: FusionPoseLike): FusionFrameDecision {

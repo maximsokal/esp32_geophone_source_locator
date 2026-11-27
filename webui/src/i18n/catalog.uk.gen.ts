@@ -1998,6 +1998,8 @@ export const uk: Record<I18nKey, string> = {
   "xr.error.webgl_unavailable": "Не вдалося створити WebGL для WebXR.",
   "xr.error.webxr_unavailable": "У цьому браузері WebXR недоступний.",
   "xr.finish_save": "Завершити й зберегти скан",
+  "xr.fusion.catching_up": "Обробка скану: на мить утримуйте телефон нерухомо.",
+  "xr.fusion.lost_frames": "Обробку перезапущено, втрачено останніх кадрів глибини: {count}. Проскануйте цю ділянку ще раз.",
   "xr.guide.aria_label": "Автоматичні структурні підказки",
   "xr.guide.camera_baseline": "База камери {distance}",
   "xr.guide.confirm_corner": "Підтвердити стійко перевірений кут 3D",

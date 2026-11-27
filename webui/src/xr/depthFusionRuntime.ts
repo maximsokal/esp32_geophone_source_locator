@@ -5,7 +5,9 @@ import type {
 } from './depthPointCloud';
 import { DepthFusionClient, type DepthFusionClientOptions, type SubmitOutcome } from './depthFusionClient';
 import type { FusionGuidancePacket, FusionStats } from './depthFusionProtocol';
-import { createDepthFusionWorker } from './depthFusionWorkerFactory';
+import { createDepthFusionKeeper, createDepthFusionWorker } from './depthFusionWorkerFactory';
+import { FusionCaptureGovernor, type FusionCaptureStep } from './fusionCaptureGovernor';
+import type { FusionPoseLike, WebXrFusionKeyframeSelector } from './webxrFusionQuality';
 import { registerManualPlacementResolver, solveManualPlacementOnStableSurface } from './manualPlacementSurface';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
 import { rgbGuidanceMatchesView } from './rgbDepthGuidance';
@@ -38,6 +40,7 @@ export const EMPTY_STRUCTURAL_GUIDE: StructuralGuideSnapshot = {
 
 export class RuntimeFusion {
   private clientInstance: DepthFusionClient;
+  readonly governor = new FusionCaptureGovernor();
   private parked = false;
   private readonly options: RuntimeFusionOptions;
   private coverage: LiveCoverageSnapshot | null = null;
@@ -55,7 +58,15 @@ export class RuntimeFusion {
 
   private createClient(): DepthFusionClient {
     const { workerFactory, ...rest } = this.options;
-    const client = new DepthFusionClient({ ...rest, workerFactory: workerFactory ?? createDepthFusionWorker });
+    const client: DepthFusionClient = new DepthFusionClient({
+      keeperFactory: createDepthFusionKeeper,
+      ...rest,
+      workerFactory: workerFactory ?? createDepthFusionWorker,
+      onFrameTiming: (workMs, queueDepth) => {
+        if (client !== undefined) this.governor.frameDone(workMs, { ...client.limits, queueDepth });
+        rest.onFrameTiming?.(workMs, queueDepth);
+      },
+    });
     if (client.mode === 'worker') {
       /* In worker mode the manual pin resolver reads the mirror of the certified structural snapshot (at most a second old); inline, the accumulator registers its own. */
       registerManualPlacementResolver((candidate) => solveManualPlacementOnStableSurface(candidate, this.guideMirror ?? EMPTY_STRUCTURAL_GUIDE));
@@ -77,6 +88,7 @@ export class RuntimeFusion {
     this.coverage = null; this.coverageFetching = false;
     this.liveMeshInput = null; this.liveMeshFetching = false;
     this.guideMirror = null; this.guideFetching = null; this.guideFetchedAt = Number.NEGATIVE_INFINITY;
+    this.governor.reset();
     if (this.parked) { this.clientInstance = this.createClient(); this.parked = false; }
     this.clientInstance.reset();
   }
@@ -88,7 +100,13 @@ export class RuntimeFusion {
     this.clientInstance.dispose();
   }
 
-  canAccept(mandatory: boolean): boolean { return this.client.canAccept(mandatory); }
+  /** Admission and rate control of one XR frame, BEFORE any depth is captured (see {@link FusionCaptureGovernor}). */
+  captureStep(timeMs: number, pose: FusionPoseLike, selector: WebXrFusionKeyframeSelector): FusionCaptureStep {
+    return this.governor.step(timeMs, pose, selector, this.client.limits);
+  }
+
+  /** True while not even a new viewpoint can be taken: the operator is asked to hold still. */
+  get catchingUp(): boolean { return this.governor.catchingUp; }
 
   /**
    * Hands one XR depth frame to the fusion. Called inside the frame callback: the device buffer is COPIED here and nothing of the XR frame leaves it.
@@ -162,9 +180,20 @@ export class RuntimeFusion {
    * the caller reports; the scan is not silently replaced by an empty one.
    */
   async finish(depthFrames: number, sampledFrames: number): Promise<FinishResult> {
-    const drain = await this.client.drain();
-    const snapshot = await this.client.request<ScanPointCloudSnapshot>('snapshot', { depthFrameCount: depthFrames, sampledDepthFrames: sampledFrames });
-    return { snapshot, drained: drain.drained, outstandingFrames: drain.outstandingFrames, outstandingKeyframes: drain.outstandingKeyframes };
+    const attempt = async (): Promise<FinishResult> => {
+      const drain = await this.client.drain();
+      if (!drain.drained) throw new Error(`depth fusion did not finish ${drain.outstandingFrames} accepted frames (${drain.outstandingKeyframes} keyframes) in time`);
+      const snapshot = await this.client.request<ScanPointCloudSnapshot>('snapshot', { depthFrameCount: depthFrames, sampledDepthFrames: sampledFrames });
+      return { snapshot, drained: true, outstandingFrames: 0, outstandingKeyframes: 0 };
+    };
+    try {
+      return await attempt();
+    } catch (error) {
+      /* A worker that stopped answering is replaced (checkpoint + journal) and asked once more; if that is not possible the error stands. */
+      if (!this.client.restart(`finish: ${error instanceof Error ? error.message : String(error)}`)) throw error;
+      this.client.resumeIntake();
+      return attempt();
+    }
   }
 
   dispose(): void { this.parked = true; this.clientInstance.dispose(); }

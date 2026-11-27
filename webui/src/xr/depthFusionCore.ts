@@ -1,5 +1,7 @@
 import { DepthPointCloudAccumulator, type MonocularSurfacePrior } from './depthPointCloud';
+import { captureFusionState, restoreFusionState } from './depthFusionCheckpoint';
 import { samplerFromDepthFrameBuffer } from './depthFusionFrame';
+import type { KeeperCheckpoint, PortLike } from './depthFusionKeeper';
 import {
   transferablesOf,
   type FusionFrameDone, type FusionFrameMessage, type FusionRequestMessage, type FusionResponse, type FusionStats, type FusionWorkerRequest, type FusionWorkerResponse,
@@ -22,8 +24,11 @@ export class DepthFusionCore {
   readonly accumulator = new DepthPointCloudAccumulator(undefined, undefined, undefined, NO_PRIOR);
   private generation = 0;
   private integratedFrames = 0;
+  private lastSeq = -1;
 
   constructor(private readonly clock: () => number = () => performance.now()) {}
+
+  get currentGeneration(): number { return this.generation; }
 
   stats(): FusionStats {
     return { pointCount: this.accumulator.pointCount, promotedCount: this.accumulator.promotedCount, polishFrameCount: this.accumulator.polishFrameCount, keyframeCount: this.accumulator.keyframeCount, integratedFrames: this.integratedFrames };
@@ -32,6 +37,7 @@ export class DepthFusionCore {
   reset(generation: number): void {
     this.generation = generation;
     this.integratedFrames = 0;
+    this.lastSeq = -1;
     setLatestRgbGuidance(null);
     this.accumulator.reset();
   }
@@ -46,11 +52,28 @@ export class DepthFusionCore {
     try {
       const result = this.accumulator.sampleDepthFrame(sampler, { projectionMatrix: message.geometry.projectionMatrix, transform: { matrix: message.geometry.worldFromView } }, message.context);
       this.integratedFrames += 1;
+      this.lastSeq = message.seq;
       return { changedPoints: result.changedPoints, workMs: this.clock() - started };
     } finally {
       setLatestRgbGuidance(previousGuidance);
     }
   }
+
+  /** The checkpoint of everything fused so far. A LIVE view: the receiving postMessage clones it before the next frame can change anything. */
+  checkpoint(): KeeperCheckpoint {
+    return { generation: this.generation, throughSeq: this.lastSeq, integratedFrames: this.integratedFrames, state: captureFusionState(this.accumulator) };
+  }
+
+  /** Continues from a checkpoint (already cloned on its way here). */
+  restore(checkpoint: KeeperCheckpoint): void {
+    if (checkpoint.generation !== this.generation) throw new Error(`checkpoint of generation ${checkpoint.generation} while generation ${this.generation} is current`);
+    restoreFusionState(this.accumulator, checkpoint.state);
+    this.integratedFrames = checkpoint.integratedFrames;
+    this.lastSeq = checkpoint.throughSeq;
+  }
+
+  /** Whether that frame is already part of the state (it was in the checkpoint a replacement worker started from). */
+  alreadyFused(seq: number): boolean { return seq <= this.lastSeq; }
 
   answer(request: FusionRequestMessage): { payload: unknown; workMs: number } {
     if (request.generation !== this.generation) throw new Error(`request of generation ${request.generation} while generation ${this.generation} is current`);
@@ -71,10 +94,39 @@ export class DepthFusionCore {
 
 /** The worker's message loop as a function: feed it requests, it posts responses (with the buffers it hands over). */
 export function createDepthFusionHandler(post: FusionPost, core: DepthFusionCore = new DepthFusionCore()): { core: DepthFusionCore; handle: (message: FusionWorkerRequest) => void } {
+  let keeper: PortLike | null = null;
+  let waiting: FusionWorkerRequest[] | null = null;                    /* non-null while a restore is on its way: later messages wait for it */
   const handle = (message: FusionWorkerRequest): void => {
+    if (waiting !== null && message.type !== 'reset') { waiting.push(message); return; }
     try {
-      if (message.type === 'reset') { core.reset(message.generation); return; }
+      if (message.type === 'reset') { waiting = null; core.reset(message.generation); return; }
+      if (message.type === 'attachKeeper') { keeper?.close?.(); keeper = message.port; return; }
+      if (message.type === 'checkpoint') { keeper?.postMessage(core.checkpoint()); return; }
+      if (message.type === 'restore') {
+        const port = message.port;
+        const generation = message.generation;
+        waiting = [];
+        port.onmessage = (event) => {
+          const queued = waiting;
+          if (queued === null) return;
+          waiting = null;
+          port.close?.();
+          const checkpoint = event.data as KeeperCheckpoint | null;
+          try {
+            if (checkpoint !== null) core.restore(checkpoint);
+            post({ type: 'restored', generation, throughSeq: checkpoint === null ? -1 : checkpoint.throughSeq, stats: core.stats() });
+          } catch (error) {
+            post({ type: 'error', generation, message: `restore failed: ${error instanceof Error ? error.message : String(error)}` });
+          }
+          for (const next of queued) handle(next);
+        };
+        return;
+      }
       if (message.type === 'frame') {
+        if (message.generation === core.currentGeneration && core.alreadyFused(message.seq)) {
+          post({ type: 'frameDone', generation: message.generation, seq: message.seq, buffer: message.frame.data, changedPoints: 0, workMs: 0, stats: core.stats() }, [message.frame.data]);
+          return;
+        }
         const { changedPoints, workMs } = core.integrate(message);
         const done: FusionFrameDone = { type: 'frameDone', generation: message.generation, seq: message.seq, buffer: message.frame.data, changedPoints, workMs, stats: core.stats() };
         post(done, [message.frame.data]);

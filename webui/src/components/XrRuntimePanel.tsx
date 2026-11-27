@@ -65,6 +65,7 @@ import {
 export type ScanStartIntent = 'fresh' | 'continue';
 
 const emptyRuntimeState: WebXrRuntimeState = {
+  fusionCatchingUp: false, fusionLostFrames: 0,
   phase:'idle',referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,
   scanPaused:false,originReset:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,
   depthWidth:null,depthHeight:null,depthFrameCount:0,sampledDepthFrames:0,pointCount:0,retainedPointCount:0,pointCloudVersion:0,
@@ -546,6 +547,8 @@ export function XrRuntimePanel({
         {running&&activeScanIntent==='continue'&&<div className="xr-overlay-hint">{t('xr.overlay.continue_hint',{sample:continuationSampleReady?t('xr.overlay.continue_enough'):t('xr.overlay.registration_sample',{count:formatNumber(locale,runtimeState.pointCount)})})}</div>}
         {relock!==null&&relock.phase==='relocalizing'&&<div className="xr-overlay-hint" role="status" data-relock="searching" data-relock-found={relock.found}>{t('xr.relock.find',{found:Math.min(relock.found,relock.needed),needed:relock.needed})}{relock.found>=relock.needed&&relock.reason!==null&&relock.reason!=='need_more_tags'?` · ${t(`xr.relock.reason.${relock.reason}` as 'xr.relock.reason.collinear')}`:''}</div>}
         {relockAligned&&<div className="xr-overlay-hint" role="status" data-relock="aligned">{t('xr.relock.aligned')}</div>}
+        {runtimeState.phase==='running'&&runtimeState.fusionCatchingUp&&<div className="xr-overlay-hint" role="status" data-fusion="catching-up">{t('xr.fusion.catching_up')}</div>}
+        {runtimeState.phase==='running'&&runtimeState.fusionLostFrames>0&&<div className="xr-overlay-hint" role="alert" data-fusion="lost">{t('xr.fusion.lost_frames',{count:runtimeState.fusionLostFrames})}</div>}
         {runtimeState.originReset&&<div className="xr-overlay-warning" role="alert" data-origin-reset="true">{t('xr.origin_reset')}</div>}{runtimeState.scanPaused&&!runtimeState.originReset&&<div className="xr-overlay-warning">{t('xr.manual.paused')}</div>}{runtimeState.motionState==='too-fast'&&<div className="xr-overlay-warning">{t('xr.manual.move_slower')}</div>}{(runtimeState.motionState==='stationary'||runtimeState.motionState==='redundant')&&<div className="xr-overlay-hint">{t('xr.manual.move_viewpoint')}</div>}{runtimeState.manualPointErrorKey!==null&&<div className="xr-overlay-warning" role="status">{t(runtimeState.manualPointErrorKey)}</div>}{runtimeState.manualPointErrorKey===null&&runtimeState.manualPointError!==null&&<div className="xr-overlay-warning">{manualPlacementErrorLabel(runtimeState.manualPointError,locale)}</div>}
         {running&&!tagModeEnabled&&tagUnavailableReason!==null&&<div className="xr-overlay-hint">{t('xr.tag.unavailable',{reason:tagUnavailableReason})}</div>}
         {tagModeEnabled&&tagNotices.length>0&&<div className="xr-tag-notices" role="status" aria-live="polite">{tagNotices.map((notice)=><div key={`${notice.kind??'ok'}-${notice.tagId}`} className={notice.kind==='jump'?'xr-overlay-warning xr-tag-notice':'xr-overlay-hint xr-tag-notice'} data-node={notice.node} data-frame-jump={notice.kind==='jump'?'true':undefined}>{tagScanNoticeText(notice,locale)}</div>)}</div>}

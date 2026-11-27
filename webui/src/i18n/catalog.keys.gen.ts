@@ -1996,6 +1996,8 @@ export const i18nKeys = [
   "xr.error.webgl_unavailable",
   "xr.error.webxr_unavailable",
   "xr.finish_save",
+  "xr.fusion.catching_up",
+  "xr.fusion.lost_frames",
   "xr.guide.aria_label",
   "xr.guide.camera_baseline",
   "xr.guide.confirm_corner",

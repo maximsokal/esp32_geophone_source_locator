@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { ARCORE_NOISE, boxCornerScene, DEFAULT_INTRINSICS, insideCornerScene, orbitPoses, renderDepth, stepScene, tiltedPlaneScene, type SyntheticScene, type Vec3 } from '../../xr/support/syntheticDepthScene';
 import { DATASET_ROOT, findSequenceDir, loadIclSequence, loadRedwoodSequence, loadTumLike, projectCameraPosition, TUM_INTRINSICS, type ReplayFrame } from './support/replay';
 
 /*
@@ -45,12 +46,27 @@ function writePack(name: string, frames: ReplayFrame[]): void {
   writeFileSync(resolve(OUT, `${name}.pack`), Buffer.concat([prefix, header, body]));
 }
 
+const tum = (name: string, intrinsics: (typeof TUM_INTRINSICS)['freiburg1']): ReplayFrame[] | null => { const dir = findSequenceDir(`${DATASET_ROOT}/tum/${name}`); return dir === null ? null : loadTumLike({ dir, intrinsics, depthScale: 5000, stride: 3, maxFrames: MAX }); };
+const icl = (folder: string, truth: string): ReplayFrame[] | null => (existsSync(`${DATASET_ROOT}/icl-nuim/${folder}`) ? loadIclSequence(`${DATASET_ROOT}/icl-nuim/${folder}`, `${DATASET_ROOT}/icl-nuim/${truth}.gt.freiburg`, { stride: 3, maxFrames: MAX }) : null);
+const redwood = (folder: string, truth: string): ReplayFrame[] | null => (existsSync(`${DATASET_ROOT}/redwood/${folder}`) ? loadRedwoodSequence(`${DATASET_ROOT}/redwood/${folder}`, `${DATASET_ROOT}/redwood/${truth}-traj.txt`, { stride: 3, maxFrames: MAX }) : null);
+
+const synthetic = (scene: () => SyntheticScene, target: Vec3, radius: number, elevation: number, from: number, to: number): ReplayFrame[] =>
+  orbitPoses(target, radius, elevation, from, to, 90).map((pose, index) => {
+    const rendered = renderDepth(scene(), pose, index + 1, ARCORE_NOISE, DEFAULT_INTRINSICS);
+    return { timestamp: index / 10, width: DEFAULT_INTRINSICS.width, height: DEFAULT_INTRINSICS.height, depth: rendered.buffer, projection: Float32Array.from(rendered.view.projectionMatrix), worldFromView: Float32Array.from(rendered.view.transform.matrix) };
+  });
+
 const SOURCES: Array<[string, () => ReplayFrame[] | null]> = [
-  ['tum-freiburg1-room', () => { const d = findSequenceDir(`${DATASET_ROOT}/tum/freiburg1_room`); return d === null ? null : loadTumLike({ dir: d, intrinsics: TUM_INTRINSICS.freiburg1, depthScale: 5000, stride: 3, maxFrames: MAX }); }],
-  ['tum-freiburg2-desk', () => { const d = findSequenceDir(`${DATASET_ROOT}/tum/freiburg2_desk`); return d === null ? null : loadTumLike({ dir: d, intrinsics: TUM_INTRINSICS.freiburg2, depthScale: 5000, stride: 3, maxFrames: MAX }); }],
-  ['icl-living-kt0-noisy', () => existsSync(`${DATASET_ROOT}/icl-nuim/living_kt0_noisy`) ? loadIclSequence(`${DATASET_ROOT}/icl-nuim/living_kt0_noisy`, `${DATASET_ROOT}/icl-nuim/livingRoom0.gt.freiburg`, { stride: 3, maxFrames: MAX }) : null],
-  ['redwood-living1-noisy', () => existsSync(`${DATASET_ROOT}/redwood/livingroom1-depth-simulated`) ? loadRedwoodSequence(`${DATASET_ROOT}/redwood/livingroom1-depth-simulated`, `${DATASET_ROOT}/redwood/livingroom1-traj.txt`, { stride: 3, maxFrames: MAX }) : null],
-  ['redwood-office1-noisy', () => existsSync(`${DATASET_ROOT}/redwood/office1-depth-simulated`) ? loadRedwoodSequence(`${DATASET_ROOT}/redwood/office1-depth-simulated`, `${DATASET_ROOT}/redwood/office1-traj.txt`, { stride: 3, maxFrames: MAX }) : null],
+  ['synthetic-inside-corner', () => synthetic(() => insideCornerScene([0, 0, 0], 0.6), [0, 0, 0.15], 0.9, 35, 0, 330)],
+  ['synthetic-box-corner', () => synthetic(() => boxCornerScene([0, 0, 0], 0.4), [0, 0, 0], 0.9, 35, -20, 120)],
+  ['synthetic-step', () => synthetic(() => stepScene(0.2, 0.6), [0, 0, 0.1], 1.0, 45, 0, 330)],
+  ['synthetic-tilted30', () => synthetic(() => tiltedPlaneScene(30, 20, 0.8, [0, 0, 0]), [0, 0, 0], 1.0, 50, 0, 330)],
+  ['tum-freiburg1-xyz', () => tum('freiburg1_xyz', TUM_INTRINSICS.freiburg1)],
+  ['tum-freiburg1-desk', () => tum('freiburg1_desk', TUM_INTRINSICS.freiburg1)],
+  ['tum-freiburg1-room', () => tum('freiburg1_room', TUM_INTRINSICS.freiburg1)],
+  ['tum-freiburg2-desk', () => tum('freiburg2_desk', TUM_INTRINSICS.freiburg2)],
+  ...([['living_kt0', 'livingRoom0'], ['living_kt0_noisy', 'livingRoom0'], ['living_kt1', 'livingRoom1'], ['living_kt1_noisy', 'livingRoom1'], ['office_kt0', 'traj0'], ['office_kt0_noisy', 'traj0'], ['office_kt1', 'traj1'], ['office_kt1_noisy', 'traj1']] as const).map(([folder, truth]): [string, () => ReplayFrame[] | null] => [`icl-${folder.replace(/_/g, '-')}`, () => icl(folder, truth)]),
+  ...([['redwood-living1-clean', 'livingroom1-depth-clean', 'livingroom1'], ['redwood-living1-noisy', 'livingroom1-depth-simulated', 'livingroom1'], ['redwood-living2-clean', 'livingroom2-depth-clean', 'livingroom2'], ['redwood-living2-noisy', 'livingroom2-depth-simulated', 'livingroom2'], ['redwood-office1-clean', 'office1-depth-clean', 'office1'], ['redwood-office1-noisy', 'office1-depth-simulated', 'office1'], ['redwood-office2-clean', 'office2-depth-clean', 'office2'], ['redwood-office2-noisy', 'office2-depth-simulated', 'office2']] as const).map(([name, folder, truth]): [string, () => ReplayFrame[] | null] => [name, () => redwood(folder, truth)]),
 ];
 
 describe('depth/pose packs for the browser benchmark', () => {

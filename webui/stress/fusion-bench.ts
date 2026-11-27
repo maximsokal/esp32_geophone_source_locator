@@ -1,7 +1,11 @@
 import { DepthPointCloudAccumulator } from '../src/xr/depthPointCloud';
-import type { DepthFusionFrameContext } from '../src/xr/depthPointCloudV2';
+import type { DepthFusionFrameContext, ScanPointCloudSnapshot } from '../src/xr/depthPointCloudV2';
 import { RuntimeFusion } from '../src/xr/depthFusionRuntime';
 import { createDepthFusionWorker } from '../src/xr/depthFusionWorkerFactory';
+import { captureFusionState } from '../src/xr/depthFusionCheckpoint';
+import { buildSessionOccupancyArtifact } from '../src/xr/occupancySolverArtifact';
+import { encodeScanArtifactWithIdentity } from '../src/xr/scanArtifact';
+import { buildVoxelPreviewArtifact } from '../src/xr/voxelPreview';
 
 /*
  * Browser benchmark of the fusion hand-off (Phase 2, stage 1): for the same depth/pose frames, the cost on the MAIN thread of (a) fusing synchronously, as the
@@ -88,7 +92,106 @@ async function runWorker(pack: Pack, paceMs: number) {
   return out;
 }
 
+/** Bit-exact comparison of two results: typed arrays byte for byte, everything else structurally. @returns the paths that differ */
+function differences(a: unknown, b: unknown, path = 'value', out: string[] = []): string[] {
+  if (out.length > 20) return out;
+  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+    if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b) || a.constructor !== b.constructor || a.byteLength !== b.byteLength) { out.push(`${path} (shape)`); return out; }
+    const x = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); const y = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    for (let i = 0; i < x.length; i += 1) if (x[i] !== y[i]) { out.push(`${path} (byte ${i})`); break; }
+    return out;
+  }
+  if (a instanceof Map || a instanceof Set || b instanceof Map || b instanceof Set) {
+    if (!(a instanceof Map || a instanceof Set) || !(b instanceof Map || b instanceof Set)) { out.push(`${path} (container)`); return out; }
+    return differences([...a], [...b], path, out);
+  }
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const key of keys) differences((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key], `${path}.${key}`, out);
+    return out;
+  }
+  if (!Object.is(a, b)) out.push(`${path}: ${String(a)} vs ${String(b)}`);
+  return out;
+}
+
+/** The files a finished scan is saved as, built with a fixed creation time. A scan too small to be saved gives the same refusal on both paths. */
+function artifacts(snapshot: ScanPointCloudSnapshot) {
+  const full = { ...snapshot, manualControlPoints: [], operatorEdges: [] } as never;
+  const out: { scan: Uint8Array | null; occupancy: unknown; preview: unknown; error: string | null } = { scan: null, occupancy: null, preview: null, error: null };
+  try {
+    const encoded = encodeScanArtifactWithIdentity(full);
+    out.scan = encoded.bytes;
+    const occupancy = buildSessionOccupancyArtifact(full, encoded.identity, 1);
+    out.occupancy = occupancy;
+    out.preview = buildVoxelPreviewArtifact(full, encoded.identity, { occupancyArtifact: occupancy as never, identity: encoded.identity } as never);
+  } catch (error) { out.error = error instanceof Error ? error.message : String(error); }
+  return out;
+}
+
+const byteLengthOf = (value: unknown): number => (ArrayBuffer.isView(value) ? value.byteLength : value !== null && typeof value === 'object' && ArrayBuffer.isView((value as { bytes?: unknown }).bytes) ? (value as { bytes: Uint8Array }).bytes.byteLength : 0);
+
+/*
+ * The REAL worker against the synchronous accumulator on the same frames, every frame accepted (the next one is handed over when the previous is fused).
+ * With `restartAt`, the worker is thrown away mid-scan and a replacement continues from the real keeper worker's checkpoint plus the journal.
+ */
+async function equivalence(pack: Pack, restartAt: number | null, corruptWorkerFrames = false) {
+  /* Negative control: the worker (only) gets every tenth frame with its depth moved by 3 mm; the comparison has to report it. */
+  const corrupted = (index: number): ReturnType<typeof deviceDepth> => {
+    if (!corruptWorkerFrames || index % 10 !== 0) return deviceDepth(pack, index);
+    const copy = pack.frames[index].depth.slice(0); const values = new Uint16Array(copy);
+    for (let i = 0; i < values.length; i += 1) if (values[i] !== 0) values[i] += 3;
+    return deviceDepth({ ...pack, frames: [{ ...pack.frames[index], depth: copy }] }, 0);
+  };
+  const accumulator = new DepthPointCloudAccumulator();
+  const recoveryReports: unknown[] = [];
+  const fusion = new RuntimeFusion({ workerFactory: createDepthFusionWorker, checkpointEveryFrames: 20, onRecovered: (report) => recoveryReports.push(report) });
+  fusion.reset();
+  if (fusion.mode !== 'worker') throw new Error('the fusion worker could not be started');
+  let restarted: boolean | null = null; let checkpointsBeforeRestart = 0; let recoveryMs = 0;
+  for (let i = 0; i < pack.frames.length; i += 1) {
+    const view = { projectionMatrix: pack.projection, transform: { matrix: pack.frames[i].worldFromView } };
+    accumulator.sampleDepthFrame(deviceDepth(pack, i), view, contextOf(pack.frames[i]));
+    if (restartAt === i) { checkpointsBeforeRestart = fusion.client.counters.checkpointsStored; const t0 = performance.now(); restarted = fusion.client.restart('equivalence run: deliberate restart'); for (let wait = 0; recoveryReports.length === 0 && wait < 4000; wait += 1) await sleep(1); recoveryMs = performance.now() - t0; }
+    for (let wait = 0; !fusion.client.canAccept(pack.frames[i].keyframe) && wait < 4000; wait += 1) await sleep(1);
+    const outcome = fusion.submitFrame(corrupted(i), view, contextOf(pack.frames[i]), 'unsigned-short', performance.now());
+    if (outcome !== 'accepted') throw new Error(`frame ${i} was not accepted: ${outcome}`);
+    for (let wait = 0; fusion.client.queueDepth > 0 && wait < 4000; wait += 1) await sleep(0);
+  }
+  const frames = pack.frames.length;
+  const expectedCoverage = structuredClone(accumulator.liveCoverageSnapshot(4000));
+  const actualCoverage = await fusion.client.request('coverage', { budget: 4000 });
+  const expectedMesh = structuredClone(accumulator.liveMeshInput(4000));
+  const actualMesh = await fusion.client.request('liveMesh', { maxPoints: 4000 });
+  const expectedStructural = structuredClone(accumulator.structuralWorkerSnapshot());
+  const actualStructural = await fusion.client.request('structural');
+  const expectedGuide = structuredClone(accumulator.structuralGuideSnapshot());
+  const actualGuide = await fusion.client.request('structuralGuide');
+  const result = await fusion.finish(frames, frames);
+  const expected = accumulator.snapshot(frames, frames);
+  const expectedArtifacts = artifacts(expected); const actualArtifacts = artifacts(result.snapshot);
+  const cloneStarted = performance.now();
+  structuredClone(captureFusionState(accumulator));
+  const checkpointCloneMs = performance.now() - cloneStarted;
+  const counters = fusion.client.counters;
+  const arrays = Object.values(expected as unknown as Record<string, unknown>).filter((value) => ArrayBuffer.isView(value)) as ArrayBufferView[];
+  const report = {
+    frames, points: expected.pointCount, certified: expected.tsdfPointCount, occupied: expected.occupiedSurfacePositions.length / 3, free: expected.freeAirPositions.length / 3,
+    comparedArrays: arrays.length, comparedBytes: arrays.reduce((sum, array) => sum + array.byteLength, 0),
+    differences: {
+      snapshot: differences(expected, result.snapshot), coverage: differences(expectedCoverage, actualCoverage), liveMeshInput: differences(expectedMesh, actualMesh),
+      structural: differences(expectedStructural, actualStructural), certifiedStructural: differences(expectedGuide, actualGuide), artifacts: differences(expectedArtifacts, actualArtifacts),
+    },
+    artifactBytes: { scan: byteLengthOf(expectedArtifacts.scan), occupancy: byteLengthOf(expectedArtifacts.occupancy), preview: byteLengthOf(expectedArtifacts.preview), error: expectedArtifacts.error },
+    recovery: restartAt === null ? null : { restartAt, restarted, checkpointsBeforeRestart, recoveryMs, reports: recoveryReports, lostFrames: counters.lostFrames, recoveries: counters.recoveries, replayedFrames: counters.replayedFrames },
+    checkpoint: { stored: counters.checkpointsStored, finalStateCloneMs: checkpointCloneMs },
+    maxJournal: counters.maxJournal,
+  };
+  fusion.dispose();
+  return report;
+}
+
 (window as unknown as { __fusionBench: unknown }).__fusionBench = {
+  equivalence: (pack: Pack, restartAt: number | null, corruptWorkerFrames?: boolean) => equivalence(pack, restartAt, corruptWorkerFrames),
   load: async (url: string) => parsePack(await (await fetch(url)).arrayBuffer()),
   run: async (pack: Pack, variant: 'sync' | 'worker', paceMs: number) => {
     const r = variant === 'sync' ? await runSync(pack, paceMs) : await runWorker(pack, paceMs);

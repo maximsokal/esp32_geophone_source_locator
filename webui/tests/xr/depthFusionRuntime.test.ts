@@ -78,13 +78,13 @@ describe('RuntimeFusion', () => {
 
   it('HUNG WORKER: Finish is bounded; it reports the failure instead of waiting for ever or inventing an empty scan', async () => {
     vi.useFakeTimers();
-    const { fusion, workers, submit } = setup({ drainTimeoutMs: 500, requestTimeoutMs: 500 });
+    const { fusion, workers, submit } = setup({ drainTimeoutMs: 500, requestTimeoutMs: 500, maxRestarts: 0 });   /* no replacement: the terminal path */
     fusion.reset();
     workers[0].hold = true;
     submit(frames(1)[0]);
     const outcome = fusion.finish(1, 1).then(() => 'resolved', (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(2_000);
-    await expect(outcome).resolves.toMatch(/timed out/);
+    await expect(outcome).resolves.toBe('depth fusion did not finish 1 accepted frames (1 keyframes) in time');
   });
 
   it('STALE: coverage / live-mesh / structural answers of a scan that has been reset are dropped', async () => {
@@ -155,7 +155,7 @@ describe('RuntimeFusion', () => {
 
   it('CRASH: a worker error is reported to the owner and later answers fail instead of returning an empty scan', async () => {
     const onFailure = vi.fn();
-    const { fusion, workers } = setup({ onFailure });
+    const { fusion, workers } = setup({ onFailure, maxRestarts: 0 });                 /* no replacement: the terminal path */
     fusion.reset();
     workers[0].crash('out of memory');
     expect(onFailure).toHaveBeenCalledWith('out of memory');

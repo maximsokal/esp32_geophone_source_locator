@@ -18,6 +18,7 @@ const repeats = Number(args.get('repeats') ?? 5);
 const pace = Number(args.get('pace') ?? 33);
 const packDir = resolve(args.get('packs') ?? join(repo, '.test-build/phase2/packs'));
 const only = args.get('only');
+const mode = args.get('mode') ?? 'cost';
 const median = (values) => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
 const server = await createServer({
@@ -25,6 +26,7 @@ const server = await createServer({
   server: { port: 5190, strictPort: true, host: '127.0.0.1', headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
 });
 await server.listen();
+const failed = [];
 const browser = await chromium.launch({ args: ['--enable-precise-memory-info'] });
 const report = { label, pace, repeats, machine: process.env.COMPUTERNAME ?? 'unknown', browser: browser.version(), kind: 'DESKTOP Chromium, not a phone', packs: {} };
 try {
@@ -39,6 +41,25 @@ try {
     const name = file.replace(/\.pack$/, '');
     await page.route(`**/${file}`, (route) => route.fulfill({ body: readFileSync(join(packDir, file)), contentType: 'application/octet-stream', headers: { 'Cross-Origin-Resource-Policy': 'same-origin' } }));
     const handle = await page.evaluateHandle((url) => window.__fusionBench.load(url), `/${file}`);
+    if (mode === 'equivalence') {
+      // The same accepted frames through the synchronous accumulator and the real worker, uninterrupted and with the worker replaced at 10, 50 and 90 %.
+      const results = {};
+      for (const [key, fraction] of [['uninterrupted', null], ['restart10', 0.1], ['restart50', 0.5], ['restart90', 0.9]]) {
+        results[key] = await page.evaluate(([pack, f]) => window.__fusionBench.equivalence(pack, f === null ? null : Math.floor(pack.frames.length * f)), [handle, fraction]);
+      }
+      const total = (r) => Object.values(r.differences).reduce((a, d) => a + d.length, 0);
+      const control = await page.evaluate(([pack]) => window.__fusionBench.equivalence(pack, null, true), [handle]);
+      if (total(control) === 0) failed.push(`${name} (negative control not detected)`);
+      report.packs[name] = { ...results, negativeControl: control };
+      const base = results.uninterrupted;
+      const identical = Object.values(results).every((r) => total(r) === 0 && (r.recovery === null || (r.recovery.restarted === true && r.recovery.recoveries === 1 && r.recovery.lostFrames === 0)));
+      if (!identical) failed.push(name);
+      console.log(`${name}: ${identical ? 'IDENTICAL' : 'DIFFERENT'} | frames ${base.frames} points ${base.points} certified ${base.certified} occupied ${base.occupied} free ${base.free} | arrays ${base.comparedArrays} (${base.comparedBytes} B) | scan ${base.artifactBytes.scan} B occupancy ${base.artifactBytes.occupancy} B preview ${base.artifactBytes.preview} B ${base.artifactBytes.error ?? ''} | differences ${Object.values(results).map(total).join('/')} | lost ${Object.values(results).map((r) => r.recovery?.lostFrames ?? 0).join('/')} | recovery ms ${Object.values(results).map((r) => r.recovery?.recoveryMs.toFixed(0) ?? '-').join('/')} | checkpoint clone ${base.checkpoint.finalStateCloneMs.toFixed(1)} ms | restored through ${Object.values(results).map((r) => r.recovery?.reports[0]?.restoredThroughSeq ?? '-').join('/')} | control differences ${total(control)}`);
+      if (!identical) for (const [key, r] of Object.entries(results)) console.log(key, JSON.stringify({ differences: r.differences, recovery: r.recovery }).slice(0, 900));
+      await handle.dispose();
+      await page.unroute(`**/${file}`);
+      continue;
+    }
     const run = (variant, paceMs) => page.evaluate(([pack, v, p]) => window.__fusionBench.run(pack, v, p), [handle, variant, paceMs]);
     await run('sync', 0); await run('worker', 0);                                 // warm-up pair
     const results = { sync: [], worker: [], workerFlood: [] };
@@ -57,10 +78,11 @@ try {
     await handle.dispose();
     await page.unroute(`**/${file}`);
   }
-  const out = join(repo, `.test-build/phase2/fusion-browser-${label}.json`);
+  const out = join(repo, `.test-build/phase2/fusion-${mode === 'equivalence' ? 'equivalence' : 'browser'}-${label}.json`);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, JSON.stringify(report, null, 2));
 } finally {
   await browser.close();
   await server.close();
 }
+if (failed.length > 0) { console.error(`not identical: ${failed.join(', ')}`); process.exit(1); }

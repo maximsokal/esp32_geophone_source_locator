@@ -1998,6 +1998,8 @@ export const en: Record<I18nKey, string> = {
   "xr.error.webgl_unavailable": "Could not create WebGL for WebXR.",
   "xr.error.webxr_unavailable": "WebXR is not available in this browser.",
   "xr.finish_save": "Finish & save scan",
+  "xr.fusion.catching_up": "Processing the scan: hold the phone still for a moment.",
+  "xr.fusion.lost_frames": "Processing restarted and {count} recent depth frames were lost: scan that area again.",
   "xr.guide.aria_label": "Automatic structural suggestions",
   "xr.guide.camera_baseline": "Camera baseline {distance}",
   "xr.guide.confirm_corner": "Confirm robustly certified 3D corner",

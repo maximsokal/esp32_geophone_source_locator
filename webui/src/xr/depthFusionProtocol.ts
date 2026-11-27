@@ -1,5 +1,6 @@
 import type { DepthFusionFrameContext } from './depthPointCloudV2';
 import type { DepthFrameBuffer, DepthFrameGeometry } from './depthFusionFrame';
+import type { PortLike } from './depthFusionKeeper';
 
 /**
  * Messages of the depth-fusion worker (Phase 2). The worker is the SOLE owner of the accumulated surface/occupancy state; the main thread keeps only the
@@ -42,7 +43,13 @@ export interface FusionRequestMessage {
 
 export interface FusionResetMessage { type: 'reset'; generation: number }
 
-export type FusionWorkerRequest = FusionFrameMessage | FusionRequestMessage | FusionResetMessage;
+/** The port over which this worker sends its checkpoints to the keeper (never through the main thread). */
+export interface FusionAttachKeeperMessage { type: 'attachKeeper'; generation: number; port: PortLike }
+export interface FusionCheckpointMessage { type: 'checkpoint'; generation: number }
+/** A replacement worker: the keeper will send the latest checkpoint over `port`; every later message waits until it has been applied. */
+export interface FusionRestoreMessage { type: 'restore'; generation: number; port: PortLike }
+
+export type FusionWorkerRequest = FusionFrameMessage | FusionRequestMessage | FusionResetMessage | FusionAttachKeeperMessage | FusionCheckpointMessage | FusionRestoreMessage;
 
 export interface FusionStats {
   pointCount: number;
@@ -82,7 +89,15 @@ export interface FusionWorkerError {
   message: string;
 }
 
-export type FusionWorkerResponse = FusionFrameDone | FusionResponse | FusionWorkerError;
+export interface FusionRestored {
+  type: 'restored';
+  generation: number;
+  /** The last frame the restored checkpoint contains; -1 when there was none. */
+  throughSeq: number;
+  stats: FusionStats;
+}
+
+export type FusionWorkerResponse = FusionFrameDone | FusionResponse | FusionWorkerError | FusionRestored;
 
 /** Every ArrayBuffer behind the typed arrays that are direct properties of `value` (one level), each once: what a reply transfers instead of copying. */
 export function transferablesOf(value: unknown): ArrayBuffer[] {
