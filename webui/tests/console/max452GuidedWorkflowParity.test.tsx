@@ -128,10 +128,37 @@ describe('MAX-452 recording and acquisition controls', () => {
         expect(html).toContain(translate('en', 'objects.record_session'));
       } else {
         expect(html).not.toContain(translate('en', 'objects.record_session'));
-        expect(html).toContain('Workflow tab');
+        /* Instead of recording, the operator gets one control that leads to the guided workflow (a button since 596a258a, a sentence before). */
+        for (const locale of ['en', 'uk'] as const) {
+          const localized = objectsHtml(statusFor(step), locale);
+          expect(localized).toMatch(new RegExp(`<button type="button" class="secondary">${translate(locale, 'objects.recording_workflow_required')}</button>`));
+          for (const key of ['objects.record_session', 'objects.stop_recording', 'objects.start_acquisition', 'objects.stop_acquisition'] as const) {
+            expect(localized, `${locale}: no direct ${key} outside the recording steps`).not.toContain(translate(locale, key));
+          }
+        }
       }
     },
   );
+
+  it.each(['OBJECT', 'SENSOR_CHECK', 'CALIB_PREP'] as const)('outside the recording steps (%s) the control opens the workflow of the SELECTED object and records nothing', async (step) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const onStartWorkflow = vi.fn(); const onRecording = vi.fn(async () => undefined); const onAcquisition = vi.fn(async () => undefined);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(ObjectsFeature, { ...objectProps(statusFor(step)), onStartWorkflow, onRecording, onAcquisition })));
+    });
+    const label = translate('en', 'objects.recording_workflow_required');
+    const buttons = renderer.root.findAll((node) => node.type === 'button' && node.children.length === 1 && node.children[0] === label);
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].props.disabled).toBeFalsy();
+    await act(async () => { buttons[0].props.onClick(); });
+    expect(onStartWorkflow).toHaveBeenCalledTimes(1);
+    expect(onStartWorkflow).toHaveBeenCalledWith('OBJ_0001');
+    expect(onRecording).not.toHaveBeenCalled();
+    expect(onAcquisition).not.toHaveBeenCalled();
+    await act(async () => { renderer.unmount(); });
+    vi.unstubAllGlobals();
+  });
 
   it('hides acquisition/live controls outside RECORD_READY and RECORDING', () => {
     const hidden = objectsHtml(statusFor('SENSOR_CHECK'));
