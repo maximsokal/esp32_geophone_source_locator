@@ -1342,7 +1342,7 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "detail": "Install verified PocketBeagle 2 A0 device tree overlay (Phase 2+)."
+            "detail": "Install verified PocketBeagle 2 A1 (AM6254A) device tree overlay (Phase 2+)."
         },
         {
             "label": "PB2: HIL UART",
@@ -1705,7 +1705,7 @@
             },
             "problemMatcher": [],
             "group": "test",
-            "detail": "Run full offline virtual suite (ESP32 virtual stress, PRU1 ELF sim, PB2 host CTest, dual-board E2E, ast-grep) with zero hardware."
+            "detail": "Run full offline virtual suite (ESP32 virtual stress, PRU1 ELF sim, PB2 host CTest, A1 DT overlay, KiCad ERC, ast-grep) with zero hardware."
         }
     ],
     "inputs": [

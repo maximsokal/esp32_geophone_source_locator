@@ -1,5 +1,5 @@
 /*
- * TI AM6232 PRU-SS PRU1 Linker Command File (PocketBeagle 2 Rev A0)
+ * TI AM62x (AM6254 A1 / AM6232 legacy A0) PRU-SS PRU1 Linker Command File
  * PRU1 local view:
  *   IMEM  : 0x00000000 .. 0x00002FFF (12 KB)
  *   DMEM1 : 0x00000000 .. 0x00001FFF (8 KB, own data RAM)

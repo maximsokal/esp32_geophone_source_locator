@@ -265,6 +265,7 @@ static void run_acquisition(volatile pb2_pru_shared_t *shm) {
                 if ((__R31 & PIN_BUSY) == 0U) {
                     shm->hw_error_flags |= PB2_PRU_ERR_BUSY_FELL_IN_READ;
                     shm->dropped_frames++;
+                    flush_block(shm, &acc);
                     acc.gap_pending = 1U;
                 } else {
                     /* Overlap ring block publish with remaining tCONV */

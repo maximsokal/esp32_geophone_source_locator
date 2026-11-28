@@ -7,7 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #define CHECK(cond)                                                         \
@@ -22,7 +24,14 @@
 namespace {
 
 void test_pinmap_and_ad7606_timing() {
+    CHECK(pb2::hardware::verify_a1_pinmap_conflict_free());
     CHECK(pb2::hardware::verify_a0_pinmap_conflict_free());
+
+    /* PRU/IEP clock validation */
+    CHECK(pb2::hardware::validate_pru_iep_clocks(200000000U, 200000000U).valid);
+    CHECK(!pb2::hardware::validate_pru_iep_clocks(0U, 200000000U).valid);
+    CHECK(!pb2::hardware::validate_pru_iep_clocks(250000000U, 200000000U).valid);
+    CHECK(!pb2::hardware::validate_pru_iep_clocks(200000000U, 0U).valid);
 
     /* Single DOUT (64 SCLK @ 12.5 MHz = 5.12 us) CANNOT reach 200 kSPS */
     const auto single_200k = pb2::hardware::evaluate_ad7606_timing(
@@ -187,6 +196,48 @@ void test_pru_ring_concurrent_producer_consumer_and_file_backend() {
     std::remove(tmp_path);
 }
 
+void test_uio_sysfs_discovery_and_map_offset() {
+    ::mkdir("/tmp/pb2_sysfs_uio", 0755);
+    ::mkdir("/tmp/pb2_sysfs_uio/uio3", 0755);
+    ::mkdir("/tmp/pb2_sysfs_uio/uio3/maps", 0755);
+    ::mkdir("/tmp/pb2_sysfs_uio/uio3/maps/map0", 0755);
+    ::mkdir("/tmp/pb2_dev", 0755);
+
+    auto write_txt = [](const char* p, const char* txt) {
+        std::FILE* f = std::fopen(p, "wb");
+        CHECK(f != nullptr);
+        std::fwrite(txt, 1, std::strlen(txt), f);
+        std::fclose(f);
+    };
+    write_txt("/tmp/pb2_sysfs_uio/uio3/name", "pruss_uio");
+    write_txt("/tmp/pb2_sysfs_uio/uio3/maps/map0/addr", "0x30040000\n");
+    write_txt("/tmp/pb2_sysfs_uio/uio3/maps/map0/size", "0x00080000\n");
+    write_txt("/tmp/pb2_sysfs_uio/uio3/maps/map0/offset", "0x0\n");
+
+    std::vector<std::uint8_t> backing(0x80000U, 0U);
+    pb2_pru_shared_t hdr{};
+    hdr.magic = PB2_PRU_RING_MAGIC;
+    hdr.version = PB2_PRU_RING_VERSION;
+    hdr.channel_count = PB2_PRU_CHANNEL_COUNT;
+    std::memcpy(backing.data() + 0x10000U, &hdr, sizeof(hdr));
+    std::FILE* df = std::fopen("/tmp/pb2_dev/uio3", "wb");
+    CHECK(df != nullptr);
+    CHECK(std::fwrite(backing.data(), 1, backing.size(), df) == backing.size());
+    std::fclose(df);
+
+    pb2::acquisition::PruSharedMemory uio_mem;
+    CHECK(uio_mem.open_uio("pruss", 0x30050000ULL, 0x8000U, "/tmp/pb2_sysfs_uio", "/tmp/pb2_dev"));
+    pb2::acquisition::PruRingConsumer consumer(uio_mem.get());
+    CHECK(consumer.is_valid());
+    uio_mem.close();
+
+    std::remove("/tmp/pb2_dev/uio3");
+    std::remove("/tmp/pb2_sysfs_uio/uio3/maps/map0/addr");
+    std::remove("/tmp/pb2_sysfs_uio/uio3/maps/map0/size");
+    std::remove("/tmp/pb2_sysfs_uio/uio3/maps/map0/offset");
+    std::remove("/tmp/pb2_sysfs_uio/uio3/name");
+}
+
 } // namespace
 
 int main() {
@@ -194,6 +245,7 @@ int main() {
     test_shutdown_fsm();
     test_pru_ring_consumer_blocks_and_wraparound();
     test_pru_ring_concurrent_producer_consumer_and_file_backend();
+    test_uio_sysfs_discovery_and_map_offset();
     std::printf("pb2_phase3_4_tests: ALL PASSED\n");
     return 0;
 }

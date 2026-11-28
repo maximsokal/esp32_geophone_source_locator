@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "primary": true,
+  "board": {
+    "name": "PocketBeagle 2",
+    "marking": "PB2VA1",
+    "revision": "A1",
+    "soc": "TI AM6254A",
+    "cores": "4x ARM Cortex-A53",
+    "ram_mb": 512,
+    "ram_type": "LPDDR4",
+    "gpu": "AXE-1-16",
+    "pru_subsystem": "PRU-SS (PRU0, PRU1)",
+    "mcu_cores": ["Cortex-M4F", "MSPM0L1105"],
+    "arch": "aarch64"
+  },
+  "linux_image": {
+    "distro": "Debian 13.3 Minimal TI 6.12.x",
+    "url": "https://www.beagleboard.org/distros/pocketbeagle-2-debian-13-3-2026-02-12-minimal-v6-12-x-ti",
+    "default_host": "192.168.7.2",
+    "default_user": "debian",
+    "remote_dir": "/home/debian/pb2_locator"
+  },
+  "uart2": {
+    "pb2_tx": { "header": "P2.04", "pad_offset": "0x00BC", "mux_mode": 4 },
+    "pb2_rx": { "header": "P2.02", "pad_offset": "0x00B8", "mux_mode": 4 },
+    "gnd": "P2.15",
+    "initial_baud": 115200
+  },
+  "ad7606": {
+    "channel_count": 4,
+    "target_max_rate_hz": 200000,
+    "pru_clock_hz": 200000000,
+    "iep_clock_hz": 200000000,
+    "vdrive_v": 3.3,
+    "pru_pins": {
+      "convst_ab": { "header": "P2.06", "pru1": "R30.2",  "pad_offset": "0x00C0", "mux_mode": 2 },
+      "reset":     { "header": "P2.08", "pru1": "R30.3",  "pad_offset": "0x00C4", "mux_mode": 2 },
+      "cs":        { "header": "P2.30", "pru1": "R30.12", "pad_offset": "0x00EC", "mux_mode": 2 },
+      "rd_sclk":   { "header": "P2.32", "pru1": "R30.11", "pad_offset": "0x00E8", "mux_mode": 2 },
+      "busy":      { "header": "P2.10", "pru1": "R31.4",  "pad_offset": "0x0174", "mux_mode": 4 },
+      "douta":     { "header": "P2.24", "pru1": "R31.6",  "pad_offset": "0x00D0", "mux_mode": 3 },
+      "doutb":     { "header": "P2.33", "pru1": "R31.7",  "pad_offset": "0x00D4", "mux_mode": 3 },
+      "frstdata":  { "header": "P2.28", "pru1": "R31.15", "pad_offset": "0x00F8", "mux_mode": 3 },
+      "gnd":       { "header": "P2.15" }
+    },
+    "reserved_conflicts": ["P2.20"],
+    "profiles": {
+      "SERIAL_SINGLE_DOUT": { "max_rate_hz": 80000, "channels": [1, 2, 3, 4], "sclk_clocks": 64 },
+      "SERIAL_DUAL_DOUT":   { "max_rate_hz": 200000, "channels": [1, 2, 5, 6], "sclk_clocks": 32, "default": true }
+    }
+  }
+}

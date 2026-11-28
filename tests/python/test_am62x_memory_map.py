@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHARED_H = REPO_ROOT / "PocketBeagle2" / "pru" / "include" / "pru_adc_shared.h"
-LINKER_CMD = REPO_ROOT / "PocketBeagle2" / "pru" / "linker" / "AM6232_PRU1.cmd"
+LINKER_CMD = REPO_ROOT / "PocketBeagle2" / "pru" / "linker" / "AM62x_PRU1.cmd"
 SIM_CFG = REPO_ROOT / ".tools" / "pru-simulator" / "config" / "memory_am62x.cfg"
 MAIN_CPP = REPO_ROOT / "PocketBeagle2" / "src" / "main.cpp"
 PIPELINE_HPP = REPO_ROOT / "PocketBeagle2" / "include" / "pb2" / "runtime" / "pipeline.hpp"

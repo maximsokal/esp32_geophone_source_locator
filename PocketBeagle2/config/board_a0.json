@@ -3,6 +3,7 @@
   "board": {
     "name": "PocketBeagle 2",
     "revision": "A0",
+    "legacy": true,
     "soc": "TI AM6232",
     "cores": "2x ARM Cortex-A53",
     "ram_mb": 512,

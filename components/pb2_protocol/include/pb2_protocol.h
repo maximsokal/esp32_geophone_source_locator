@@ -51,7 +51,8 @@ typedef enum {
     PB2_CLOCK_UNKNOWN           = 0,
     PB2_CLOCK_ESP32_US          = 1,
     PB2_CLOCK_PB2_PRU_TICKS     = 2,
-    PB2_CLOCK_PB2_LINUX_MONO_US = 3
+    PB2_CLOCK_PB2_LINUX_MONO_US = 3,
+    PB2_CLOCK_PB2_PRU_US        = 4
 } pb2_clock_domain_t;
 
 typedef enum {

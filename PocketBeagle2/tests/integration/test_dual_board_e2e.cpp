@@ -5,8 +5,10 @@ extern "C" {
 #include "seismic_buffer.h"
 }
 
+#include "pb2/runtime/pipeline.hpp"
 #include "pb2/transport/uart_transport.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -199,6 +201,30 @@ int main() {
         }));
     }
     E2E_CHECK(reconnected_rx);
+
+    // 8. Production RuntimePipeline::handle_uart_rx_frame bidirectional test over PTY
+    {
+        PtyPair pty3;
+        pb2::transport::UartTransport pb2_side(16U);
+        E2E_CHECK(pb2_side.open_device(pty3.slave_name, 115200U));
+        pb2::runtime::PipelineConfig pcfg{};
+        pcfg.profile = pb2::acquisition::AdcWiringProfile::SerialDualDout;
+        pcfg.uart_baud = 115200U;
+        pb2::runtime::RuntimePipeline pipe(pcfg);
+        std::atomic<bool> remote_stop{false};
+
+        send_raw_esp_frame(pty3.master, PB2_MSG_PING, 1U, 1U, 1U, nullptr, 0U);
+        bool saw_ping = false;
+        for (int i = 0; i < 10 && !saw_ping; ++i) {
+            E2E_CHECK(pb2_side.poll_once(20, [&](const pb2_frame_header_t& h, const uint8_t* p) {
+                saw_ping = true;
+                pipe.handle_uart_rx_frame(pb2_side, h, p, remote_stop);
+            }));
+        }
+        E2E_CHECK(saw_ping);
+        E2E_CHECK(pb2_side.poll_once(10, [](const pb2_frame_header_t&, const uint8_t*) {}));
+        E2E_CHECK(pb2_side.stats().frames_tx >= 1U);
+    }
 
     std::printf("pb2_dual_board_e2e_tests: ALL PASSED\n");
     return 0;

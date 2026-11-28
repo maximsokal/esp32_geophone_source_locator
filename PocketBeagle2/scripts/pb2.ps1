@@ -174,10 +174,10 @@ done
         Invoke-WslBash "cmake --preset arm64-release && cmake --build --preset arm64-release"
         Assert-BoardReachable
         $bin = Join-Path $pb2RootWin "build\arm64-release\pb2_node"
-        $cfg = Join-Path $pb2RootWin "config\board_a0.json"
+        $cfg = Join-Path $pb2RootWin "config\board_a1.json"
         & ssh "$Pb2User@$Pb2Host" "mkdir -p '$RemoteDir/bin' '$RemoteDir/config'"
         & scp $bin "${Pb2User}@${Pb2Host}:$RemoteDir/bin/pb2_node"
-        & scp $cfg "${Pb2User}@${Pb2Host}:$RemoteDir/config/board_a0.json"
+        & scp $cfg "${Pb2User}@${Pb2Host}:$RemoteDir/config/board_a1.json"
         & ssh "$Pb2User@$Pb2Host" "chmod +x '$RemoteDir/bin/pb2_node'"
         Write-Host "[pb2] Deployed pb2_node to ${Pb2User}@${Pb2Host}:$RemoteDir"
     }
@@ -264,7 +264,25 @@ done
         & ssh -t "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
         exit $LASTEXITCODE
     }
-    { $_ -in @("install-overlay", "hil-uart", "hil-adc", "benchmark-adc", "benchmark-storage", "benchmark-transport") } {
+    "install-overlay" {
+        Assert-BoardReachable
+        $ovlSrc = Join-Path $pb2RootWin "overlays\a1\pb2-a1-ad7606-uart2.dtso"
+        if (-not (Test-Path $ovlSrc)) { throw "Missing A1 overlay source: $ovlSrc" }
+        & scp $ovlSrc "${Pb2User}@${Pb2Host}:/tmp/pb2-a1-ad7606-uart2.dtso"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $remoteOvl = @'
+set -e
+command -v dtc >/dev/null 2>&1 || { echo "dtc missing on target"; exit 1; }
+dtc -@ -I dts -O dtb -o /tmp/pb2-a1-ad7606-uart2.dtbo /tmp/pb2-a1-ad7606-uart2.dtso
+sudo mkdir -p /lib/firmware/overlays
+sudo cp /tmp/pb2-a1-ad7606-uart2.dtbo /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo
+echo "Compiled & staged /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo (add to extlinux.conf fdtoverlays and reboot)."
+'@
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteOvl))
+        & ssh -t "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
+        exit $LASTEXITCODE
+    }
+    { $_ -in @("hil-uart", "hil-adc", "benchmark-adc", "benchmark-storage", "benchmark-transport") } {
         Write-Host "[pb2] Action '$Action' is reserved for Phase 2-5 (gated by plan approval and hardware)." -ForegroundColor Yellow
         exit 0
     }
@@ -277,7 +295,7 @@ done
         }
         Push-Location $repoRoot
         try {
-            & $clpru -v3 -O2 --endian=little -I"$cgt/include" -IPocketBeagle2/pru/include --define=PB2_PRU_HOST_ADAPTER=0 PocketBeagle2/pru/acquisition/main_pru1.c PocketBeagle2/pru/acquisition/pru1_ad7606.c PocketBeagle2/pru/acquisition/pru1_ad7606_asm.asm -z -i"$cgt/lib" "-llibc.a" PocketBeagle2/pru/linker/AM6232_PRU1.cmd -o PocketBeagle2/pru/build/pb2_pru1_ad7606.out
+            & $clpru -v3 -O2 --endian=little -I"$cgt/include" -IPocketBeagle2/pru/include --define=PB2_PRU_HOST_ADAPTER=0 PocketBeagle2/pru/acquisition/main_pru1.c PocketBeagle2/pru/acquisition/pru1_ad7606.c PocketBeagle2/pru/acquisition/pru1_ad7606_asm.asm -z -i"$cgt/lib" "-llibc.a" PocketBeagle2/pru/linker/AM62x_PRU1.cmd -o PocketBeagle2/pru/build/pb2_pru1_ad7606.out
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m pytest tests/python/test_pru_ad7606_sim.py -v
             exit $LASTEXITCODE
@@ -337,11 +355,24 @@ done
             Invoke-WslBash "cmake --preset arm64-release && cmake --build --preset arm64-release"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 6/7 Live PRU Lifecycle, GEOSEIS1 E2E, Memory Map & Hygiene ===" -ForegroundColor Cyan
-            python -m pytest tests/python/test_pru_live_lifecycle.py tests/python/test_virtual_dual_board.py tests/python/test_am62x_memory_map.py tests/python/test_repo_hygiene.py -v
+            Write-Host "=== 6/8 A1 DT Overlay, Live PRU Lifecycle, GEOSEIS1 E2E, Memory Map & Hygiene ===" -ForegroundColor Cyan
+            python -m pytest tests/python/test_a1_overlay_dt.py tests/python/test_pru_live_lifecycle.py tests/python/test_virtual_dual_board.py tests/python/test_am62x_memory_map.py tests/python/test_repo_hygiene.py -v
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 7/7 ast-grep Verification ===" -ForegroundColor Cyan
+            Write-Host "=== 7/8 KiCad ERC (Error-level Gate) ===" -ForegroundColor Cyan
+            $kicadCli = "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
+            if (Test-Path $kicadCli) {
+                $ercDir = Join-Path $repoRoot "kicad\esp32_geophone_source_locator"
+                $ercTmp = Join-Path $env:TEMP "pb2_erc_virtual.json"
+                & $kicadCli sch erc --severity-error --exit-code-violations --format json -o $ercTmp "$ercDir\PocketBeagle2_A0.kicad_sch"
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                & $kicadCli sch erc --severity-error --exit-code-violations --format json -o $ercTmp "$ercDir\esp32_geophone_source_locator.kicad_sch"
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else {
+                Write-Host "KiCad CLI not found at $kicadCli; skipping local ERC check." -ForegroundColor Yellow
+            }
+
+            Write-Host "=== 8/8 ast-grep Verification ===" -ForegroundColor Cyan
             python tools/run_local_verify.py --scope ast
             exit $LASTEXITCODE
         } finally {

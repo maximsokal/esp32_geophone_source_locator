@@ -205,12 +205,87 @@ void test_live_pru_lifecycle_with_empty_ring_wait() {
     std::remove(out_base.c_str());
 }
 
+void test_failure_paths_raii_no_terminate() {
+    std::atomic<bool> stop{false};
+
+    /* 1. Invalid mock config with active recording (must join worker cleanly, not terminate) */
+    {
+        const std::string p = "/tmp/pb2_fail_mock.bin";
+        std::remove(p.c_str());
+        pb2::runtime::PipelineConfig cfg{};
+        cfg.source_kind = pb2::runtime::PipelineSourceKind::Mock;
+        cfg.sample_rate_hz = 0U; /* invalid */
+        cfg.record_base_path = p;
+        pb2::runtime::RuntimePipeline pipe(cfg);
+        const auto rep = pipe.run(stop);
+        P_CHECK(!rep.ok);
+        P_CHECK(rep.shutdown_state == pb2::power::ShutdownState::Fault);
+        std::remove(p.c_str());
+    }
+
+    /* 2. Invalid PRU header with active recording */
+    {
+        const char* bad_pru = "/tmp/pb2_bad_pru.bin";
+        const std::string p = "/tmp/pb2_fail_pru_rec.bin";
+        std::remove(p.c_str());
+        std::vector<std::uint8_t> zeros(sizeof(pb2_pru_shared_t), 0U);
+        std::FILE* fp = std::fopen(bad_pru, "wb");
+        P_CHECK(fp != nullptr);
+        std::fwrite(zeros.data(), 1, zeros.size(), fp);
+        std::fclose(fp);
+
+        pb2::runtime::PipelineConfig cfg{};
+        cfg.source_kind = pb2::runtime::PipelineSourceKind::PruSnapshotFile;
+        cfg.pru_path = bad_pru;
+        cfg.record_base_path = p;
+        pb2::runtime::RuntimePipeline pipe(cfg);
+        const auto rep = pipe.run(stop);
+        P_CHECK(!rep.ok);
+        P_CHECK(rep.shutdown_state == pb2::power::ShutdownState::Fault);
+        std::remove(bad_pru);
+        std::remove(p.c_str());
+    }
+
+    /* 3. Missing UIO / invalid PRU clock */
+    {
+        pb2::runtime::PipelineConfig cfg{};
+        cfg.source_kind = pb2::runtime::PipelineSourceKind::PruUio;
+        cfg.pru_uio_dev = "nonexistent_uio_device_xyz";
+        pb2::runtime::RuntimePipeline pipe(cfg);
+        const auto rep = pipe.run(stop);
+        P_CHECK(!rep.ok);
+        P_CHECK(rep.shutdown_state == pb2::power::ShutdownState::Fault);
+    }
+
+    /* 4. Preallocated DDR ring overflow under SD stall marks degraded=true and ok=false */
+    {
+        const std::string p = "/tmp/pb2_overflow_rec.bin";
+        std::remove(p.c_str());
+        pb2::runtime::PipelineConfig cfg{};
+        cfg.source_kind = pb2::runtime::PipelineSourceKind::Mock;
+        cfg.sample_rate_hz = 20000U;
+        cfg.max_frames = 512U;
+        cfg.max_writer_queue_frames = 32U;
+        cfg.writer_stall_inject_ms = 5U;
+        cfg.record_base_path = p;
+        pb2::runtime::RuntimePipeline pipe(cfg);
+        const auto rep = pipe.run(stop);
+        P_CHECK(rep.frames_acquired == 512U);
+        P_CHECK(rep.degraded);
+        P_CHECK(!rep.ok);
+        P_CHECK(rep.dropped_frames > 0U);
+        P_CHECK(rep.shutdown_state == pb2::power::ShutdownState::Fault);
+        std::remove(p.c_str());
+    }
+}
+
 } // namespace
 
 int main() {
     test_mock_pipeline_records_geoseis_and_uart();
     test_pru_file_dump_pipeline_and_signal_stop();
     test_live_pru_lifecycle_with_empty_ring_wait();
+    test_failure_paths_raii_no_terminate();
     std::printf("pb2_pipeline_tests: ALL PASSED\n");
     return 0;
 }

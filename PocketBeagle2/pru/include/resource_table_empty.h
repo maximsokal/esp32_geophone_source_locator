@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 /*
- * Minimal Linux remoteproc resource table (ver=1, num=0) for AM6232 PRU1.
+ * Minimal Linux remoteproc resource table (ver=1, num=0) for AM62x PRU1 (A1 AM6254 / legacy A0 AM6232).
  * Avoids external PSSP dependency while satisfying Linux remoteproc ELF loader.
  */
 struct pb2_resource_table {

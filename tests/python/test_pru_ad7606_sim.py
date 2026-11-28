@@ -155,8 +155,18 @@ def test_pru1_elf_fsm_iep_and_pipeline(rate_hz: int, profile: int, steps: int, t
         p = adc.convst_cycles[i + 1] - adc.convst_cycles[i]
         assert abs(p - expected_period) <= 60, f"rate={rate_hz} period={p} expected={expected_period}"
 
-    # Verify all conversions were drained with exact values and real IEP timestamps!
+    # Strict normal acquisition invariants
+    assert struct.unpack("<I", _mem_read(sim, SHM_ADDR + OFF_HW_ERR, 4))[0] == 0
+    assert struct.unpack("<Q", _mem_read(sim, SHM_ADDR + OFF_DROPPED, 8))[0] == 0
+    assert struct.unpack("<Q", _mem_read(sim, SHM_ADDR + 80, 8))[0] == 0  # overrun_count
+    assert struct.unpack("<Q", _mem_read(sim, SHM_ADDR + 88, 8))[0] == 0  # missed_deadlines
+
+    # Verify all conversions were drained with exact values and continuous source indices!
     blocks = _read_all_blocks(sim)
+    expected_idx = 0
+    for b_idx, (first_idx, first_iep, flist) in enumerate(blocks):
+        assert first_idx == expected_idx, f"Block {b_idx} gap: got {first_idx}, expected {expected_idx}"
+        expected_idx += len(flist)
     all_frames = [f for _, _, flist in blocks for f in flist]
     assert len(all_frames) == len(adc.convst_cycles), (
         f"Missing drained sample! published={len(all_frames)} convst={len(adc.convst_cycles)}"
@@ -292,3 +302,42 @@ def test_pru1_elf_missed_deadline_skips_slot_and_marks_gap() -> None:
         blocks[i + 1][0] > blocks[i][0] + len(blocks[i][2])
         for i in range(len(blocks) - 1)
     ), f"Expected sample index gap in blocks={[(b[0], len(b[2])) for b in blocks]}"
+
+
+def test_pru1_elf_busy_fell_in_read_closes_block_and_recovers() -> None:
+    """Valid frames -> 1 corrupted sample (short BUSY) -> normal BUSY restored -> continuous indices post-gap."""
+    sim = _make_sim_with_pru1(PRU_ELF)
+    adc = Ad7606DeviceModel(core_clock_hz=200_000_000, t_conv_ns=4200)
+    sim.attach_device("pru1", adc)
+
+    _wait_for_boot(sim)
+    sim.memory.write(SHM_ADDR + OFF_PROFILE, bytes([1]))
+    sim.memory.write(SHM_ADDR + OFF_OWNER, struct.pack("<I", 2))
+    sim.memory.write(SHM_ADDR + OFF_RATE, struct.pack("<I", 100_000))
+    sim.memory.write(SHM_ADDR + OFF_IEP_HZ, struct.pack("<I", 200_000_000))
+    assert _send_cmd(sim, 1, 1) == 1
+    assert _send_cmd(sim, 2, 2) == 2
+    assert _send_cmd(sim, 3, 3) == 3
+
+    # 5 valid conversions
+    sim.step("pru1", count=10_000)
+    # Force 1 short conversion (300 ns = 60 cycles) so BUSY falls mid-read
+    adc.t_conv_cycles = 60
+    sim.step("pru1", count=2_200)
+    # Restore normal worst-case tCONV (4200 ns = 840 cycles) and continue
+    adc.t_conv_cycles = 840
+    sim.step("pru1", count=10_000)
+    assert _send_cmd(sim, 4, 4, max_steps=10_000) == 5
+
+    hw_err = struct.unpack("<I", _mem_read(sim, SHM_ADDR + OFF_HW_ERR, 4))[0]
+    dropped = struct.unpack("<Q", _mem_read(sim, SHM_ADDR + OFF_DROPPED, 8))[0]
+    assert hw_err & 0x0008  # PB2_PRU_ERR_BUSY_FELL_IN_READ
+    assert dropped >= 1
+
+    blocks = _read_all_blocks(sim)
+    assert len(blocks) >= 2, f"Expected pre-gap and post-gap blocks, got {len(blocks)}"
+    # Verify a gap in first_sample_index between pre-fault and post-fault blocks
+    assert any(
+        blocks[i + 1][0] == blocks[i][0] + len(blocks[i][2]) + 1
+        for i in range(len(blocks) - 1)
+    ), f"Expected exact +1 skipped sample index across gap: {[(b[0], len(b[2])) for b in blocks]}"

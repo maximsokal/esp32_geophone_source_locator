@@ -6,7 +6,7 @@ LDFLAGS := -z --entry_point=_c_int00 -i$(PRU_CGT)/lib -llibc.a
 
 TARGET  := build/pb2_pru1_ad7606.out
 SRCS    := acquisition/main_pru1.c acquisition/pru1_ad7606.c acquisition/pru1_ad7606_asm.asm
-CMD     := linker/AM6232_PRU1.cmd
+CMD     := linker/AM62x_PRU1.cmd
 
 .PHONY: all clean
 

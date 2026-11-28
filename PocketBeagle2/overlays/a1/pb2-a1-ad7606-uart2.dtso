@@ -1,0 +1,65 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * PocketBeagle 2 Rev A1 (PB2VA1 / TI AM6254A) PRU1 AD7606 + UART2 Overlay
+ * Modeled after BeagleBoard-DeviceTrees k3-am62-pocketbeagle2-pru0-out.dtso:
+ *   compatible = "beagle,am62-pocketbeagle2", "ti,am625";
+ *   main_pmx0 + pinctrl-names/pinctrl-0 bound to &pru1 and &main_uart2.
+ *
+ * Pinmux verified against official PocketBeagle 2 A1 P2 expansion table:
+ *   AD7606 PRU1 Outputs (MUX MODE 2, PIN_OUTPUT):
+ *     P2.06: 0x00C0  PRU1_GPO2  (CONVST A+B)
+ *     P2.08: 0x00C4  PRU1_GPO3  (RESET)
+ *     P2.32: 0x00E8  PRU1_GPO11 (RD/SCLK)
+ *     P2.30: 0x00EC  PRU1_GPO12 (CS_N)
+ *   AD7606 PRU1 Inputs (PIN_INPUT):
+ *     P2.10: 0x0174  PRU1_GPI4  (BUSY,     MUX MODE 4)
+ *     P2.24: 0x00D0  PRU1_GPI6  (DOUTA,    MUX MODE 3)
+ *     P2.33: 0x00D4  PRU1_GPI7  (DOUTB,    MUX MODE 3)
+ *     P2.28: 0x00F8  PRU1_GPI15 (FRSTDATA, MUX MODE 3)
+ *   UART2 (ESP32-S3 link, MUX MODE 4):
+ *     P2.02: 0x00B8  UART2_RXD  (PIN_INPUT_PULLUP)
+ *     P2.04: 0x00BC  UART2_TXD  (PIN_OUTPUT)
+ *
+ * PRU1 firmware is loaded via remoteproc (&pru1); PRU Shared RAM (0x30050000,
+ * 32 KB) is accessed via UIO/carveout without assigning two drivers to &pru1.
+ */
+
+/ {
+    compatible = "beagle,am62-pocketbeagle2", "ti,am625";
+};
+
+&main_pmx0 {
+    pb2_a1_pru1_ad7606_pins: pb2-a1-pru1-ad7606-pins {
+        pinctrl-single,pins = <
+            0x00c0 0x00010002 /* P2.06: PRU1_GPO2  (CONVST)   MODE2 | OUTPUT */
+            0x00c4 0x00010002 /* P2.08: PRU1_GPO3  (RESET)    MODE2 | OUTPUT */
+            0x00e8 0x00010002 /* P2.32: PRU1_GPO11 (RD/SCLK)  MODE2 | OUTPUT */
+            0x00ec 0x00010002 /* P2.30: PRU1_GPO12 (CS_N)     MODE2 | OUTPUT */
+            0x0174 0x00040004 /* P2.10: PRU1_GPI4  (BUSY)     MODE4 | INPUT */
+            0x00d0 0x00040003 /* P2.24: PRU1_GPI6  (DOUTA)    MODE3 | INPUT */
+            0x00d4 0x00040003 /* P2.33: PRU1_GPI7  (DOUTB)    MODE3 | INPUT */
+            0x00f8 0x00040003 /* P2.28: PRU1_GPI15 (FRSTDATA) MODE3 | INPUT */
+        >;
+    };
+
+    pb2_a1_uart2_pins: pb2-a1-uart2-pins {
+        pinctrl-single,pins = <
+            0x00b8 0x00050004 /* P2.02: UART2_RXD MODE4 | INPUT | PULLUP */
+            0x00bc 0x00010004 /* P2.04: UART2_TXD MODE4 | OUTPUT */
+        >;
+    };
+};
+
+&pru1 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&pb2_a1_pru1_ad7606_pins>;
+    status = "okay";
+};
+
+&main_uart2 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&pb2_a1_uart2_pins>;
+    status = "okay";
+};

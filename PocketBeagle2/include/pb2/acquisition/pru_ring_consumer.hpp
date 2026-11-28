@@ -36,7 +36,11 @@ public:
 
     bool attach_external(pb2_pru_shared_t* ptr) noexcept;
     bool open_file(const std::string& path, bool writable = false);
-    bool open_uio(const std::string& uio_dev = "/dev/uio0", std::size_t shared_offset = 0x10000U);
+    bool open_uio(const std::string& uio_hint = "",
+                  std::uint64_t expected_phys = PB2_AM62X_PRU_SHARED_PHYS,
+                  std::size_t expected_min_size = PB2_PRU_SHARED_MEM_SIZE,
+                  const std::string& sysfs_uio_root = "/sys/class/uio",
+                  const std::string& dev_root = "/dev");
     bool open_dev_mem(std::uint64_t phys_addr = PB2_AM62X_PRU_SHARED_PHYS, bool writable = true);
     void close() noexcept;
 

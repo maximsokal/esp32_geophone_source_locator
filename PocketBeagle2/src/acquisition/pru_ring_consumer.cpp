@@ -1,8 +1,11 @@
 #include "pb2/acquisition/pru_ring_consumer.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
+#include <fstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
@@ -22,6 +25,38 @@ inline void store_release_u32(volatile std::uint32_t* ptr, std::uint32_t val) no
 
 inline std::uint64_t load_relaxed_u64(const volatile std::uint64_t* ptr) noexcept {
     return __atomic_load_n(ptr, __ATOMIC_RELAXED);
+}
+
+bool read_sysfs_u64(const std::string& path, std::uint64_t& out) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        return false;
+    }
+    std::string s;
+    std::getline(ifs, s);
+    if (s.empty()) {
+        return false;
+    }
+    char* end = nullptr;
+    const unsigned long long val = std::strtoull(s.c_str(), &end, 0);
+    if (end == s.c_str()) {
+        return false;
+    }
+    out = static_cast<std::uint64_t>(val);
+    return true;
+}
+
+std::string read_sysfs_str(const std::string& path) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        return {};
+    }
+    std::string s;
+    std::getline(ifs, s);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == '\0')) {
+        s.pop_back();
+    }
+    return s;
 }
 
 } // namespace
@@ -69,23 +104,100 @@ bool PruSharedMemory::open_file(const std::string& path, bool writable) {
     return true;
 }
 
-bool PruSharedMemory::open_uio(const std::string& uio_dev, std::size_t shared_offset) {
+bool PruSharedMemory::open_uio(const std::string& uio_hint,
+                               std::uint64_t expected_phys,
+                               std::size_t expected_min_size,
+                               const std::string& sysfs_uio_root,
+                               const std::string& dev_root) {
     close();
-    const int fd = ::open(uio_dev.c_str(), O_RDWR | O_SYNC);
+    const long page_size_raw = ::sysconf(_SC_PAGESIZE);
+    if (page_size_raw <= 0 || expected_min_size < sizeof(pb2_pru_shared_t)) {
+        return false;
+    }
+    const std::uint64_t page_size = static_cast<std::uint64_t>(page_size_raw);
+
+    DIR* dir = ::opendir(sysfs_uio_root.c_str());
+    if (!dir) {
+        return false;
+    }
+
+    std::string chosen_dev;
+    std::uint64_t chosen_map_idx = 0;
+    std::uint64_t chosen_map_size = 0;
+    std::uint64_t chosen_inner_offset = 0;
+    bool found = false;
+
+    while (struct dirent* ent = ::readdir(dir)) {
+        const std::string uio_name = ent->d_name;
+        if (uio_name.rfind("uio", 0) != 0) {
+            continue;
+        }
+        const std::string uio_dir = sysfs_uio_root + "/" + uio_name;
+        const std::string dev_name = read_sysfs_str(uio_dir + "/name");
+        if (!uio_hint.empty() && uio_name != uio_hint &&
+            dev_name.find(uio_hint) == std::string::npos &&
+            (dev_root + "/" + uio_name) != uio_hint) {
+            continue;
+        }
+
+        const std::string maps_dir_path = uio_dir + "/maps";
+        DIR* mdir = ::opendir(maps_dir_path.c_str());
+        if (!mdir) {
+            continue;
+        }
+        while (struct dirent* ment = ::readdir(mdir)) {
+            const std::string mname = ment->d_name;
+            if (mname.rfind("map", 0) != 0) {
+                continue;
+            }
+            const std::uint64_t map_idx = std::strtoull(mname.c_str() + 3, nullptr, 10);
+            const std::string mdir_full = maps_dir_path + "/" + mname;
+            std::uint64_t addr = 0;
+            std::uint64_t size = 0;
+            std::uint64_t offset = 0;
+            if (!read_sysfs_u64(mdir_full + "/addr", addr) ||
+                !read_sysfs_u64(mdir_full + "/size", size)) {
+                continue;
+            }
+            (void)read_sysfs_u64(mdir_full + "/offset", offset);
+            if (expected_phys >= addr &&
+                (expected_phys + expected_min_size) <= (addr + size)) {
+                chosen_dev = dev_root + "/" + uio_name;
+                chosen_map_idx = map_idx;
+                chosen_map_size = size;
+                chosen_inner_offset = (expected_phys - addr) + offset;
+                found = true;
+                break;
+            }
+        }
+        ::closedir(mdir);
+        if (found) {
+            break;
+        }
+    }
+    ::closedir(dir);
+
+    if (!found || (chosen_inner_offset + sizeof(pb2_pru_shared_t)) > chosen_map_size) {
+        return false;
+    }
+
+    const int fd = ::open(chosen_dev.c_str(), O_RDWR | O_SYNC);
     if (fd < 0) {
         return false;
     }
-    const std::size_t map_len = shared_offset + PB2_PRU_SHARED_MEM_SIZE;
-    void* mapped = ::mmap(nullptr, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    const off_t mmap_off = static_cast<off_t>(chosen_map_idx * page_size);
+    void* mapped = ::mmap(nullptr, static_cast<std::size_t>(chosen_map_size),
+                          PROT_READ | PROT_WRITE, MAP_SHARED, fd, mmap_off);
     if (mapped == MAP_FAILED) {
         ::close(fd);
         return false;
     }
     fd_ = fd;
     map_base_ = mapped;
-    map_len_ = map_len;
+    map_len_ = static_cast<std::size_t>(chosen_map_size);
     owns_mmap_ = true;
-    shm_ = reinterpret_cast<pb2_pru_shared_t*>(static_cast<std::uint8_t*>(mapped) + shared_offset);
+    shm_ = reinterpret_cast<pb2_pru_shared_t*>(
+        static_cast<std::uint8_t*>(mapped) + chosen_inner_offset);
     return true;
 }
 
@@ -293,6 +405,38 @@ PruDrainStats PruRingConsumer::snapshot_stats() const noexcept {
         snap.hw_error_flags = load_acquire_u32(&shm_->hw_error_flags);
     }
     return snap;
+}
+
+bool read_sysfs_u64(const std::string& path, std::uint64_t& out) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        return false;
+    }
+    std::string s;
+    std::getline(ifs, s);
+    if (s.empty()) {
+        return false;
+    }
+    char* end = nullptr;
+    const unsigned long long val = std::strtoull(s.c_str(), &end, 0);
+    if (end == s.c_str()) {
+        return false;
+    }
+    out = static_cast<std::uint64_t>(val);
+    return true;
+}
+
+std::string read_sysfs_str(const std::string& path) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        return {};
+    }
+    std::string s;
+    std::getline(ifs, s);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == '\0')) {
+        s.pop_back();
+    }
+    return s;
 }
 
 } // namespace pb2::acquisition

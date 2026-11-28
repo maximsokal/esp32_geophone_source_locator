@@ -1,11 +1,20 @@
 #include "pb2/diagnostics/runtime_info.hpp"
+#include "pb2/hardware/pinmap_a0.hpp"
 
 namespace pb2::diagnostics {
 
 RuntimeInfo collect_runtime_info() {
     RuntimeInfo info{};
     info.app_version = "0.1.0";
-    info.board_target = "PocketBeagle 2 Rev A0 (AM6232)";
+    std::string diag;
+    const auto rev = pb2::hardware::detect_board_revision(&diag);
+    if (rev == pb2::hardware::BoardRevision::RevA1) {
+        info.board_target = "PocketBeagle 2 Rev A1 (PB2VA1 / AM6254A)";
+    } else if (rev == pb2::hardware::BoardRevision::RevA0Legacy) {
+        info.board_target = "PocketBeagle 2 Rev A0 Legacy (AM6232)";
+    } else {
+        info.board_target = "PocketBeagle 2 Rev A1 (AM6254A) [host/unverified: " + diag + "]";
+    }
 
 #if defined(__aarch64__)
     info.arch = "aarch64";

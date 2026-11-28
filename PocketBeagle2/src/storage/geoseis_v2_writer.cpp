@@ -119,9 +119,12 @@ bool GeoseisV2Writer::open(const GeoseisWriterConfig& cfg) {
 
 bool GeoseisV2Writer::open_next_chunk() {
     if (fd_ >= 0) {
-        ::fsync(fd_);
+        const bool synced = (::fsync(fd_) == 0);
         ::close(fd_);
         fd_ = -1;
+        if (!synced) {
+            return false;
+        }
     }
 
     current_path_ = format_chunk_path(cfg_.base_path, chunk_index_, cfg_.enable_chunking);

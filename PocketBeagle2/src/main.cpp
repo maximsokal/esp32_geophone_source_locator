@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
     std::uint32_t rate_hz = 500U;
     std::string pru_file;
     std::string pru_live_file;
-    std::string pru_uio = "/dev/uio0";
+    std::string pru_uio;
     bool explicit_devmem = false;
     std::uint64_t pru_devmem = PB2_AM62X_PRU_SHARED_PHYS;
     std::string out_path;
