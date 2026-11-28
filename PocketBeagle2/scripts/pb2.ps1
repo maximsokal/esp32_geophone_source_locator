@@ -22,7 +22,12 @@ param(
         "benchmark-transport",
         "pull-logs",
         "clean",
-        "flash-sd"
+        "flash-sd",
+        "test-virtual-pru",
+        "test-virtual-pipeline",
+        "test-virtual-uart",
+        "test-virtual-dual-board",
+        "test-all-virtual"
     )]
     [string]$Action,
 
@@ -262,5 +267,65 @@ done
     { $_ -in @("install-overlay", "hil-uart", "hil-adc", "benchmark-adc", "benchmark-storage", "benchmark-transport") } {
         Write-Host "[pb2] Action '$Action' is reserved for Phase 2-5 (gated by plan approval and hardware)." -ForegroundColor Yellow
         exit 0
+    }
+    "test-virtual-pru" {
+        $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        $cgt = Join-Path $repoRoot ".tools\ti-cgt-pru-2.3.3\ti-cgt-pru_2.3.3"
+        $clpru = Join-Path $cgt "bin\clpru.exe"
+        if (-not (Test-Path $clpru)) {
+            throw "TI PRU CGT not found at $clpru"
+        }
+        Push-Location $repoRoot
+        try {
+            & $clpru -v3 -O2 --endian=little -I"$cgt/include" -IPocketBeagle2/pru/include --define=PB2_PRU_HOST_ADAPTER=0 PocketBeagle2/pru/acquisition/main_pru1.c PocketBeagle2/pru/acquisition/pru1_ad7606.c -z -i"$cgt/lib" "-llibc.a" PocketBeagle2/pru/linker/AM6232_PRU1.cmd -o PocketBeagle2/pru/build/pb2_pru1_ad7606.out
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python -m pytest tests/python/test_pru_ad7606_sim.py -v
+            exit $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+    }
+    "test-virtual-pipeline" {
+        Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host -R 'pb2_phase3_4_tests|pb2_pipeline_tests|pb2_geoseis_v2_tests|pb2_unit_tests|pb2_shared_math_tests' --output-on-failure"
+    }
+    "test-virtual-uart" {
+        Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host -R 'pb2_pty_tests|pb2_protocol_c_tests' --output-on-failure"
+    }
+    "test-virtual-dual-board" {
+        $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        Push-Location $repoRoot
+        try {
+            python -m pytest tests/python/test_virtual_dual_board.py -v
+            exit $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+    }
+    "test-all-virtual" {
+        $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        Push-Location $repoRoot
+        try {
+            Write-Host "=== 1/5 ESP32 Virtual Board Stress ===" -ForegroundColor Cyan
+            powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "tools\run_virtual_board_stress.ps1")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 2/5 PRU1 ELF Build & TI Simulator Tests ===" -ForegroundColor Cyan
+            powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Action test-virtual-pru
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 3/5 PocketBeagle 2 Host CTest (7 suites) ===" -ForegroundColor Cyan
+            Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host --output-on-failure"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 4/5 Virtual Dual-Board E2E (PRU -> GEOSEIS1 v2, PTY, Shared Math) ===" -ForegroundColor Cyan
+            python -m pytest tests/python/test_virtual_dual_board.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 5/5 ast-grep Verification ===" -ForegroundColor Cyan
+            python tools/run_local_verify.py --scope ast
+            exit $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
     }
 }

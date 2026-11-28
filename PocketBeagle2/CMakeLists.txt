@@ -40,6 +40,7 @@ add_library(pb2_core STATIC
     src/diagnostics/runtime_info.cpp
     src/hardware/pinmap_a0.cpp
     src/power/shutdown_fsm.cpp
+    src/runtime/pipeline.cpp
     src/storage/geoseis_v2_writer.cpp
     src/transport/uart_transport.cpp
 )
@@ -76,6 +77,7 @@ target_include_directories(pb2_core
 target_link_libraries(pb2_core
     PUBLIC
         pb2_protocol
+        pb2_shared_math
 )
 
 target_compile_options(pb2_core PRIVATE
@@ -142,4 +144,11 @@ if(PB2_BUILD_TESTS)
     target_link_libraries(pb2_shared_math_tests PRIVATE pb2_shared_math)
     target_compile_options(pb2_shared_math_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME pb2_shared_math_tests COMMAND pb2_shared_math_tests)
+
+    add_executable(pb2_pipeline_tests
+        tests/unit/test_pipeline.cpp
+    )
+    target_link_libraries(pb2_pipeline_tests PRIVATE pb2_core)
+    target_compile_options(pb2_pipeline_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME pb2_pipeline_tests COMMAND pb2_pipeline_tests)
 endif()

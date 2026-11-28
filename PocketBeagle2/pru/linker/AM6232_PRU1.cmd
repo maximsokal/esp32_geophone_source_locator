@@ -7,7 +7,7 @@
  */
 
 -cr
---stack_size=0x100
+--stack_size=0x400
 --heap_size=0x0
 
 MEMORY

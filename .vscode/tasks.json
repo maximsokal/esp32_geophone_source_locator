@@ -1576,6 +1576,136 @@
             "problemMatcher": [],
             "group": "test",
             "detail": "Cross-compile ARM64 tests, deploy via SSH, and run all 6 test suites on physical PocketBeagle 2 A0."
+        },
+        {
+            "label": "PB2: Test Virtual PRU",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-virtual-pru"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build PRU1 ELF with TI PRU CGT and run TI PRU Simulator + Ad7606DeviceModel tests (no hardware)."
+        },
+        {
+            "label": "PB2: Test Virtual Pipeline",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-virtual-pipeline"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build and run PB2 PruRingConsumer, RuntimePipeline, GeoseisV2Writer, and Shared Math tests in WSL2 (no hardware)."
+        },
+        {
+            "label": "PB2: Test Virtual UART",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-virtual-uart"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run PB2 PTY COBS+CRC32C transport and pb2_protocol C tests in WSL2 (no hardware)."
+        },
+        {
+            "label": "Tests: Virtual Dual Board",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-virtual-dual-board"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run V3 dual-board virtual E2E checks: PRU1 sim -> PB2 pipeline -> GEOSEIS1 v2, PTY transport, and TDOA parity."
+        },
+        {
+            "label": "Tests: All Virtual",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/PocketBeagle2/scripts/pb2.ps1",
+                "-Action",
+                "test-all-virtual"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run full offline virtual suite (ESP32 virtual stress, PRU1 ELF sim, PB2 host CTest, dual-board E2E, ast-grep) with zero hardware."
         }
     ],
     "inputs": [

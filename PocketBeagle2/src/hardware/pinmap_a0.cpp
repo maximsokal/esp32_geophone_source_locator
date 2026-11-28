@@ -26,27 +26,33 @@ Ad7606TimingCheck evaluate_ad7606_timing(
     res.period_us = 1000000.0 / static_cast<double>(sample_rate_hz);
     res.read_time_us = static_cast<double>(res.sclk_cycles) / sclk_mhz;
 
-    /* AD7606 Rev. G: t_CONV min = 3.45 us (OS off), t6 >= 25 ns before BUSY falling edge. */
+    /* AD7606 Rev. G Table 3 (OS off): t_CONV 3.45..4.2 us, t1 <= 45 ns, t6 >= 25 ns, t_QUIET >= 50 ns */
     constexpr double kTConvMinUs = 3.45;
-    constexpr double kT1MaxUs = 0.045; /* CONVST rising to BUSY rising */
+    constexpr double kTConvMaxUs = 4.20;
+    constexpr double kT1MaxUs = 0.045;
     constexpr double kT6MinNs = 25.0;
+    constexpr double kTQuietUs = 0.05;
 
     const double available_busy_high_us = kTConvMinUs - kT1MaxUs;
     res.margin_before_busy_fall_ns = (available_busy_high_us - res.read_time_us) * 1000.0;
 
-    if (res.read_time_us >= res.period_us) {
-        res.feasible = false;
-        res.reason = "Serial readout exceeds sample period";
-        return res;
-    }
-    if (res.margin_before_busy_fall_ns < kT6MinNs) {
-        res.feasible = false;
-        res.reason = "Violates t6 >= 25 ns guard before BUSY falling edge during conversion";
+    /* 1. Try Read During Conversion (Figure 3) */
+    if (res.read_time_us < res.period_us && res.margin_before_busy_fall_ns >= kT6MinNs) {
+        res.feasible = true;
+        res.reason = "Feasible via Read During Conversion (Figure 3) within 3.3 V Table 3 + t6 guard";
         return res;
     }
 
-    res.feasible = true;
-    res.reason = "Within AD7606 Rev. G 3.3 V Table 3 + t6 guard (pending LA HIL verification)";
+    /* 2. Fallback to Read After Conversion (Figure 2) for lower rates */
+    const double after_conv_total_us = kT1MaxUs + kTConvMaxUs + res.read_time_us + kTQuietUs;
+    if (after_conv_total_us <= res.period_us) {
+        res.feasible = true;
+        res.reason = "Feasible via Read After Conversion (Figure 2)";
+        return res;
+    }
+
+    res.feasible = false;
+    res.reason = "Exceeds both Read During Conversion (t6) and Read After Conversion (t_CONV_max + read) budgets";
     return res;
 }
 
