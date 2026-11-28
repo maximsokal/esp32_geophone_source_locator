@@ -1,11 +1,13 @@
 #include "pb2/runtime/pipeline.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <pty.h>
+#include <thread>
 #include <unistd.h>
 
 #define P_CHECK(cond)                                                       \
@@ -89,7 +91,7 @@ void test_pru_file_dump_pipeline_and_signal_stop() {
     std::fclose(fp);
 
     pb2::runtime::PipelineConfig cfg{};
-    cfg.source_kind = pb2::runtime::PipelineSourceKind::PruFile;
+    cfg.source_kind = pb2::runtime::PipelineSourceKind::PruSnapshotFile;
     cfg.pru_path = pru_dump;
     cfg.sample_rate_hz = 100000U;
     cfg.max_frames = 0U;
@@ -111,11 +113,104 @@ void test_pru_file_dump_pipeline_and_signal_stop() {
     std::remove(report.recorded_file_path.c_str());
 }
 
+void test_live_pru_lifecycle_with_empty_ring_wait() {
+    const char* live_path = "/tmp/pb2_pipeline_live_shm.bin";
+    {
+        auto init = std::make_unique<pb2_pru_shared_t>();
+        std::memset(init.get(), 0, sizeof(pb2_pru_shared_t));
+        init->magic = PB2_PRU_RING_MAGIC;
+        init->version = PB2_PRU_RING_VERSION;
+        init->channel_count = PB2_PRU_CHANNEL_COUNT;
+        std::FILE* fp = std::fopen(live_path, "wb");
+        P_CHECK(fp != nullptr);
+        P_CHECK(std::fwrite(init.get(), sizeof(pb2_pru_shared_t), 1, fp) == 1);
+        std::fclose(fp);
+    }
+
+    pb2::acquisition::PruSharedMemory pru_side;
+    P_CHECK(pru_side.open_file(live_path, true));
+    auto* shm = pru_side.get();
+
+    std::atomic<bool> pru_done{false};
+    std::thread pru_sim([&]() {
+        std::uint32_t ack = 0;
+        bool acquiring = false;
+        std::uint32_t seq = 0;
+        while (!pru_done.load(std::memory_order_acquire)) {
+            const std::uint32_t cmd_seq = __atomic_load_n(&shm->cmd_seq, __ATOMIC_ACQUIRE);
+            if (cmd_seq != ack) {
+                const std::uint32_t cmd = shm->cmd;
+                if (cmd == PB2_PRU_CMD_CONFIGURE) {
+                    __atomic_store_n(&shm->state, PB2_PRU_STATE_CONFIGURED, __ATOMIC_RELEASE);
+                } else if (cmd == PB2_PRU_CMD_ARM) {
+                    __atomic_store_n(&shm->state, PB2_PRU_STATE_ARMED, __ATOMIC_RELEASE);
+                } else if (cmd == PB2_PRU_CMD_START) {
+                    __atomic_store_n(&shm->state, PB2_PRU_STATE_ACQUIRING, __ATOMIC_RELEASE);
+                    acquiring = true;
+                } else if (cmd == PB2_PRU_CMD_STOP) {
+                    acquiring = false;
+                    // Publish 1 drained block during STOP -> DRAINING -> STOPPED
+                    const std::uint32_t w = __atomic_load_n(&shm->write_block_idx, __ATOMIC_RELAXED);
+                    auto& blk = shm->blocks[w];
+                    blk.first_sample_index = static_cast<std::uint64_t>(seq) * PB2_PRU_BLOCK_FRAMES;
+                    blk.first_iep_ticks = blk.first_sample_index * 2000ULL;
+                    blk.sequence = seq++;
+                    blk.frame_count = PB2_PRU_BLOCK_FRAMES;
+                    __atomic_store_n(&shm->write_block_idx, (w + 1U) & (PB2_PRU_BLOCK_CAPACITY - 1U), __ATOMIC_RELEASE);
+                    __atomic_store_n(&shm->state, PB2_PRU_STATE_STOPPED, __ATOMIC_RELEASE);
+                    __atomic_store_n(&shm->last_cmd_ack, cmd_seq, __ATOMIC_RELEASE);
+                    ack = cmd_seq;
+                    break;
+                }
+                __atomic_store_n(&shm->last_cmd_ack, cmd_seq, __ATOMIC_RELEASE);
+                ack = cmd_seq;
+            }
+            if (acquiring && seq < 3U) {
+                // Delay before first block so consumer sees empty ring first and does NOT exit
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                const std::uint32_t w = __atomic_load_n(&shm->write_block_idx, __ATOMIC_RELAXED);
+                auto& blk = shm->blocks[w];
+                blk.first_sample_index = static_cast<std::uint64_t>(seq) * PB2_PRU_BLOCK_FRAMES;
+                blk.first_iep_ticks = blk.first_sample_index * 2000ULL;
+                blk.sequence = seq++;
+                blk.frame_count = PB2_PRU_BLOCK_FRAMES;
+                __atomic_store_n(&shm->write_block_idx, (w + 1U) & (PB2_PRU_BLOCK_CAPACITY - 1U), __ATOMIC_RELEASE);
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    });
+
+    const std::string out_base = "/tmp/pb2_pipeline_live_rec.bin";
+    std::remove(out_base.c_str());
+
+    pb2::runtime::PipelineConfig cfg{};
+    cfg.source_kind = pb2::runtime::PipelineSourceKind::PruLiveFile;
+    cfg.pru_path = live_path;
+    cfg.sample_rate_hz = 100000U;
+    cfg.max_frames = 3U * PB2_PRU_BLOCK_FRAMES;
+    cfg.record_base_path = out_base;
+    cfg.enable_chunking = false;
+    cfg.pru_cmd_timeout_ms = 2000U;
+
+    std::atomic<bool> stop{false};
+    pb2::runtime::RuntimePipeline pipeline(cfg);
+    const auto report = pipeline.run(stop);
+    pru_done.store(true, std::memory_order_release);
+    pru_sim.join();
+
+    P_CHECK(report.ok);
+    // 3 blocks during acquire + 1 drained block on STOP = 4 blocks
+    P_CHECK(report.frames_processed == 4U * PB2_PRU_BLOCK_FRAMES);
+    std::remove(live_path);
+    std::remove(out_base.c_str());
+}
+
 } // namespace
 
 int main() {
     test_mock_pipeline_records_geoseis_and_uart();
     test_pru_file_dump_pipeline_and_signal_stop();
+    test_live_pru_lifecycle_with_empty_ring_wait();
     std::printf("pb2_pipeline_tests: ALL PASSED\n");
     return 0;
 }

@@ -84,3 +84,6 @@ kicad/esp32_geophone_source_locator/.history/
 
 # Private real-scan replay manifest (SHA-256 of the originals under logs/): local only, never committed
 webui/tests/realscan/manifest.local.json
+
+#PocketBeagle2
+PocketBeagle2/build_host/

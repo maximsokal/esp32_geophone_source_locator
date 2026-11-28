@@ -96,15 +96,37 @@ def _read_all_blocks(sim: Simulator) -> list[tuple[int, int, list[tuple[int, int
     return out
 
 
-@pytest.mark.skipif(not PRU_ELF.exists(), reason="PRU1 ELF not built")
-@pytest.mark.parametrize("rate_hz,profile,steps", [
-    (200_000, 1, 20_000),  # 200 kHz DUAL_DOUT (Read During Conversion)
-    (100_000, 1, 18_000),  # 100 kHz DUAL_DOUT (Read During Conversion)
-    (20_000,  0, 35_000),  # 20 kHz SINGLE_DOUT (Read After Conversion)
+@pytest.mark.parametrize("rate_hz,profile,steps,t_conv_ns", [
+    pytest.param(
+        200_000, 1, 20_000, 3600,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="200 kHz (1000 cy @ 200 MHz) violates 3.3V SCLK<=12.5MHz bitbang (~730 cy > 720 cy tCONV) & ring flush budget",
+        ),
+    ),
+    pytest.param(
+        200_000, 1, 20_000, 4200,
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="200 kHz (1000 cy @ 200 MHz) with worst-case tCONV=4.2us (840 cy) + loop/flush (>470 cy) exceeds 1000 cy period",
+        ),
+    ),
+    (125_000, 1, 18_000, 4200),  # 125 kHz DUAL_DOUT worst-case tCONV (4.2 us)
+    (100_000, 1, 18_000, 4200),  # 100 kHz DUAL_DOUT worst-case tCONV
+    (80_000,  0, 18_000, 4200),  # 80 kHz SINGLE_DOUT Read-After-Conversion (max safe SINGLE_DOUT)
+    (40_000,  0, 25_000, 4200),  # 40 kHz SINGLE_DOUT
+    (20_000,  0, 35_000, 4200),  # 20 kHz SINGLE_DOUT
+    (5_000,   0, 90_000, 4200),  # 5 kHz SINGLE_DOUT
+    (500,     0, 820_000, 4200), # 500 Hz SINGLE_DOUT
 ])
-def test_pru1_elf_fsm_iep_and_pipeline(rate_hz: int, profile: int, steps: int) -> None:
+def test_pru1_elf_fsm_iep_and_pipeline(rate_hz: int, profile: int, steps: int, t_conv_ns: int) -> None:
     sim = _make_sim_with_pru1(PRU_ELF)
-    adc = Ad7606DeviceModel(core_clock_hz=200_000_000)
+    expected_sclk = 32 if profile == 1 else 64
+    adc = Ad7606DeviceModel(
+        core_clock_hz=200_000_000,
+        t_conv_ns=t_conv_ns,
+        expected_sclk_edges=expected_sclk,
+    )
     sim.attach_device("pru1", adc)
 
     # Boot to IDLE: must NOT toggle CONVST or RESET prematurely
@@ -160,7 +182,7 @@ def test_pru1_elf_fsm_iep_and_pipeline(rate_hz: int, profile: int, steps: int) -
         assert blocks[0][1] > 100
 
 
-@pytest.mark.skipif(not PRU_ELF.exists(), reason="PRU1 ELF not built")
+
 def test_pru1_elf_fault_injection_busy_stuck_high() -> None:
     sim = _make_sim_with_pru1(PRU_ELF)
     adc = Ad7606DeviceModel(core_clock_hz=200_000_000, stuck_busy_high=True)
@@ -182,7 +204,7 @@ def test_pru1_elf_fault_injection_busy_stuck_high() -> None:
     assert hw_err & 0x0001  # PB2_PRU_ERR_BUSY_STUCK_HIGH
 
 
-@pytest.mark.skipif(not PRU_ELF.exists(), reason="PRU1 ELF not built")
+
 def test_pru1_elf_fault_injection_busy_stuck_low() -> None:
     sim = _make_sim_with_pru1(PRU_ELF)
     adc = Ad7606DeviceModel(core_clock_hz=200_000_000, stuck_busy_low=True)
@@ -204,7 +226,7 @@ def test_pru1_elf_fault_injection_busy_stuck_low() -> None:
     assert hw_err & 0x0002  # PB2_PRU_ERR_BUSY_STUCK_LOW
 
 
-@pytest.mark.skipif(not PRU_ELF.exists(), reason="PRU1 ELF not built")
+
 def test_pru1_elf_fault_injection_busy_fell_in_read() -> None:
     sim = _make_sim_with_pru1(PRU_ELF)
     # Artificially short conversion (300 ns = 60 cycles) so BUSY falls mid-read
@@ -229,7 +251,7 @@ def test_pru1_elf_fault_injection_busy_fell_in_read() -> None:
     assert len(adc.faults()) >= 1
 
 
-@pytest.mark.skipif(not PRU_ELF.exists(), reason="PRU1 ELF not built")
+
 def test_pru1_elf_fault_injection_invalid_config_and_reset() -> None:
     sim = _make_sim_with_pru1(PRU_ELF)
     adc = Ad7606DeviceModel(core_clock_hz=200_000_000)
@@ -247,3 +269,35 @@ def test_pru1_elf_fault_injection_invalid_config_and_reset() -> None:
 
     # RESET_FAULT (cmd=5) -> IDLE (state=0)
     assert _send_cmd(sim, 5, 2) == 0
+
+
+
+def test_pru1_elf_missed_deadline_skips_slot_and_marks_gap() -> None:
+    """When t_conv > period (e.g. 5200 ns @ 200 kHz), PRU1 must skip elapsed slots & mark GAP_BEFORE."""
+    sim = _make_sim_with_pru1(PRU_ELF)
+    adc = Ad7606DeviceModel(core_clock_hz=200_000_000, t_conv_ns=5200)
+    sim.attach_device("pru1", adc)
+
+    _wait_for_boot(sim)
+    sim.memory.write(SHM_ADDR + OFF_PROFILE, bytes([1]))
+    sim.memory.write(SHM_ADDR + OFF_OWNER, struct.pack("<I", 2))
+    sim.memory.write(SHM_ADDR + OFF_RATE, struct.pack("<I", 200_000))
+    sim.memory.write(SHM_ADDR + OFF_IEP_HZ, struct.pack("<I", 200_000_000))
+    assert _send_cmd(sim, 1, 1) == 1
+    assert _send_cmd(sim, 2, 2) == 2
+    assert _send_cmd(sim, 3, 3) == 3
+
+    sim.step("pru1", count=15_000)
+    assert _send_cmd(sim, 4, 4, max_steps=10_000) == 5
+
+    hw_err = struct.unpack("<I", _mem_read(sim, SHM_ADDR + OFF_HW_ERR, 4))[0]
+    missed = struct.unpack("<Q", _mem_read(sim, SHM_ADDR + 88, 8))[0]
+    assert hw_err & 0x0020  # PB2_PRU_ERR_MISSED_DEADLINE
+    assert missed >= 1
+    # Verify non-contiguous first_sample_index across at least one gap boundary
+    blocks = _read_all_blocks(sim)
+    assert len(blocks) >= 2
+    assert any(
+        blocks[i + 1][0] > blocks[i][0] + len(blocks[i][2])
+        for i in range(len(blocks) - 1)
+    ), f"Expected sample index gap in blocks={[(b[0], len(b[2])) for b in blocks]}"

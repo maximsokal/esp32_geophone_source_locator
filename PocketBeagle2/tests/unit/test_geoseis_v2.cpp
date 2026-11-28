@@ -50,6 +50,12 @@ void test_geoseis_v2_layout_gaps_and_recovery() {
     S_CHECK(writer.gap_count() >= 1ULL);
     S_CHECK(writer.chunk_index() >= 1U);
 
+    /* O_EXCL: opening existing file without allow_overwrite must fail */
+    pb2::storage::GeoseisWriterConfig no_overwrite = cfg;
+    no_overwrite.allow_overwrite = false;
+    pb2::storage::GeoseisV2Writer dup_writer;
+    S_CHECK(!dup_writer.open(no_overwrite));
+
     /* Inject torn trailing bytes into file0 and verify recovery truncates cleanly */
     const int fd = ::open(file0.c_str(), O_WRONLY | O_APPEND);
     S_CHECK(fd >= 0);

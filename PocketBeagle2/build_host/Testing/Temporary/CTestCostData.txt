@@ -1,8 +1,0 @@
-pb2_unit_tests 4 0.00302896
-pb2_protocol_c_tests 4 0.00389517
-pb2_pty_tests 8 0.0157285
-pb2_phase3_4_tests 4 0.00440594
-pb2_geoseis_v2_tests 8 0.00255376
-pb2_shared_math_tests 8 0.00102555
-pb2_pipeline_tests 6 0.00132404
----

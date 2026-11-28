@@ -1,7 +1,12 @@
 # Build artifacts
 build/
+build_host/
 out/
 .cache/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
 
 # Local private overrides (never commit credentials or keys)
 *.local.json

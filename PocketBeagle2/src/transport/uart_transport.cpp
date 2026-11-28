@@ -211,6 +211,9 @@ bool UartTransport::poll_once(int timeout_ms, const FrameCallback& on_frame) {
                 stats_.header_errors = decoder_.header_errors;
                 stats_.oversized_errors = decoder_.oversized_errors;
             } else if (n == 0) {
+                if (::isatty(fd_) == 1 && !(pfd.revents & POLLHUP)) {
+                    break;
+                }
                 return false;
             } else {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {

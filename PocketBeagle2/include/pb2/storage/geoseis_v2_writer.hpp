@@ -32,6 +32,7 @@ struct GeoseisWriterConfig {
     std::uint64_t max_chunk_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL; /* 2 GiB (< 4 GiB FAT32/ext4 limit) */
     std::uint64_t min_free_bytes = 64ULL * 1024ULL * 1024ULL;
     bool enable_chunking = true;
+    bool allow_overwrite = false;
 };
 
 struct WriteLatencyStats {
@@ -92,7 +93,9 @@ private:
 
     std::vector<pb2::acquisition::SampleFrame> staging_;
     bool staging_gap_before_ = false;
+    static constexpr std::size_t kMaxLatencySamples = 4096U;
     std::vector<double> write_latencies_us_;
+    std::size_t latency_write_cursor_ = 0U;
 };
 
 /// Validates a GEOSEIS1 v2 file, optionally truncating an incomplete trailing block.

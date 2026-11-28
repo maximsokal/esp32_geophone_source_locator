@@ -17,8 +17,10 @@ namespace pb2::runtime {
 
 enum class PipelineSourceKind {
     Mock = 0,
-    PruFile = 1,
-    PruDevMem = 2,
+    PruSnapshotFile = 1,
+    PruLiveFile = 2,
+    PruUio = 3,
+    PruDevMem = 4,
 };
 
 struct PipelineConfig {
@@ -27,11 +29,15 @@ struct PipelineConfig {
     pb2::acquisition::AdcWiringProfile profile = pb2::acquisition::AdcWiringProfile::SerialDualDout;
     std::size_t max_frames = 1024U;
     std::string pru_path;
-    std::uint64_t pru_phys_addr = 0x30010000ULL;
+    std::string pru_uio_dev = "/dev/uio0";
+    std::uint64_t pru_phys_addr = PB2_AM62X_PRU_SHARED_PHYS;
+    std::uint32_t pru_cmd_timeout_ms = 2000U;
 
     std::string record_base_path;
     bool enable_chunking = false;
+    bool allow_overwrite = false;
     std::uint64_t max_chunk_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    std::size_t max_writer_queue_frames = 8192U;
 
     bool enable_dsp = true;
     std::size_t preview_capacity = 64U;
@@ -39,6 +45,8 @@ struct PipelineConfig {
     std::string uart_device;
     std::uint32_t uart_baud = 115200U;
     int uart_fd = -1;
+    std::uint32_t boot_epoch = 1U;
+    std::uint32_t session_epoch = 1U;
 };
 
 struct PipelineReport {

@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/pb2_node.dir/link.d CMakeFiles/pb2_node.dir/src/main.cpp.o -o pb2_node  libpb2_core.a libpb2_protocol.a libpb2_shared_math.a -lm

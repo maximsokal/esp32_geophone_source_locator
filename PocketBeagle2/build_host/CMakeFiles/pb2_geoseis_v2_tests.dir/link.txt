@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/pb2_geoseis_v2_tests.dir/link.d CMakeFiles/pb2_geoseis_v2_tests.dir/tests/unit/test_geoseis_v2.cpp.o -o pb2_geoseis_v2_tests  libpb2_core.a libpb2_protocol.a libpb2_shared_math.a -lm

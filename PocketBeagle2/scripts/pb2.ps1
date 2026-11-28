@@ -286,16 +286,18 @@ done
         }
     }
     "test-virtual-pipeline" {
-        Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host -R 'pb2_phase3_4_tests|pb2_pipeline_tests|pb2_geoseis_v2_tests|pb2_unit_tests|pb2_shared_math_tests' --output-on-failure"
+        Invoke-WslBash "cmake --preset host-debug && cmake --build --preset host-debug && ctest --preset host-debug -R 'pb2_phase3_4_tests|pb2_pipeline_tests|pb2_geoseis_v2_tests|pb2_unit_tests|pb2_shared_math_tests'"
     }
     "test-virtual-uart" {
-        Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host -R 'pb2_pty_tests|pb2_protocol_c_tests' --output-on-failure"
+        Invoke-WslBash "cmake --preset host-debug && cmake --build --preset host-debug && ctest --preset host-debug -R 'pb2_pty_tests|pb2_protocol_c_tests|pb2_dual_board_e2e_tests'"
     }
     "test-virtual-dual-board" {
+        Invoke-WslBash "cmake --preset host-debug && cmake --build --preset host-debug && ctest --preset host-debug -R 'pb2_dual_board_e2e_tests'"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         Push-Location $repoRoot
         try {
-            python -m pytest tests/python/test_virtual_dual_board.py -v
+            python -m pytest tests/python/test_pru_live_lifecycle.py tests/python/test_virtual_dual_board.py -v
             exit $LASTEXITCODE
         } finally {
             Pop-Location
@@ -305,23 +307,41 @@ done
         $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         Push-Location $repoRoot
         try {
-            Write-Host "=== 1/5 ESP32 Virtual Board Stress ===" -ForegroundColor Cyan
+            Write-Host "=== 0/7 Pinned Toolchain & Dependency Check ===" -ForegroundColor Cyan
+            $clpru = Join-Path $repoRoot ".tools\ti-cgt-pru-2.3.3\ti-cgt-pru_2.3.3\bin\clpru.exe"
+            if (-not (Test-Path $clpru)) { throw "Missing TI PRU CGT 2.3.3 at $clpru" }
+            $simDir = Join-Path $repoRoot ".tools\pru-simulator"
+            if (-not (Test-Path $simDir)) { throw "Missing TI PRU Simulator at $simDir" }
+            $simHead = (git -C $simDir rev-parse HEAD).Trim()
+            if ($simHead -ne "7e1c2f59b0eec032a9c02c253553a95d1337ab1b") {
+                throw "TI PRU Simulator commit mismatch: got $simHead, expected 7e1c2f59b0eec032a9c02c253553a95d1337ab1b"
+            }
+
+            Write-Host "=== 1/7 ESP32 Virtual Board Stress ===" -ForegroundColor Cyan
             powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "tools\run_virtual_board_stress.ps1")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 2/5 PRU1 ELF Build & TI Simulator Tests ===" -ForegroundColor Cyan
+            Write-Host "=== 2/7 PRU1 ELF Build & TI Simulator Tests ===" -ForegroundColor Cyan
             powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Action test-virtual-pru
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 3/5 PocketBeagle 2 Host CTest (7 suites) ===" -ForegroundColor Cyan
-            Invoke-WslBash "cmake -S . -B build_host -DPB2_BUILD_TESTS=ON && cmake --build build_host -j && ctest --test-dir build_host --output-on-failure"
+            Write-Host "=== 3/7 PocketBeagle 2 Host CTest (host-debug preset, 8 suites) ===" -ForegroundColor Cyan
+            Invoke-WslBash "cmake --preset host-debug && cmake --build --preset host-debug && ctest --preset host-debug"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 4/5 Virtual Dual-Board E2E (PRU -> GEOSEIS1 v2, PTY, Shared Math) ===" -ForegroundColor Cyan
-            python -m pytest tests/python/test_virtual_dual_board.py -v
+            Write-Host "=== 4/7 PocketBeagle 2 Sanitizers (ASan+UBSan) ===" -ForegroundColor Cyan
+            Invoke-WslBash "cmake -S . -B build/host-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPB2_BUILD_TESTS=ON -DCMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' && cmake --build build/host-asan && ctest --test-dir build/host-asan --output-on-failure"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 5/5 ast-grep Verification ===" -ForegroundColor Cyan
+            Write-Host "=== 5/7 ARM64 Cross-Build (arm64-release preset) ===" -ForegroundColor Cyan
+            Invoke-WslBash "cmake --preset arm64-release && cmake --build --preset arm64-release"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 6/7 Live PRU Lifecycle, GEOSEIS1 E2E, Memory Map & Hygiene ===" -ForegroundColor Cyan
+            python -m pytest tests/python/test_pru_live_lifecycle.py tests/python/test_virtual_dual_board.py tests/python/test_am62x_memory_map.py tests/python/test_repo_hygiene.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 7/7 ast-grep Verification ===" -ForegroundColor Cyan
             python tools/run_local_verify.py --scope ast
             exit $LASTEXITCODE
         } finally {

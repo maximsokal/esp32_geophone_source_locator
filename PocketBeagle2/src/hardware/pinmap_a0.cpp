@@ -43,8 +43,9 @@ Ad7606TimingCheck evaluate_ad7606_timing(
         return res;
     }
 
-    /* 2. Fallback to Read After Conversion (Figure 2) for lower rates */
-    const double after_conv_total_us = kT1MaxUs + kTConvMaxUs + res.read_time_us + kTQuietUs;
+    /* 2. Fallback to Read After Conversion (Figure 2) for lower rates (incl. PRU loop/ring overhead) */
+    constexpr double kPruReadAfterOverheadUs = 1.5;
+    const double after_conv_total_us = kT1MaxUs + kTConvMaxUs + res.read_time_us + kTQuietUs + kPruReadAfterOverheadUs;
     if (after_conv_total_us <= res.period_us) {
         res.feasible = true;
         res.reason = "Feasible via Read After Conversion (Figure 2)";

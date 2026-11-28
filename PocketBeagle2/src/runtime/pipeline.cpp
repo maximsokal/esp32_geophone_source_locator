@@ -6,7 +6,11 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace pb2::runtime {
@@ -64,8 +68,8 @@ void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uar
     hdr.msg_type = PB2_MSG_PREVIEW_BLOCK;
     hdr.flags = 0U;
     hdr.sequence = uart_seq_++;
-    hdr.boot_epoch = 1U;
-    hdr.session_epoch = 1U;
+    hdr.boot_epoch = cfg_.boot_epoch;
+    hdr.session_epoch = cfg_.session_epoch;
 
     pb2_preview_block_t msg{};
     msg.first_sample_index = latest.source_sample_index;
@@ -73,11 +77,13 @@ void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uar
     msg.source_sample_rate_hz = cfg_.sample_rate_hz;
     msg.decimation_factor = 1U;
     msg.frame_count = 1U;
-    msg.clock_domain = PB2_CLOCK_PB2_LINUX_MONO_US;
-    msg.sample_format = PB2_SAMPLE_FMT_FLOAT32_UV;
+    msg.clock_domain = (cfg_.source_kind == PipelineSourceKind::Mock)
+                           ? PB2_CLOCK_PB2_LINUX_MONO_US
+                           : PB2_CLOCK_PB2_PRU_TICKS;
+    msg.sample_format = PB2_SAMPLE_FMT_INT16_ADC;
     msg.channel_count = PB2_PROTO_CHANNEL_COUNT;
     for (std::size_t ch = 0; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
-        msg.channel_map[ch] = static_cast<uint8_t>(ch);
+        msg.channel_map[ch] = static_cast<uint8_t>(ch + 1U);
         msg.samples_uv[0][ch] = static_cast<float>(latest.channels[ch]);
     }
 
@@ -88,7 +94,34 @@ void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uar
     }
     hdr.payload_len = payload_len;
     uart.enqueue_frame(hdr, payload_buf);
-    uart.poll_once(0, [](const pb2_frame_header_t&, const uint8_t*) {});
+    uart.poll_once(0, [&](const pb2_frame_header_t& rx_hdr, const uint8_t* /*rx_payload*/) {
+        if (rx_hdr.msg_type == PB2_MSG_PING) {
+            pb2_frame_header_t pong_hdr = rx_hdr;
+            pong_hdr.msg_type = PB2_MSG_PONG;
+            pong_hdr.sequence = uart_seq_++;
+            pong_hdr.boot_epoch = cfg_.boot_epoch;
+            pong_hdr.session_epoch = cfg_.session_epoch;
+            pong_hdr.payload_len = 0U;
+            uart.enqueue_frame(pong_hdr, nullptr);
+        } else if (rx_hdr.msg_type == PB2_MSG_HELLO) {
+            pb2_ack_payload_t ack{};
+            ack.acked_sequence = rx_hdr.sequence;
+            ack.acked_msg_type = rx_hdr.msg_type;
+            ack.status_code = 0U;
+            uint8_t ack_buf[16]{};
+            uint16_t ack_len = 0U;
+            if (pb2_encode_ack(&ack, ack_buf, sizeof(ack_buf), &ack_len) == PB2_PROTO_OK) {
+                pb2_frame_header_t ack_hdr{};
+                ack_hdr.version = PB2_PROTO_VERSION;
+                ack_hdr.msg_type = PB2_MSG_ACK;
+                ack_hdr.sequence = uart_seq_++;
+                ack_hdr.boot_epoch = cfg_.boot_epoch;
+                ack_hdr.session_epoch = cfg_.session_epoch;
+                ack_hdr.payload_len = ack_len;
+                uart.enqueue_frame(ack_hdr, ack_buf);
+            }
+        }
+    });
     report.uart_tx_frames = uart.stats().frames_tx;
     report.uart_tx_drops = uart.stats().tx_queue_drops;
 }
@@ -104,6 +137,7 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
         wcfg.base_path = cfg_.record_base_path;
         wcfg.sample_rate_hz = cfg_.sample_rate_hz;
         wcfg.enable_chunking = cfg_.enable_chunking;
+        wcfg.allow_overwrite = cfg_.allow_overwrite;
         wcfg.max_chunk_bytes = cfg_.max_chunk_bytes;
         if (!writer.open(wcfg)) {
             report.error_message = "Failed to open GeoseisV2Writer at " + cfg_.record_base_path;
@@ -153,37 +187,93 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
         report.dropped_frames = source.stats().dropped_frames;
     } else {
         pb2::acquisition::PruSharedMemory shm;
-        const bool opened = (cfg_.source_kind == PipelineSourceKind::PruFile)
-                                ? shm.open_file(cfg_.pru_path, false)
-                                : shm.open_dev_mem(cfg_.pru_phys_addr, true);
+        bool opened = false;
+        const bool is_live = (cfg_.source_kind != PipelineSourceKind::PruSnapshotFile);
+        if (cfg_.source_kind == PipelineSourceKind::PruSnapshotFile) {
+            opened = shm.open_file(cfg_.pru_path, false);
+        } else if (cfg_.source_kind == PipelineSourceKind::PruLiveFile) {
+            opened = shm.open_file(cfg_.pru_path, true);
+        } else if (cfg_.source_kind == PipelineSourceKind::PruUio) {
+            opened = shm.open_uio(cfg_.pru_uio_dev);
+        } else {
+            opened = shm.open_dev_mem(cfg_.pru_phys_addr, true);
+        }
         if (!opened) {
             report.error_message = "Failed to open PRU shared memory backend";
             return report;
         }
+
         pb2::acquisition::PruRingConsumer consumer(shm.get());
+        if (is_live) {
+            const auto wait_end = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(cfg_.pru_cmd_timeout_ms);
+            while (!consumer.is_valid() && std::chrono::steady_clock::now() < wait_end) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
         if (!consumer.is_valid()) {
             report.error_message = "Invalid PRU shared memory header (magic/version/channels)";
             return report;
         }
 
+        if (is_live) {
+            if (!consumer.start_acquisition(cfg_.sample_rate_hz,
+                                            cfg_.profile,
+                                            200000000U,
+                                            1U,
+                                            cfg_.pru_cmd_timeout_ms)) {
+                report.error_message = "PRU lifecycle CONFIGURE->ARM->START failed";
+                return report;
+            }
+        }
+
+        auto process_batch = [&](const std::vector<pb2::acquisition::SampleFrame>& frames) -> bool {
+            if (frames.empty()) {
+                return true;
+            }
+            if (recording && !writer.write_frames(frames.data(), frames.size())) {
+                report.error_message = "GeoseisV2Writer write_frames failed";
+                return false;
+            }
+            push_preview(frames.data(), frames.size());
+            run_dsp_window(frames.data(), frames.size(), report);
+            maybe_send_uart_summary(uart, frames.back(), report);
+            report.frames_processed += frames.size();
+            return true;
+        };
+
         while (!stop_requested.load(std::memory_order_acquire)) {
             batch.clear();
             const std::size_t got = consumer.drain(16U, batch);
-            if (got == 0U) {
-                break;
-            }
-            if (recording && !writer.write_frames(batch.data(), batch.size())) {
-                report.error_message = "GeoseisV2Writer write_frames failed";
-                break;
-            }
-            push_preview(batch.data(), batch.size());
-            run_dsp_window(batch.data(), batch.size(), report);
-            maybe_send_uart_summary(uart, batch.back(), report);
-            report.frames_processed += batch.size();
-            if (cfg_.max_frames > 0U && report.frames_processed >= cfg_.max_frames) {
-                break;
+            if (got > 0U) {
+                if (!process_batch(batch)) {
+                    break;
+                }
+                if (cfg_.max_frames > 0U && report.frames_processed >= cfg_.max_frames) {
+                    break;
+                }
+            } else {
+                if (!is_live) {
+                    break;
+                }
+                if (consumer.state() == PB2_PRU_STATE_FAULT) {
+                    report.error_message = "PRU entered FAULT state during acquisition";
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
             }
         }
+
+        if (is_live) {
+            if (!consumer.stop_acquisition(cfg_.pru_cmd_timeout_ms) && report.error_message.empty()) {
+                report.error_message = "PRU STOP->DRAIN->STOPPED timed out";
+            }
+            batch.clear();
+            if (consumer.drain(0U, batch) > 0U) {
+                process_batch(batch);
+            }
+        }
+
         const auto pstats = consumer.snapshot_stats();
         report.dropped_frames = pstats.dropped_frames;
         report.gap_blocks = pstats.gap_blocks;
@@ -192,7 +282,9 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
     shutdown_fsm.on_event(pb2::power::ShutdownEvent::RequestStop);
     shutdown_fsm.on_event(pb2::power::ShutdownEvent::AcquisitionStopped);
     if (recording) {
-        writer.flush();
+        if (!writer.flush() && report.error_message.empty()) {
+            report.error_message = "GeoseisV2Writer flush/fsync failed";
+        }
         writer.close();
     }
     shutdown_fsm.on_event(pb2::power::ShutdownEvent::StorageFlushed);

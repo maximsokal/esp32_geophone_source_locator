@@ -36,7 +36,8 @@ public:
 
     bool attach_external(pb2_pru_shared_t* ptr) noexcept;
     bool open_file(const std::string& path, bool writable = false);
-    bool open_dev_mem(std::uint64_t phys_addr, bool writable = true);
+    bool open_uio(const std::string& uio_dev = "/dev/uio0", std::size_t shared_offset = 0x10000U);
+    bool open_dev_mem(std::uint64_t phys_addr = PB2_AM62X_PRU_SHARED_PHYS, bool writable = true);
     void close() noexcept;
 
     bool is_open() const noexcept { return shm_ != nullptr; }
@@ -55,9 +56,22 @@ public:
     explicit PruRingConsumer(pb2_pru_shared_t* shm) noexcept;
 
     bool is_valid() const noexcept;
+    pb2_pru_state_t state() const noexcept;
+    std::uint32_t hw_error_flags() const noexcept;
 
-    /// Send an FSM command (CONFIGURE/ARM/START/STOP/RESET_FAULT) and wait up to timeout_ms.
-    bool send_command(pb2_pru_cmd_t cmd, std::uint32_t timeout_ms = 500U);
+    /// Send an FSM command (CONFIGURE/ARM/START/STOP/RESET_FAULT) and wait up to timeout_ms
+    /// for both ACK sequence AND expected resulting state.
+    bool send_command(pb2_pru_cmd_t cmd, pb2_pru_state_t expected_state, std::uint32_t timeout_ms = 500U);
+
+    /// Write configuration fields and run CONFIGURE -> ARM -> START lifecycle transitions.
+    bool start_acquisition(std::uint32_t sample_rate_hz,
+                           AdcWiringProfile profile,
+                           std::uint32_t iep_clock_hz = 200000000U,
+                           std::uint32_t session_epoch = 1U,
+                           std::uint32_t timeout_ms = 1000U);
+
+    /// Send STOP and wait for DRAINING -> STOPPED.
+    bool stop_acquisition(std::uint32_t timeout_ms = 1000U);
 
     /// Drain up to `max_blocks` (0 = unlimited) from the PBR2 ring into `out` as SampleFrames.
     /// Returns number of SampleFrames appended to `out`.

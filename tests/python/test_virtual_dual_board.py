@@ -1,4 +1,4 @@
-"""V3 Dual-Board Virtual E2E tests (PRU1 ELF -> PB2 RuntimePipeline -> GEOSEIS1 v2, PTY, & Shared Math)."""
+"""V3 PRU1 Simulator -> PB2 RuntimePipeline -> GEOSEIS1 v2 compatibility regression."""
 from __future__ import annotations
 
 import shutil
@@ -7,11 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PB2_DIR = REPO_ROOT / "PocketBeagle2"
-PB2_BUILD = PB2_DIR / "build_host"
+PB2_NODE = PB2_DIR / "build" / "host-debug" / "pb2_node"
 PRU_ELF = PB2_DIR / "pru" / "build" / "pb2_pru1_ad7606.out"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,15 +23,14 @@ def _to_wsl_path(win_path: Path) -> str:
     return s
 
 
-def _has_wsl_pb2_build() -> bool:
-    return (PB2_BUILD / "pb2_node").exists() and shutil.which("wsl") is not None
-
-
-@pytest.mark.skipif(not PRU_ELF.exists() or not _has_wsl_pb2_build(), reason="PRU ELF or WSL2 pb2_node not built")
 def test_scenario_b_pru1_sim_dump_to_pb2_pipeline_geoseis_v2(tmp_path: Path) -> None:
     """Virtual AD7606 -> real PRU1 ELF in TI pru-simulator -> PBR2 dump -> pb2_node -> GEOSEIS1 v2."""
+    assert PRU_ELF.exists(), f"Missing required PRU1 ELF: {PRU_ELF}"
+    assert PB2_NODE.exists(), f"Missing required pb2_node (host-debug preset): {PB2_NODE}"
+    assert shutil.which("wsl") is not None, "WSL2 is required for pb2_node execution"
+
     sim = pru_sim._make_sim_with_pru1(PRU_ELF)
-    adc = pru_sim.Ad7606DeviceModel(core_clock_hz=200_000_000)
+    adc = pru_sim.Ad7606DeviceModel(core_clock_hz=200_000_000, t_conv_ns=4200)
     sim.attach_device("pru1", adc)
 
     pru_sim._wait_for_boot(sim)
@@ -55,7 +52,7 @@ def test_scenario_b_pru1_sim_dump_to_pb2_pipeline_geoseis_v2(tmp_path: Path) -> 
     dump_file.write_bytes(shm_bytes)
 
     rec_bin = tmp_path / "geoseis_out.bin"
-    wsl_node = _to_wsl_path(PB2_BUILD / "pb2_node")
+    wsl_node = _to_wsl_path(PB2_NODE)
     wsl_dump = _to_wsl_path(dump_file)
     wsl_out = _to_wsl_path(rec_bin)
 
@@ -66,7 +63,6 @@ def test_scenario_b_pru1_sim_dump_to_pb2_pipeline_geoseis_v2(tmp_path: Path) -> 
         check=True,
     )
     assert "mode=record" in proc.stdout
-
     assert rec_bin.exists(), f"Missing {rec_bin}; stdout={proc.stdout}"
     data = rec_bin.read_bytes()
 
@@ -92,23 +88,3 @@ def test_scenario_b_pru1_sim_dump_to_pb2_pipeline_geoseis_v2(tmp_path: Path) -> 
     for idx, got in enumerate(decoded_frames):
         exp = adc.sample_generator(idx)
         assert got == (exp[0], exp[1], exp[4], exp[5])
-
-
-@pytest.mark.skipif(not _has_wsl_pb2_build(), reason="WSL2 pb2_build_host not built")
-def test_scenario_a_pty_cobs_crc32c_and_pipeline() -> None:
-    """Verify PTY COBS+CRC32C transport and pb2_pipeline_tests under WSL2."""
-    wsl_build = _to_wsl_path(PB2_BUILD)
-    subprocess.run(
-        ["wsl", "bash", "-lc", f"ctest --test-dir '{wsl_build}' -R 'pb2_pty_tests|pb2_pipeline_tests|pb2_geoseis_v2_tests' --output-on-failure"],
-        check=True,
-    )
-
-
-@pytest.mark.skipif(not _has_wsl_pb2_build(), reason="WSL2 pb2_build_host not built")
-def test_scenario_c_shared_math_tdoa_parity() -> None:
-    """Verify pb2_shared_math (components/geophone_events + components/localization) passes on PB2 host build."""
-    wsl_build = _to_wsl_path(PB2_BUILD)
-    subprocess.run(
-        ["wsl", "bash", "-lc", f"ctest --test-dir '{wsl_build}' -R 'pb2_shared_math_tests' --output-on-failure"],
-        check=True,
-    )

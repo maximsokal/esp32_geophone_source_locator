@@ -3,7 +3,7 @@
  * PRU1 local view:
  *   IMEM  : 0x00000000 .. 0x00002FFF (12 KB)
  *   DMEM1 : 0x00000000 .. 0x00001FFF (8 KB, own data RAM)
- *   SHARED: 0x00010000 .. 0x00012FFF (12 KB, PRU shared RAM)
+ *   SHARED: 0x00010000 .. 0x00017FFF (32 KB, PRU shared RAM; Linux phys 0x30050000)
  */
 
 -cr
@@ -17,7 +17,7 @@ MEMORY
 
     PAGE 1:
       PRU_DMEM1       : org = 0x00000000 len = 0x00002000
-      PRU_SHAREDMEM   : org = 0x00010000 len = 0x00003000
+      PRU_SHAREDMEM   : org = 0x00010000 len = 0x00008000
 }
 
 SECTIONS
@@ -36,5 +36,5 @@ SECTIONS
     .farbss         : > PRU_DMEM1, PAGE 1
     .fardata        : > PRU_DMEM1, PAGE 1
     .resource_table : > PRU_DMEM1, PAGE 1
-    .pb2_shared     : > PRU_DMEM1, PAGE 1
+    .pb2_shared     : > PRU_SHAREDMEM, PAGE 1
 }

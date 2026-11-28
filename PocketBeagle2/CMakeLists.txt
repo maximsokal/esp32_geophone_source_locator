@@ -151,4 +151,19 @@ if(PB2_BUILD_TESTS)
     target_link_libraries(pb2_pipeline_tests PRIVATE pb2_core)
     target_compile_options(pb2_pipeline_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME pb2_pipeline_tests COMMAND pb2_pipeline_tests)
+
+    add_executable(pb2_dual_board_e2e_tests
+        tests/integration/test_dual_board_e2e.cpp
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/pb2_uart_bridge/pb2_uart_bridge.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/seismic_buffer/seismic_buffer.c"
+    )
+    target_include_directories(pb2_dual_board_e2e_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/esp_pty_stub"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/pb2_uart_bridge/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/seismic_buffer/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/seismic_buffer/tests/stubs"
+    )
+    target_link_libraries(pb2_dual_board_e2e_tests PRIVATE pb2_core)
+    target_compile_options(pb2_dual_board_e2e_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pb2_dual_board_e2e_tests COMMAND pb2_dual_board_e2e_tests)
 endif()

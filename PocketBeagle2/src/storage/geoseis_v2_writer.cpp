@@ -109,6 +109,7 @@ bool GeoseisV2Writer::open(const GeoseisWriterConfig& cfg) {
     staging_.reserve(kGeoseisV2BlockMaxFrames);
     staging_gap_before_ = false;
     write_latencies_us_.clear();
+    latency_write_cursor_ = 0U;
 
     if (!check_free_space()) {
         return false;
@@ -124,7 +125,8 @@ bool GeoseisV2Writer::open_next_chunk() {
     }
 
     current_path_ = format_chunk_path(cfg_.base_path, chunk_index_, cfg_.enable_chunking);
-    fd_ = ::open(current_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const int open_flags = O_WRONLY | O_CREAT | (cfg_.allow_overwrite ? O_TRUNC : O_EXCL);
+    fd_ = ::open(current_path_.c_str(), open_flags, 0644);
     if (fd_ < 0) {
         return false;
     }
@@ -200,7 +202,12 @@ bool GeoseisV2Writer::flush_staging_block() {
         return false;
     }
 
-    write_latencies_us_.push_back(dt);
+    if (write_latencies_us_.size() < kMaxLatencySamples) {
+        write_latencies_us_.push_back(dt);
+    } else {
+        write_latencies_us_[latency_write_cursor_] = dt;
+        latency_write_cursor_ = (latency_write_cursor_ + 1U) % kMaxLatencySamples;
+    }
     chunk_bytes_ += block_bytes;
     total_bytes_written_ += block_bytes;
     total_frames_written_ += staging_.size();

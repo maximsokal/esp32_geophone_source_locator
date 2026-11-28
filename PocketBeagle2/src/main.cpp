@@ -22,7 +22,8 @@ void handle_signal(int /*sig*/) {
 void print_usage() {
     std::cout << "Usage: pb2_node [--mode mock|diagnostics|pru-diag|acquire|record|playback|uart-endpoint]\n"
               << "                [--doctor-info] [--mock-smoke] [--frames N] [--rate HZ]\n"
-              << "                [--pru-file PATH] [--pru-devmem HEX_ADDR] [--out BASE_PATH]\n"
+              << "                [--pru-file PATH] [--pru-live-file PATH] [--pru-uio DEV]\n"
+              << "                [--pru-devmem HEX_ADDR] [--out BASE_PATH]\n"
               << "                [--uart DEV] [--baud RATE] [--no-dsp]\n";
 }
 
@@ -38,7 +39,10 @@ int main(int argc, char* argv[]) {
     std::size_t frames = 16U;
     std::uint32_t rate_hz = 500U;
     std::string pru_file;
-    std::uint64_t pru_devmem = 0x30010000ULL;
+    std::string pru_live_file;
+    std::string pru_uio = "/dev/uio0";
+    bool explicit_devmem = false;
+    std::uint64_t pru_devmem = PB2_AM62X_PRU_SHARED_PHYS;
     std::string out_path;
     std::string uart_dev;
     std::uint32_t baud = 115200U;
@@ -58,7 +62,12 @@ int main(int argc, char* argv[]) {
             rate_hz = static_cast<std::uint32_t>(std::strtoull(argv[++i], nullptr, 10));
         } else if (arg == "--pru-file" && i + 1 < argc) {
             pru_file = argv[++i];
+        } else if (arg == "--pru-live-file" && i + 1 < argc) {
+            pru_live_file = argv[++i];
+        } else if (arg == "--pru-uio" && i + 1 < argc) {
+            pru_uio = argv[++i];
         } else if (arg == "--pru-devmem" && i + 1 < argc) {
+            explicit_devmem = true;
             pru_devmem = std::strtoull(argv[++i], nullptr, 16);
         } else if (arg == "--out" && i + 1 < argc) {
             out_path = argv[++i];
@@ -133,11 +142,18 @@ int main(int argc, char* argv[]) {
         pcfg.uart_baud = baud;
         pcfg.enable_dsp = enable_dsp;
 
-        if (!pru_file.empty() || mode == "playback" || mode == "pru-diag") {
-            pcfg.source_kind = !pru_file.empty()
-                                   ? pb2::runtime::PipelineSourceKind::PruFile
-                                   : pb2::runtime::PipelineSourceKind::PruDevMem;
+        if (!pru_live_file.empty()) {
+            pcfg.source_kind = pb2::runtime::PipelineSourceKind::PruLiveFile;
+            pcfg.pru_path = pru_live_file;
+        } else if (!pru_file.empty() || mode == "playback") {
+            pcfg.source_kind = pb2::runtime::PipelineSourceKind::PruSnapshotFile;
             pcfg.pru_path = pru_file;
+        } else if (mode == "acquire" || mode == "pru-diag" || explicit_devmem ||
+                   (mode == "record" && !out_path.empty())) {
+            pcfg.source_kind = explicit_devmem
+                                   ? pb2::runtime::PipelineSourceKind::PruDevMem
+                                   : pb2::runtime::PipelineSourceKind::PruUio;
+            pcfg.pru_uio_dev = pru_uio;
             pcfg.pru_phys_addr = pru_devmem;
         } else {
             pcfg.source_kind = pb2::runtime::PipelineSourceKind::Mock;

@@ -69,6 +69,26 @@ bool PruSharedMemory::open_file(const std::string& path, bool writable) {
     return true;
 }
 
+bool PruSharedMemory::open_uio(const std::string& uio_dev, std::size_t shared_offset) {
+    close();
+    const int fd = ::open(uio_dev.c_str(), O_RDWR | O_SYNC);
+    if (fd < 0) {
+        return false;
+    }
+    const std::size_t map_len = shared_offset + PB2_PRU_SHARED_MEM_SIZE;
+    void* mapped = ::mmap(nullptr, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED) {
+        ::close(fd);
+        return false;
+    }
+    fd_ = fd;
+    map_base_ = mapped;
+    map_len_ = map_len;
+    owns_mmap_ = true;
+    shm_ = reinterpret_cast<pb2_pru_shared_t*>(static_cast<std::uint8_t*>(mapped) + shared_offset);
+    return true;
+}
+
 bool PruSharedMemory::open_dev_mem(std::uint64_t phys_addr, bool writable) {
     close();
     const long page_size_raw = ::sysconf(_SC_PAGESIZE);
@@ -121,12 +141,28 @@ bool PruRingConsumer::is_valid() const noexcept {
     if (!shm_) {
         return false;
     }
-    return shm_->magic == PB2_PRU_RING_MAGIC &&
+    return load_acquire_u32(&shm_->magic) == PB2_PRU_RING_MAGIC &&
            shm_->version == PB2_PRU_RING_VERSION &&
            shm_->channel_count == PB2_PRU_CHANNEL_COUNT;
 }
 
-bool PruRingConsumer::send_command(pb2_pru_cmd_t cmd, std::uint32_t timeout_ms) {
+pb2_pru_state_t PruRingConsumer::state() const noexcept {
+    if (!shm_) {
+        return PB2_PRU_STATE_FAULT;
+    }
+    return static_cast<pb2_pru_state_t>(load_acquire_u32(&shm_->state));
+}
+
+std::uint32_t PruRingConsumer::hw_error_flags() const noexcept {
+    if (!shm_) {
+        return PB2_PRU_ERR_INVALID_CONFIG;
+    }
+    return load_acquire_u32(&shm_->hw_error_flags);
+}
+
+bool PruRingConsumer::send_command(pb2_pru_cmd_t cmd,
+                                   pb2_pru_state_t expected_state,
+                                   std::uint32_t timeout_ms) {
     if (!is_valid()) {
         return false;
     }
@@ -137,11 +173,51 @@ bool PruRingConsumer::send_command(pb2_pru_cmd_t cmd, std::uint32_t timeout_ms) 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         if (load_acquire_u32(&shm_->last_cmd_ack) == next_seq) {
-            return true;
+            return state() == expected_state;
         }
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
-    return load_acquire_u32(&shm_->last_cmd_ack) == next_seq;
+    return load_acquire_u32(&shm_->last_cmd_ack) == next_seq && state() == expected_state;
+}
+
+bool PruRingConsumer::start_acquisition(std::uint32_t sample_rate_hz,
+                                        AdcWiringProfile profile,
+                                        std::uint32_t iep_clock_hz,
+                                        std::uint32_t session_epoch,
+                                        std::uint32_t timeout_ms) {
+    if (!is_valid()) {
+        return false;
+    }
+    const auto cur = state();
+    if (cur == PB2_PRU_STATE_FAULT) {
+        if (!send_command(PB2_PRU_CMD_RESET_FAULT, PB2_PRU_STATE_IDLE, timeout_ms)) {
+            return false;
+        }
+    }
+    shm_->profile = static_cast<std::uint8_t>(profile);
+    shm_->adc_owner = PB2_PRU_OWNER_BEAGLE;
+    shm_->sample_rate_hz = sample_rate_hz;
+    shm_->iep_clock_hz = iep_clock_hz;
+    shm_->session_epoch = session_epoch;
+
+    if (!send_command(PB2_PRU_CMD_CONFIGURE, PB2_PRU_STATE_CONFIGURED, timeout_ms)) {
+        return false;
+    }
+    if (!send_command(PB2_PRU_CMD_ARM, PB2_PRU_STATE_ARMED, timeout_ms)) {
+        return false;
+    }
+    return send_command(PB2_PRU_CMD_START, PB2_PRU_STATE_ACQUIRING, timeout_ms);
+}
+
+bool PruRingConsumer::stop_acquisition(std::uint32_t timeout_ms) {
+    if (!is_valid()) {
+        return false;
+    }
+    const auto cur = state();
+    if (cur == PB2_PRU_STATE_STOPPED || cur == PB2_PRU_STATE_IDLE) {
+        return true;
+    }
+    return send_command(PB2_PRU_CMD_STOP, PB2_PRU_STATE_STOPPED, timeout_ms);
 }
 
 std::size_t PruRingConsumer::drain(std::size_t max_blocks, std::vector<SampleFrame>& out) {
@@ -172,7 +248,9 @@ std::size_t PruRingConsumer::drain(std::size_t max_blocks, std::vector<SampleFra
             stats_.jitter_warn_blocks++;
         }
 
-        const std::uint64_t base_us = (blk.first_iep_ticks * 1000000ULL) / static_cast<std::uint64_t>(iep_hz);
+        const std::uint64_t base_us =
+            (blk.first_iep_ticks / iep_hz) * 1000000ULL +
+            ((blk.first_iep_ticks % iep_hz) * 1000000ULL) / static_cast<std::uint64_t>(iep_hz);
         for (std::uint16_t i = 0; i < fc; ++i) {
             SampleFrame frame{};
             frame.source_sample_index = blk.first_sample_index + i;
