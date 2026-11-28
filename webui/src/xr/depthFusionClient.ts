@@ -18,11 +18,11 @@ import type {
  *    reported, never waited on forever.
  * A worker that cannot be started falls back to running the SAME core inline on the main thread (CPU fallback).
  *
- * Recovery: every `checkpointEveryFrames` fused frames the worker sends its state to the keeper worker (never through the main thread), and the client keeps
+ * Recovery: every `checkpointEveryFrames` fused frames the worker sends its state to the keeper (held as unread bytes: the page never builds the cloud), and the client keeps
  * a bounded JOURNAL of the accepted frames since the last stored checkpoint. A checkpoint gets dearer as the scan grows, so the interval stretches (up to
  * `checkpointMaxStretch` times) to keep serialising it within `checkpointOverheadShare` of the fusion time; the journal bound grows with it.
- * A keeper that fails, or leaves two checkpoints unanswered, is replaced and given a checkpoint at the next frame, so only a keeper and a fusion worker
- * lost TOGETHER (before the replacement has stored one) cost measurements, and that loss is reported. When the worker dies, a replacement restores the checkpoint, fuses the journal
+ * A keeper that fails, or leaves two checkpoints unanswered, is replaced and given a checkpoint at the next frame. The application's keeper lives in the
+ * page, so it cannot be lost apart from the page; should a keeper and the fusion worker be lost TOGETHER, the measurements that costs are reported. When the worker dies, a replacement restores the checkpoint, fuses the journal
  * again and answers whatever was still pending. Frames that could not be kept (journal overflow) are counted and reported, never hidden; when no
  * replacement can be had, the failure is terminal and reported.
  */

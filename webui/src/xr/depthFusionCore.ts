@@ -106,6 +106,7 @@ export function createDepthFusionHandler(post: FusionPost, core: DepthFusionCore
         if (keeper === null) return;
         const started = core.now();
         const checkpoint = core.checkpoint();
+        keeper.postMessage({ generation: checkpoint.generation, throughSeq: checkpoint.throughSeq });
         keeper.postMessage(checkpoint);                             /* the structured clone happens here, synchronously */
         post({ type: 'checkpointed', generation: message.generation, throughSeq: checkpoint.throughSeq, workMs: core.now() - started });
         return;

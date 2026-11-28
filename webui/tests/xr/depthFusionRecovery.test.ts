@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { captureFusionState, restoreFusionState } from '../../src/xr/depthFusionCheckpoint';
 import type { FusionRecoveryReport } from '../../src/xr/depthFusionClient';
 import { DepthFusionCore } from '../../src/xr/depthFusionCore';
-import { createCheckpointKeeper, type KeeperResponse, type PortLike } from '../../src/xr/depthFusionKeeper';
+import { createCheckpointKeeper, createInPageCheckpointKeeper, type KeeperResponse, type PortLike } from '../../src/xr/depthFusionKeeper';
 import { RuntimeFusion, type RuntimeFusionOptions } from '../../src/xr/depthFusionRuntime';
 import type { ScanPointCloudSnapshot } from '../../src/xr/depthPointCloudV2';
 import { frameContext, HandlerWorker, KeeperWorker, orbitFrames, settle, snapshotDigest, type OrbitFrame } from './support/fusionHarness';
@@ -275,6 +275,65 @@ describe('the worker dies mid-scan', () => {
     expect(r.workers[1].framesSeen, '11 replayed and the 8 that followed').toBe(19);
   }, 120_000);
 
+  it('the keeper does not READ a checkpoint (the browser would deserialise it) until a replacement worker asks for it', () => {
+    const posted: KeeperResponse[] = [];
+    const keeper = createCheckpointKeeper((message) => posted.push(message));
+    const inbox: PortLike = { postMessage: () => undefined, onmessage: null };
+    keeper.handle({ type: 'listen', port: inbox });
+    let reads = 0;
+    const arrive = (throughSeq: number): void => {
+      inbox.onmessage!({ data: { generation: 1, throughSeq } });
+      inbox.onmessage!({ get data() { reads += 1; return { generation: 1, throughSeq, integratedFrames: throughSeq, state: {} }; } });
+    };
+    arrive(20); arrive(40);
+    arrive(30);                                                                              /* an older one that arrives late changes nothing */
+    expect(posted).toEqual([{ type: 'stored', generation: 1, throughSeq: 20 }, { type: 'stored', generation: 1, throughSeq: 40 }]);
+    expect(reads).toBe(0);
+    const sent: unknown[] = [];
+    keeper.handle({ type: 'send', generation: 1, port: { postMessage: (message: unknown) => sent.push(message), onmessage: null } });
+    expect(reads).toBe(1);
+    expect(sent[0]).toMatchObject({ throughSeq: 40 });
+  });
+
+  it('a checkpoint the browser cannot deserialise (its data reads as null) is reported as missing', () => {
+    const posted: KeeperResponse[] = [];
+    const keeper = createCheckpointKeeper((message) => posted.push(message));
+    const inbox: PortLike = { postMessage: () => undefined, onmessage: null };
+    keeper.handle({ type: 'listen', port: inbox });
+    inbox.onmessage!({ data: { generation: 1, throughSeq: 20 } });
+    inbox.onmessage!({ data: null });
+    const sent: unknown[] = [];
+    keeper.handle({ type: 'send', generation: 1, port: { postMessage: (message: unknown) => sent.push(message), onmessage: null } });
+    expect(sent).toEqual([null]);
+    expect(posted.at(-1)).toEqual({ type: 'missing', generation: 1 });
+  });
+
+  it('the keeper of the application works over real MessageChannels, and once terminated holds and answers nothing', async () => {
+    const keeper = createInPageCheckpointKeeper();
+    const answers: KeeperResponse[] = [];
+    keeper.addEventListener('message', (event) => answers.push((event as MessageEvent<KeeperResponse>).data));
+    const intake = new MessageChannel();
+    keeper.postMessage({ type: 'listen', port: intake.port1 });
+    const state = new Map([['cell', { weight: 2 }]]);
+    intake.port2.postMessage({ generation: 3, throughSeq: 7 });
+    intake.port2.postMessage({ generation: 3, throughSeq: 7, integratedFrames: 7, state });
+    await settle();
+    expect(answers).toEqual([{ type: 'stored', generation: 3, throughSeq: 7 }]);
+    const ask = async (): Promise<unknown[]> => {
+      const back = new MessageChannel(); const got: unknown[] = [];
+      back.port2.onmessage = (event) => got.push(event.data);
+      keeper.postMessage({ type: 'send', generation: 3, port: back.port1 });
+      await settle();
+      back.port1.close(); back.port2.close();
+      return got;
+    };
+    expect(await ask()).toEqual([{ generation: 3, throughSeq: 7, integratedFrames: 7, state }]);
+    keeper.terminate();
+    expect(await ask()).toEqual([]);
+    expect(answers).toHaveLength(1);
+    intake.port2.close();
+  });
+
   it('the keeper never hands a checkpoint of an OLDER scan to a newer one, even when it arrives after the order to drop it', () => {
     /* The order to drop comes from the main thread and the checkpoint from the worker over its own port: their order is not guaranteed. */
     const posted: KeeperResponse[] = [];
@@ -282,6 +341,7 @@ describe('the worker dies mid-scan', () => {
     const inbox: PortLike = { postMessage: () => undefined, onmessage: null };
     keeper.handle({ type: 'listen', port: inbox });
     keeper.handle({ type: 'drop' });
+    inbox.onmessage!({ data: { generation: 1, throughSeq: 20 } });
     inbox.onmessage!({ data: { generation: 1, throughSeq: 20, integratedFrames: 20, state: {} } });
     const sent: unknown[] = [];
     keeper.handle({ type: 'send', generation: 2, port: { postMessage: (message: unknown) => sent.push(message), onmessage: null } });

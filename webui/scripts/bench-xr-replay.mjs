@@ -41,7 +41,7 @@ function watchMemory(pids) {
   const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'] });
   const samples = []; let pending = '';
   child.stdout.on('data', (chunk) => { pending += chunk.toString(); const lines = pending.split(/\r?\n/); pending = lines.pop(); for (const line of lines) { const value = Number(line); if (value > 0) samples.push(value / 1048576); } });
-  return { stop: () => { child.kill(); return samples.length === 0 ? null : { samples: samples.length, first: samples[0], peak: Math.max(...samples), last: samples.at(-1) }; } };
+  return { stop: () => { child.kill(); return samples.length === 0 ? null : { samples: samples.length, first: samples[0], mean: samples.reduce((a, b) => a + b, 0) / samples.length, peak: Math.max(...samples), last: samples.at(-1) }; } };
 }
 
 const rev = args.get('rev');
@@ -63,8 +63,27 @@ const sourceAtRevision = {
   },
 };
 
+/* --patch <spec.json> [{path, original, replacement}]: a variant of the application for A/B figures, applied in memory only; every entry must apply. */
+const patches = args.has('patch') ? JSON.parse(readFileSync(resolve(args.get('patch')), 'utf8')) : [];
+const patched = new Set();
+const patchInMemory = {
+  name: 'patch-in-memory', enforce: 'pre',
+  transform(code, id) {
+    const file = id.split('?')[0].replaceAll('\\', '/');
+    const mine = patches.filter((patch) => file.endsWith(`/${patch.path}`));
+    if (mine.length === 0) return null;
+    let source = code.replaceAll('\r\n', '\n');
+    for (const patch of mine) {
+      if (source.split(patch.original).length !== 2) throw new Error(`--patch does not apply to ${patch.path}: ${patch.original}`);
+      source = source.replace(patch.original, () => patch.replacement);
+      patched.add(patch);
+    }
+    return { code: source, map: null };
+  },
+};
+
 const server = await createServer({
-  plugins: revision === null ? [] : [sourceAtRevision],
+  plugins: [...(revision === null ? [] : [sourceAtRevision]), ...(patches.length === 0 ? [] : [patchInMemory])],
   root: webui, configFile: join(webui, 'vite.config.ts'), logLevel: 'error',
   server: { port: 5191, strictPort: true, host: '127.0.0.1', hmr: false, headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } },
 });
@@ -105,6 +124,8 @@ try {
           const after = await metrics(); const cpuAfter = await cpuByType(); const wallMs = Date.now() - wallStart;
           const cpu = Object.fromEntries(Object.keys(cpuAfter).map((type) => [type, (cpuAfter[type] - (cpuBefore[type] ?? 0)) * 1000]));
           const run = { pack: name, repeat, ...result, mainThreadTaskMs: (after.TaskDuration - before.TaskDuration) * 1000, mainThreadScriptMs: (after.ScriptDuration - before.ScriptDuration) * 1000, rendererCpuMs: cpu.renderer ?? null, allProcessCpuMs: cpu, wallMs, rendererWorkingSetMb: workingSetMb, errors };
+          if (patched.size !== patches.length) throw new Error(`--patch: ${patches.length - patched.size} entries were never applied`);
+          if (patches.length > 0) report.patches = patches;
           if (revision !== null) {
             if (servedFromRevision.size === 0) throw new Error(`--rev ${rev}: no source file was served from the revision`);
             report.filesServedFromRevision = servedFromRevision.size;
