@@ -6,6 +6,12 @@
  * measured points. Two earlier attempts failed on the phone: triangulating the points like the post-scan preview left 31 to 56 unconnected islands
  * (2026-11-26 first run), and one patch per point filled the screen with overlapping squares (2026-11-26 second run). A real TSDF reconstruction was
  * measured at 0.8 to 4 s on a desktop, far too slow to repeat while the phone is also fusing depth.
+ *
+ * Rebuilding only the changed blocks (Voxblox style) is NOT used (decided 2026-11-28). Between consecutive builds of two replayed scans a median 95-96 % of
+ * the 8 x 8 x 8 cell blocks changed and no build had 10 % or less, so almost everything would be rebuilt anyway (the build takes 6-13 ms). Two causes:
+ * limitLiveMeshInput takes an even-stride subsample of the whole cloud, which picks different points whenever the cloud grows, and the Surface Nets
+ * lattice starts at the lowest point, so it shifts when that point moves. It becomes worth measuring again only after the sample is stable per place and the
+ * lattice (and with it the blocks) is anchored in space.
  */
 import { buildSurfaceNets } from './liveSurfaceNets';
 
