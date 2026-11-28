@@ -277,7 +277,7 @@ done
         }
         Push-Location $repoRoot
         try {
-            & $clpru -v3 -O2 --endian=little -I"$cgt/include" -IPocketBeagle2/pru/include --define=PB2_PRU_HOST_ADAPTER=0 PocketBeagle2/pru/acquisition/main_pru1.c PocketBeagle2/pru/acquisition/pru1_ad7606.c -z -i"$cgt/lib" "-llibc.a" PocketBeagle2/pru/linker/AM6232_PRU1.cmd -o PocketBeagle2/pru/build/pb2_pru1_ad7606.out
+            & $clpru -v3 -O2 --endian=little -I"$cgt/include" -IPocketBeagle2/pru/include --define=PB2_PRU_HOST_ADAPTER=0 PocketBeagle2/pru/acquisition/main_pru1.c PocketBeagle2/pru/acquisition/pru1_ad7606.c PocketBeagle2/pru/acquisition/pru1_ad7606_asm.asm -z -i"$cgt/lib" "-llibc.a" PocketBeagle2/pru/linker/AM6232_PRU1.cmd -o PocketBeagle2/pru/build/pb2_pru1_ad7606.out
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m pytest tests/python/test_pru_ad7606_sim.py -v
             exit $LASTEXITCODE

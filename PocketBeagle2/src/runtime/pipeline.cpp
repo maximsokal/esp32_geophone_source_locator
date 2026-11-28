@@ -82,8 +82,17 @@ void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uar
                            : PB2_CLOCK_PB2_PRU_TICKS;
     msg.sample_format = PB2_SAMPLE_FMT_INT16_ADC;
     msg.channel_count = PB2_PROTO_CHANNEL_COUNT;
+    if (cfg_.profile == pb2::acquisition::AdcWiringProfile::SerialDualDout) {
+        msg.channel_map[0] = 1U;
+        msg.channel_map[1] = 2U;
+        msg.channel_map[2] = 5U;
+        msg.channel_map[3] = 6U;
+    } else {
+        for (std::size_t ch = 0; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
+            msg.channel_map[ch] = static_cast<uint8_t>(ch + 1U);
+        }
+    }
     for (std::size_t ch = 0; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
-        msg.channel_map[ch] = static_cast<uint8_t>(ch + 1U);
         msg.samples_uv[0][ch] = static_cast<float>(latest.channels[ch]);
     }
 
@@ -132,6 +141,14 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
 
     pb2::storage::GeoseisV2Writer writer;
     const bool recording = !cfg_.record_base_path.empty();
+    std::mutex writer_mtx;
+    std::condition_variable writer_cv;
+    std::deque<pb2::acquisition::SampleFrame> writer_queue;
+    bool writer_stop = false;
+    bool writer_failed = false;
+    std::uint64_t writer_queue_drops = 0U;
+    std::thread writer_thread;
+
     if (recording) {
         pb2::storage::GeoseisWriterConfig wcfg{};
         wcfg.base_path = cfg_.record_base_path;
@@ -144,7 +161,51 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
             return report;
         }
         report.recorded_file_path = writer.current_path();
+        writer_thread = std::thread([&]() {
+            std::vector<pb2::acquisition::SampleFrame> chunk;
+            chunk.reserve(256U);
+            for (;;) {
+                chunk.clear();
+                {
+                    std::unique_lock<std::mutex> lk(writer_mtx);
+                    writer_cv.wait(lk, [&]() { return writer_stop || !writer_queue.empty(); });
+                    while (!writer_queue.empty() && chunk.size() < 256U) {
+                        chunk.push_back(writer_queue.front());
+                        writer_queue.pop_front();
+                    }
+                    if (chunk.empty() && writer_stop) {
+                        break;
+                    }
+                }
+                if (!chunk.empty() && !writer.write_frames(chunk.data(), chunk.size())) {
+                    std::lock_guard<std::mutex> lk(writer_mtx);
+                    writer_failed = true;
+                    break;
+                }
+            }
+        });
     }
+
+    auto enqueue_recording = [&](const pb2::acquisition::SampleFrame* frames, std::size_t count) -> bool {
+        if (!recording || count == 0U) {
+            return true;
+        }
+        std::lock_guard<std::mutex> lk(writer_mtx);
+        if (writer_failed) {
+            report.error_message = "GeoseisV2Writer write_frames failed";
+            return false;
+        }
+        const std::size_t cap = (cfg_.max_writer_queue_frames > 0U) ? cfg_.max_writer_queue_frames : 8192U;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (writer_queue.size() >= cap) {
+                writer_queue.pop_front();
+                writer_queue_drops++;
+            }
+            writer_queue.push_back(frames[i]);
+        }
+        writer_cv.notify_one();
+        return true;
+    };
 
     pb2::transport::UartTransport uart(16U);
     if (cfg_.uart_fd >= 0) {
@@ -175,8 +236,7 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
             if (!source.read_frames(want, batch) || batch.empty()) {
                 break;
             }
-            if (recording && !writer.write_frames(batch.data(), batch.size())) {
-                report.error_message = "GeoseisV2Writer write_frames failed";
+            if (!enqueue_recording(batch.data(), batch.size())) {
                 break;
             }
             push_preview(batch.data(), batch.size());
@@ -231,8 +291,7 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
             if (frames.empty()) {
                 return true;
             }
-            if (recording && !writer.write_frames(frames.data(), frames.size())) {
-                report.error_message = "GeoseisV2Writer write_frames failed";
+            if (!enqueue_recording(frames.data(), frames.size())) {
                 return false;
             }
             push_preview(frames.data(), frames.size());
@@ -282,6 +341,18 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
     shutdown_fsm.on_event(pb2::power::ShutdownEvent::RequestStop);
     shutdown_fsm.on_event(pb2::power::ShutdownEvent::AcquisitionStopped);
     if (recording) {
+        {
+            std::lock_guard<std::mutex> lk(writer_mtx);
+            writer_stop = true;
+        }
+        writer_cv.notify_all();
+        if (writer_thread.joinable()) {
+            writer_thread.join();
+        }
+        report.dropped_frames += writer_queue_drops;
+        if (writer_failed && report.error_message.empty()) {
+            report.error_message = "GeoseisV2Writer write_frames failed";
+        }
         if (!writer.flush() && report.error_message.empty()) {
             report.error_message = "GeoseisV2Writer flush/fsync failed";
         }

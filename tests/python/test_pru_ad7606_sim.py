@@ -97,20 +97,9 @@ def _read_all_blocks(sim: Simulator) -> list[tuple[int, int, list[tuple[int, int
 
 
 @pytest.mark.parametrize("rate_hz,profile,steps,t_conv_ns", [
-    pytest.param(
-        200_000, 1, 20_000, 3600,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="200 kHz (1000 cy @ 200 MHz) violates 3.3V SCLK<=12.5MHz bitbang (~730 cy > 720 cy tCONV) & ring flush budget",
-        ),
-    ),
-    pytest.param(
-        200_000, 1, 20_000, 4200,
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="200 kHz (1000 cy @ 200 MHz) with worst-case tCONV=4.2us (840 cy) + loop/flush (>470 cy) exceeds 1000 cy period",
-        ),
-    ),
+    (200_000, 1, 20_000, 3450),  # 200 kHz DUAL_DOUT min tCONV (3.45 us)
+    (200_000, 1, 20_000, 3600),  # 200 kHz DUAL_DOUT nominal tCONV (3.6 us)
+    (200_000, 1, 20_000, 4200),  # 200 kHz DUAL_DOUT worst-case tCONV (4.2 us)
     (125_000, 1, 18_000, 4200),  # 125 kHz DUAL_DOUT worst-case tCONV (4.2 us)
     (100_000, 1, 18_000, 4200),  # 100 kHz DUAL_DOUT worst-case tCONV
     (80_000,  0, 18_000, 4200),  # 80 kHz SINGLE_DOUT Read-After-Conversion (max safe SINGLE_DOUT)
@@ -143,6 +132,8 @@ def test_pru1_elf_fsm_iep_and_pipeline(rate_hz: int, profile: int, steps: int, t
     sim.memory.write(SHM_ADDR + OFF_IEP_HZ, struct.pack("<I", 200_000_000))
     sim.memory.write(SHM_ADDR + OFF_SESSION_EPOCH, struct.pack("<I", 1))
     assert _send_cmd(sim, 1, 1) == 1  # CONFIGURED
+    ch_map = list(_mem_read(sim, SHM_ADDR + 48, 4))
+    assert ch_map == ([1, 2, 5, 6] if profile == 1 else [1, 2, 3, 4]), f"Bad channel_map={ch_map}"
 
     # ARM -> pulses AD7606 RESET
     assert _send_cmd(sim, 2, 2) == 2  # ARMED

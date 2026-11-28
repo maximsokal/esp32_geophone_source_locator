@@ -51,50 +51,7 @@ static void ad7606_hw_reset(void) {
     __delay_cycles(8);  /* 40 ns >= t7 (25 ns) before CONVST */
 }
 
-/* Deterministic 32-clock dual-DOUT readout (V1,V2 on DOUTA; V5,V6 on DOUTB).
- * SCLK period >= 16 cycles (>= 80 ns <= 12.5 MHz @ 200 MHz PRU clock, Table 3 @ VDRIVE=3.3V):
- *   t20 (SCLK LOW) >= 20 ns (>= 4 cycles), t21 (SCLK HIGH) >= 20 ns (>= 4 cycles),
- *   t18 (CS_N fall to MSB valid) <= 35 ns, t22 (SCLK fall to DOUT valid) <= 30 ns. */
-static void read_dual_dout_32(int16_t out_ch[PB2_PRU_CHANNEL_COUNT]) {
-    uint16_t a_hi = 0U, a_lo = 0U, b_hi = 0U, b_lo = 0U;
-    uint32_t bit;
-
-    __R30 &= ~PIN_CS_N;
-    __delay_cycles(7); /* 35 ns: t18 CS falling to MSB valid */
-#pragma MUST_ITERATE(16, 16)
-#pragma UNROLL(16)
-    for (bit = 0U; bit < 16U; ++bit) {
-        __R30 &= ~PIN_SCLK;
-        __delay_cycles(4); /* >= 25 ns LOW (>= 5 cycles, meets t20) */
-        __R30 |= PIN_SCLK;
-        __delay_cycles(5); /* total period >= 16 cycles (<= 12.5 MHz) */
-        {
-            const uint32_t r31 = __R31;
-            a_hi = (uint16_t)((a_hi << 1U) | ((r31 >> 6U) & 1U));
-            b_hi = (uint16_t)((b_hi << 1U) | ((r31 >> 7U) & 1U));
-        }
-    }
-#pragma MUST_ITERATE(16, 16)
-#pragma UNROLL(16)
-    for (bit = 0U; bit < 16U; ++bit) {
-        __R30 &= ~PIN_SCLK;
-        __delay_cycles(4);
-        __R30 |= PIN_SCLK;
-        __delay_cycles(5);
-        {
-            const uint32_t r31 = __R31;
-            a_lo = (uint16_t)((a_lo << 1U) | ((r31 >> 6U) & 1U));
-            b_lo = (uint16_t)((b_lo << 1U) | ((r31 >> 7U) & 1U));
-        }
-    }
-    __delay_cycles(2); /* t17 CS hold after final SCLK rising edge */
-    __R30 |= PIN_CS_N;
-
-    out_ch[0] = (int16_t)a_hi;
-    out_ch[1] = (int16_t)a_lo;
-    out_ch[2] = (int16_t)b_hi;
-    out_ch[3] = (int16_t)b_lo;
-}
+extern void read_dual_dout_32_asm(int16_t out_ch[PB2_PRU_CHANNEL_COUNT]);
 
 /* Deterministic 64-clock single-DOUT readout (V1..V4 on DOUTA) <= 12.5 MHz. */
 static void read_single_dout_64(int16_t out_ch[PB2_PRU_CHANNEL_COUNT]) {
@@ -120,41 +77,31 @@ static void read_single_dout_64(int16_t out_ch[PB2_PRU_CHANNEL_COUNT]) {
 
 static void read_selected_profile(uint8_t profile, int16_t out_ch[PB2_PRU_CHANNEL_COUNT]) {
     if (profile == PB2_PRU_PROFILE_DUAL_DOUT) {
-        read_dual_dout_32(out_ch);
+        read_dual_dout_32_asm(out_ch);
     } else {
         read_single_dout_64(out_ch);
     }
 }
 
 typedef struct {
-    pb2_pru_block_t staging;
+    volatile pb2_pru_block_t *active_blk;
+    uint32_t w_idx;
+    uint16_t frame_count;
     uint32_t seq;
     uint8_t gap_pending;
     uint8_t jitter_pending;
 } block_acc_t;
 
 static void flush_block(volatile pb2_pru_shared_t *shm, block_acc_t *acc) {
-    if (acc->staging.frame_count == 0U) {
+    if (acc->active_blk == 0 || acc->frame_count == 0U) {
+        acc->active_blk = 0;
+        acc->frame_count = 0U;
         return;
     }
-    const uint32_t next_w = (shm->write_block_idx + 1U) & (PB2_PRU_BLOCK_CAPACITY - 1U);
-    if (next_w == shm->read_block_idx) {
-        shm->overrun_count++;
-        shm->dropped_frames += acc->staging.frame_count;
-        shm->hw_error_flags |= PB2_PRU_ERR_OVERRUN;
-        acc->gap_pending = 1U;
-    } else {
-        volatile uint32_t *dst_words = (volatile uint32_t *)&shm->blocks[shm->write_block_idx];
-        const uint32_t *src_words = (const uint32_t *)&acc->staging;
-        uint32_t w;
-        acc->staging.sequence = acc->seq++;
-        for (w = 0U; w < (sizeof(pb2_pru_block_t) / sizeof(uint32_t)); ++w) {
-            dst_words[w] = src_words[w];
-        }
-        shm->write_block_idx = next_w;
-    }
-    acc->staging.frame_count = 0U;
-    acc->staging.flags = 0U;
+    acc->active_blk->frame_count = acc->frame_count;
+    shm->write_block_idx = (acc->w_idx + 1U) & (PB2_PRU_BLOCK_CAPACITY - 1U);
+    acc->active_blk = 0;
+    acc->frame_count = 0U;
 }
 
 static void push_sample(
@@ -164,29 +111,47 @@ static void push_sample(
     uint64_t iep_tick,
     const int16_t ch[PB2_PRU_CHANNEL_COUNT]
 ) {
-    if (acc->staging.frame_count == 0U) {
-        acc->staging.first_sample_index = sample_idx;
-        acc->staging.first_iep_ticks = iep_tick;
-        acc->staging.flags = 0U;
-        if (acc->gap_pending) {
-            acc->staging.flags |= PB2_PRU_BLK_FLAG_GAP_BEFORE;
-            acc->gap_pending = 0U;
+    if (acc->active_blk == 0) {
+        const uint32_t w = shm->write_block_idx;
+        const uint32_t next_w = (w + 1U) & (PB2_PRU_BLOCK_CAPACITY - 1U);
+        if (next_w == shm->read_block_idx) {
+            shm->overrun_count++;
+            shm->dropped_frames++;
+            shm->hw_error_flags |= PB2_PRU_ERR_OVERRUN;
+            acc->gap_pending = 1U;
+            return;
         }
-        if (acc->jitter_pending) {
-            acc->staging.flags |= PB2_PRU_BLK_FLAG_JITTER_WARN;
-            acc->jitter_pending = 0U;
+        acc->w_idx = w;
+        acc->active_blk = &shm->blocks[w];
+        acc->active_blk->first_sample_index = sample_idx;
+        acc->active_blk->first_iep_ticks = iep_tick;
+        acc->active_blk->sequence = acc->seq++;
+        acc->active_blk->frame_count = 0U;
+        {
+            uint16_t fl = 0U;
+            if (acc->gap_pending) {
+                fl |= PB2_PRU_BLK_FLAG_GAP_BEFORE;
+                acc->gap_pending = 0U;
+            }
+            if (acc->jitter_pending) {
+                fl |= PB2_PRU_BLK_FLAG_JITTER_WARN;
+                acc->jitter_pending = 0U;
+            }
+            acc->active_blk->flags = fl;
         }
+        acc->frame_count = 0U;
     }
     {
-        const uint16_t idx = acc->staging.frame_count;
-        acc->staging.channels[idx][0] = ch[0];
-        acc->staging.channels[idx][1] = ch[1];
-        acc->staging.channels[idx][2] = ch[2];
-        acc->staging.channels[idx][3] = ch[3];
-        acc->staging.frame_count = idx + 1U;
+        const uint16_t idx = acc->frame_count;
+        volatile int16_t *dst = acc->active_blk->channels[idx];
+        dst[0] = ch[0];
+        dst[1] = ch[1];
+        dst[2] = ch[2];
+        dst[3] = ch[3];
+        acc->frame_count = idx + 1U;
     }
     shm->total_frames++;
-    if (acc->staging.frame_count >= PB2_PRU_BLOCK_FRAMES) {
+    if (acc->frame_count >= PB2_PRU_BLOCK_FRAMES) {
         flush_block(shm, acc);
     }
 }
@@ -211,8 +176,9 @@ static void run_acquisition(volatile pb2_pru_shared_t *shm) {
     shm->iep_period_ticks = (uint32_t)period_ticks;
 
     block_acc_t acc;
-    acc.staging.frame_count = 0U;
-    acc.staging.flags = 0U;
+    acc.active_blk = 0;
+    acc.w_idx = 0U;
+    acc.frame_count = 0U;
     acc.seq = 0U;
     acc.gap_pending = 0U;
     acc.jitter_pending = 0U;
@@ -400,6 +366,17 @@ void pru1_fsm_run(volatile pb2_pru_shared_t *shm) {
             } else if (cmd == PB2_PRU_CMD_CONFIGURE &&
                        (shm->state == PB2_PRU_STATE_IDLE || shm->state == PB2_PRU_STATE_STOPPED || shm->state == PB2_PRU_STATE_CONFIGURED)) {
                 if (config_is_valid(shm)) {
+                    if (shm->profile == PB2_PRU_PROFILE_DUAL_DOUT) {
+                        shm->channel_map[0] = 1U;
+                        shm->channel_map[1] = 2U;
+                        shm->channel_map[2] = 5U;
+                        shm->channel_map[3] = 6U;
+                    } else {
+                        shm->channel_map[0] = 1U;
+                        shm->channel_map[1] = 2U;
+                        shm->channel_map[2] = 3U;
+                        shm->channel_map[3] = 4U;
+                    }
                     shm->state = PB2_PRU_STATE_CONFIGURED;
                 } else {
                     shm->hw_error_flags |= PB2_PRU_ERR_INVALID_CONFIG;

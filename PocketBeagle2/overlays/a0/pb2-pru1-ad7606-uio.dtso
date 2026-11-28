@@ -1,0 +1,26 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * PocketBeagle 2 Rev A0 (TI AM6232) PRU-SS PRU1 AD7606 + UIO Overlay
+ * PRUSS base: 0x30040000 (k3-am62-main.dtsi), ICSS_SHARED @ 0x30050000 (32 KB)
+ * AD7606 pins (conflict-free vs UART2 P2.02/P2.04 and P2.20):
+ *   P2.06 -> pr0_pru1_gpo2  (CONVST)
+ *   P2.08 -> pr0_pru1_gpo3  (RESET)
+ *   P2.32 -> pr0_pru1_gpo11 (RD/SCLK)
+ *   P2.30 -> pr0_pru1_gpo12 (CS_N)
+ *   P2.10 -> pr0_pru1_gpi4  (BUSY)
+ *   P2.24 -> pr0_pru1_gpi6  (DOUTA)
+ *   P2.33 -> pr0_pru1_gpi7  (DOUTB)
+ *
+ * NOTE: Verify exact padconf offsets and target kernel uio_pruss/remoteproc
+ * binding on physical Debian 13.3 A0 image before enabling in extlinux/uEnv.
+ */
+
+/ {
+    compatible = "beagle,am6232-pocketbeagle2", "ti,am625";
+};
+
+&pruss {
+    status = "okay";
+};
