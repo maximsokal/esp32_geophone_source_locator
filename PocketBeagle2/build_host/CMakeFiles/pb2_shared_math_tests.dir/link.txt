@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/pb2_shared_math_tests.dir/link.d CMakeFiles/pb2_shared_math_tests.dir/tests/unit/test_shared_math.cpp.o -o pb2_shared_math_tests  libpb2_shared_math.a -lm

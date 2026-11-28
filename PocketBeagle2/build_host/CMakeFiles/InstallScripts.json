@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

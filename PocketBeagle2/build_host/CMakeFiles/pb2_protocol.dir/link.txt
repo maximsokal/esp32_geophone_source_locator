@@ -1,0 +1,2 @@
+/usr/bin/ar qc libpb2_protocol.a CMakeFiles/pb2_protocol.dir/mnt/e/Beetroot_Academy/Embedded/esp32_geophone_source_locator/components/pb2_protocol/pb2_cobs.c.o CMakeFiles/pb2_protocol.dir/mnt/e/Beetroot_Academy/Embedded/esp32_geophone_source_locator/components/pb2_protocol/pb2_crc32c.c.o CMakeFiles/pb2_protocol.dir/mnt/e/Beetroot_Academy/Embedded/esp32_geophone_source_locator/components/pb2_protocol/pb2_protocol.c.o
+/usr/bin/ranlib libpb2_protocol.a

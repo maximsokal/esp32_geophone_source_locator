@@ -1,0 +1,14 @@
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_protocol.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_core.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_shared_math.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_node.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_unit_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_protocol_c_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_pty_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_phase3_4_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_geoseis_v2_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_shared_math_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/pb2_pipeline_tests.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/test.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/edit_cache.dir
+/mnt/e/Beetroot Academy/Embedded/esp32_geophone_source_locator/PocketBeagle2/build_host/CMakeFiles/rebuild_cache.dir
