@@ -1,3 +1,4 @@
+import { soupVertexIds } from './meshIndex';
 import { diagnoseMeshSelfIntersections, type MeshIntersectionTriangle } from './meshSelfIntersection';
 import { sanitizeMeshTopology } from './meshTopologySanity';
 import { analyzeMeshTopology, defaultMeshRefineOptions, refineScanMesh, type MeshTopologyStats } from './meshRefine';
@@ -488,33 +489,9 @@ function refineAndMeasure(mesh: DirectionalTsdfMesh): DirectionalTsdfMesh {
   };
 }
 
-/**
- * A number per distinct corner position of a soup, compared bit for bit (open addressing over the 32-bit floats): the stitching emits a shared vertex with
- * identical coordinates in every triangle that uses it. Formatting the coordinates into strings cost more than the check itself.
- */
-function vertexIds(soup: Float32Array): Int32Array {
-  const corners = Math.floor(soup.length / 3);
-  const bits = new Uint32Array(soup.buffer, soup.byteOffset, corners * 3);
-  let size = 16; while (size < corners * 2) size *= 2;
-  const table = new Int32Array(size).fill(-1);
-  const ids = new Int32Array(corners);
-  for (let corner = 0; corner < corners; corner += 1) {
-    const x = bits[corner * 3]; const y = bits[corner * 3 + 1]; const z = bits[corner * 3 + 2];
-    let slot = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0;
-    slot = (slot ^ (slot >>> 15)) & (size - 1);
-    for (;;) {
-      const first = table[slot];
-      if (first < 0) { table[slot] = corner; ids[corner] = corner; break; }
-      if (bits[first * 3] === x && bits[first * 3 + 1] === y && bits[first * 3 + 2] === z) { ids[corner] = first; break; }
-      slot = (slot + 1) & (size - 1);
-    }
-  }
-  return ids;
-}
-
 /** The complete self-intersection check of a finished soup. */
 export function measureSelfIntersections(soup: Float32Array, voxelSizeMeters: number) {
-  const ids = vertexIds(soup);
+  const ids = soupVertexIds(soup);
   const triangles: MeshIntersectionTriangle[] = [];
   for (let t = 0, offset = 0; offset + 8 < soup.length; t += 1, offset += 9) {
     triangles.push({

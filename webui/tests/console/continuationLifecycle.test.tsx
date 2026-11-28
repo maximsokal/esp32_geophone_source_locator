@@ -326,9 +326,21 @@ describe('App off-thread continuation lifecycle (MAX-393)', () => {
     expect(h.props.getReferenceMesh()).toBeNull();                                                 /* the mesh of this scan was never computed */
     const triangles = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     expect(typeof h.viewportProps.onMeshReady).toBe('function');
-    act(() => { h.viewportProps.onMeshReady(baseSnapshot, triangles); });
+    act(() => { h.viewportProps.onMeshReady(baseSnapshot, triangles, 0.048); });
     expect(h.props.getReferenceMesh()).toBe(triangles);
-    act(() => { h.viewportProps.onMeshReady({ ...baseSnapshot }, Float32Array.from([9, 9, 9, 9, 9, 9, 9, 9, 9])); });
+    /* a large surface is offered as its lighter copy, and a repeated notice of the same mesh does not undo that */
+    const wall: number[] = [];
+    for (let y = 0; y < 20; y += 1) for (let x = 0; x < 20; x += 1) {
+      const [x0, x1, y0, y1] = [x, x + 1, y, y + 1].map((v) => v * 0.04);
+      wall.push(x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y0, 0, x1, y1, 0, x0, y1, 0);
+    }
+    const surface = Float32Array.from(wall);
+    act(() => { h.viewportProps.onMeshReady(baseSnapshot, surface, 0.048); });
+    await vi.waitFor(() => expect(h.props.getReferenceMesh().length).toBeLessThan(surface.length / 2));
+    const lighter = h.props.getReferenceMesh();
+    act(() => { h.viewportProps.onMeshReady(baseSnapshot, surface, 0.048); });
+    expect(h.props.getReferenceMesh()).toBe(lighter);
+    act(() => { h.viewportProps.onMeshReady({ ...baseSnapshot }, Float32Array.from([9, 9, 9, 9, 9, 9, 9, 9, 9]), 0.048); });
     expect(h.props.getReferenceMesh(), 'a mesh that belongs to another snapshot object is never offered').toBeNull();
   });
 

@@ -7,6 +7,7 @@ import type { LocalizationRun, LocalizationSessionGeometry } from '../api/device
 import { buildLocalizationOverlay } from '../domain/localizationOverlay';
 import type { SceneModel } from '../domain/scene';
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import { indexTriangleSoup } from '../xr/meshIndex';
 import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { REGISTRATION_INAPPLICABLE_KEYS } from '../xr/registrationApplicability';
 import { solverCandidateVolume } from '../xr/candidateVolume';
@@ -76,7 +77,7 @@ interface ScanPointCloudViewportProps {
   mode: ScanMode | null;
   sensorMarkers?: readonly SensorPlacementMarker[];
   /** The finished mesh of `snapshot` (project frame triangle soup), reported when it is computed or served from the cache; a Continue draws it over the camera. */
-  onMeshReady?: (snapshot: ScanPointCloudSnapshot, trianglePositions: Float32Array) => void;
+  onMeshReady?: (snapshot: ScanPointCloudSnapshot, trianglePositions: Float32Array, voxelSizeMeters: number) => void;
   selectedSensorNode?: SensorPlacementNode | null;
   onSensorMarkerSelect?: (node: SensorPlacementNode) => void;
   sensorGeometry?: LocalizationSessionGeometry | null;
@@ -181,8 +182,17 @@ function PointLayer({ positions, color, size, opacity, depthTest = true, renderO
   return <points geometry={geometry} frustumCulled={false} renderOrder={renderOrder}><pointsMaterial color={color} size={size} sizeAttenuation transparent={opacity < 1} opacity={opacity} depthTest={depthTest} depthWrite={false} /></points>;
 }
 
+/** The surface as it was reconstructed, with each shared vertex stored once. The materials are unlit: normals would never be read. */
+export function surfaceMeshGeometry(positions: Float32Array): THREE.BufferGeometry {
+  const mesh = indexTriangleSoup(positions);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+  return geometry;
+}
+
 function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wireframe: boolean }) {
-  const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); next.computeVertexNormals(); return next; }, [positions]);
+  const geometry = useMemo(() => surfaceMeshGeometry(positions), [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
   return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color={uiTheme.accent} transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color={uiTheme.text} transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
 }
@@ -581,7 +591,7 @@ export function ScanPointCloudViewport({
       tsdfClient.cancel('TSDF result already held for this scan.', true);
       setTsdfMesh(cachedMesh);
       setTsdfError(null);
-      onMeshReadyRef.current?.(snapshot, cachedMesh.trianglePositions);
+      onMeshReadyRef.current?.(snapshot, cachedMesh.trianglePositions, cachedMesh.voxelSizeMeters);
       clientDiagnostics.info('SCAN_TSDF_CACHE_HIT', { scan: fingerprint, triangles: cachedMesh.triangleCount, components: cachedMesh.meshTopologyComponentCount, settings: settingsKey });
       return () => { cancelled = true; };
     }
@@ -612,7 +622,7 @@ export function ScanPointCloudViewport({
       if (cancelled) return;
       tsdfCache.set(fingerprint, settingsKey, result);
       setTsdfMesh(result);
-      onMeshReadyRef.current?.(snapshot, result.trianglePositions);
+      onMeshReadyRef.current?.(snapshot, result.trianglePositions, result.voxelSizeMeters);
       /* Several bounded events instead of one long record the client log would cut (TASK 11); the pieces share the scan fingerprint. */
       for (const { event, fields } of tsdfDiagnosticEvents(result as unknown as TsdfDiagnosticsResult, {
         scan: fingerprint, certifiedPoints: snapshot.tsdfPointCount, roundTripMs: performance.now() - started, settings: settingsKey,

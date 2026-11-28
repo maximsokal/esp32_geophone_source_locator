@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { BufferAttribute, BufferGeometry, Vector3 } from 'three';
+import { MeshBVH } from 'three-mesh-bvh';
 import { describe, expect, it } from 'vitest';
 
 import { buildTsdfRequestArgs } from '../../src/components/ScanPointCloudViewport';
-import { buildDirectionalTsdfMesh } from '../../src/xr/directionalTsdf';
+import { buildDirectionalTsdfMesh, measureSelfIntersections } from '../../src/xr/directionalTsdf';
+import { simplifyMeshForDisplay } from '../../src/xr/meshLod';
 import { decodeOccupancySolverArtifact } from '../../src/xr/occupancySolverArtifact';
 import { decodeScanArtifact } from '../../src/xr/scanArtifact';
 import { createScanIdentity } from '../../src/xr/scanIdentity';
@@ -178,5 +181,29 @@ describe('REAL SCAN of phone run 2026-11-26 23:15 (private, local, mandatory)', 
   it('is deterministic: the same original scan gives the same mesh twice', () => {
     const a = measure('a', true).mesh; const b = measure('b', true).mesh;
     expect(Array.from(a.trianglePositions)).toEqual(Array.from(b.trianglePositions));
+  });
+
+  it('the lighter copy offered to the scanner: under 35% of the triangles, the same borders and parts, within 8 mm both ways', async () => {
+    const mesh = measure('lod', true).mesh;
+    const lod = await simplifyMeshForDisplay(mesh.trianglePositions, mesh.voxelSizeMeters);
+    expect(lod.simplified).toBe(true);
+    const full = topologyMetrics(mesh.trianglePositions, 1e-6); const light = topologyMetrics(lod.trianglePositions, 1e-6);
+    expect(light.triangles).toBeLessThan(0.35 * full.triangles);
+    expect(light.boundaryEdges, 'doorways and the limits of the observed surface are untouched').toBe(full.boundaryEdges);
+    expect(light.boundaryEdgeLengthMeters).toBeCloseTo(full.boundaryEdgeLengthMeters, 6);
+    expect(light.components).toBe(full.components);
+    expect(light.nonManifoldEdges).toBeLessThanOrEqual(full.nonManifoldEdges);
+    expect(light.degenerateTriangles).toBe(0);
+    expect(measureSelfIntersections(lod.trianglePositions, mesh.voxelSizeMeters).intersectingPairCount).toBeLessThanOrEqual(mesh.selfIntersectionPairCount);
+    const farthest = (from: Float32Array, to: Float32Array): number => {
+      const geometry = new BufferGeometry(); geometry.setAttribute('position', new BufferAttribute(to.slice(), 3));
+      const tree = new MeshBVH(geometry); const hit = { point: new Vector3(), distance: 0, faceIndex: 0 }; const point = new Vector3();
+      const samples = sampleMesh(from, 'light'); let worst = 0;
+      for (let i = 0; i < samples.length; i += 3) { tree.closestPointToPoint(point.fromArray(samples, i), hit); worst = Math.max(worst, hit.distance); }
+      return worst;
+    };
+    expect(farthest(mesh.trianglePositions, lod.trianglePositions), 'nothing of the reconstruction is lost').toBeLessThan(0.008);
+    expect(farthest(lod.trianglePositions, mesh.trianglePositions), 'nothing is drawn away from it').toBeLessThan(0.008);
+    report.displayLod = { triangles: [full.triangles, light.triangles], boundaryEdges: light.boundaryEdges, components: light.components };
   });
 });

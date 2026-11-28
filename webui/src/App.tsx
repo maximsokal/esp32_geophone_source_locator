@@ -23,6 +23,7 @@ import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/
 import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact, decodeOccupancySolverArtifact, type DecodedOccupancyArtifact } from './xr/occupancySolverArtifact';
 import { buildVoxelPreviewArtifact, decodeVoxelPreviewArtifact } from './xr/voxelPreview';
+import { simplifyMeshForDisplay } from './xr/meshLod';
 import { decodeRegistrationArtifact, encodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { TAG_FINALIZE_WINDOW_MS } from './xr/fiducial/tagModeState';
 import {
@@ -323,7 +324,15 @@ export default function App({ objectId, sessionId, status, onScanSaved, onContin
   /* The tag layout read back from the ESP32 (or last saved) for this object/session: the baseline a continuation inherits, and what survives a page reload. */
   /* The saved tag layout of the scan on screen, as state: it draws the sensors when there are no live anchors (a scan restored from the ESP32). */
   const [savedTagView, setSavedTagView] = useState<TagPositionsArtifact | null>(null);
-  const savedScanMeshRef = useRef<{ snapshot: ScanPointCloudSnapshot; trianglePositions: Float32Array } | null>(null);
+  /* `source` is the reconstructed mesh; `trianglePositions` is what the scanner draws: its lighter copy once that is ready. */
+  const savedScanMeshRef = useRef<{ snapshot: ScanPointCloudSnapshot; source: Float32Array; trianglePositions: Float32Array } | null>(null);
+  const keepReferenceMesh = useCallback((snapshot: ScanPointCloudSnapshot, source: Float32Array, voxelSizeMeters: number): void => {
+    const current = savedScanMeshRef.current;
+    if (current !== null && current.snapshot === snapshot && current.source === source) return;
+    const held = { snapshot, source, trianglePositions: source };
+    savedScanMeshRef.current = held;
+    void simplifyMeshForDisplay(source, voxelSizeMeters).then((lod) => { if (savedScanMeshRef.current === held) held.trianglePositions = lod.trianglePositions; });
+  }, []);
   const savedTagArtifactRef = useRef<{ objectId: string; sessionId: string; artifact: TagPositionsArtifact } | null>(null);
   /* SHA-256 of the scans this page encoded or restored, by their CRC32 frame id: the tag layout upload names the digest of the scan it belongs to. */
   const scanShaByFrameId = useRef(new Map<string, string>());
@@ -1745,7 +1754,7 @@ export default function App({ objectId, sessionId, status, onScanSaved, onContin
             >
               <ScanPointCloudViewport
                 snapshot={scanSnapshot}
-                onMeshReady={(meshSnapshot, trianglePositions) => { savedScanMeshRef.current = { snapshot: meshSnapshot, trianglePositions }; }}
+                onMeshReady={keepReferenceMesh}
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}
