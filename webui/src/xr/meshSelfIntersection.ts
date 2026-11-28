@@ -84,14 +84,6 @@ function aabbForTriangle(triangle: MeshIntersectionTriangle): Aabb {
   };
 }
 
-function aabbOverlap(a: Aabb, b: Aabb, epsilon: number): boolean {
-  return !(
-    a.maxX < b.minX - epsilon || b.maxX < a.minX - epsilon ||
-    a.maxY < b.minY - epsilon || b.maxY < a.minY - epsilon ||
-    a.maxZ < b.minZ - epsilon || b.maxZ < a.minZ - epsilon
-  );
-}
-
 function dominantAxis(normal: MeshIntersectionPoint): 0 | 1 | 2 {
   const ax = Math.abs(normal[0]);
   const ay = Math.abs(normal[1]);
@@ -322,24 +314,33 @@ function cellKey(x: number, y: number, z: number): number {
   return ((x + 65536) * 131072 + (y + 65536)) * 131072 + (z + 65536);
 }
 
+const cornerCells = new Float64Array(9);
+function compareCorners(left: number, right: number): number {
+  return cornerCells[left] - cornerCells[right] || cornerCells[left + 1] - cornerCells[right + 1] || cornerCells[left + 2] - cornerCells[right + 2];
+}
+
+/** A hash of the box centre and the corners in a fixed corner order, so it does not depend on the winding. No arrays are made. */
 function stableTrianglePriority(
   triangle: MeshIntersectionTriangle,
   aabb: Aabb,
   cellSizeMeters: number,
 ): number {
   const quantization = Math.max(cellSizeMeters / 16, 1e-5);
-  const vertices = triangle.vertices
-    .map((point) => [
-      Math.round(point[0] / quantization),
-      Math.round(point[1] / quantization),
-      Math.round(point[2] / quantization),
-    ] as const)
-    .sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
-  const cx = Math.round(((aabb.minX + aabb.maxX) * 0.5) / cellSizeMeters);
-  const cy = Math.round(((aabb.minY + aabb.maxY) * 0.5) / cellSizeMeters);
-  const cz = Math.round(((aabb.minZ + aabb.maxZ) * 0.5) / cellSizeMeters);
+  for (let corner = 0; corner < 3; corner += 1) {
+    const point = triangle.vertices[corner];
+    for (let axis = 0; axis < 3; axis += 1) cornerCells[corner * 3 + axis] = Math.round(point[axis] / quantization);
+  }
+  let first = 0, second = 3, third = 6, swap = 0;
+  if (compareCorners(first, second) > 0) { swap = first; first = second; second = swap; }
+  if (compareCorners(second, third) > 0) { swap = second; second = third; third = swap; }
+  if (compareCorners(first, second) > 0) { swap = first; first = second; second = swap; }
   let hash = 0x811c9dc5;
-  for (const value of [cx, cy, cz, ...vertices.flat()]) hash = Math.imul(hash ^ value, 0x01000193);
+  hash = Math.imul(hash ^ Math.round(((aabb.minX + aabb.maxX) * 0.5) / cellSizeMeters), 0x01000193);
+  hash = Math.imul(hash ^ Math.round(((aabb.minY + aabb.maxY) * 0.5) / cellSizeMeters), 0x01000193);
+  hash = Math.imul(hash ^ Math.round(((aabb.minZ + aabb.maxZ) * 0.5) / cellSizeMeters), 0x01000193);
+  for (const corner of [first, second, third]) {
+    for (let axis = 0; axis < 3; axis += 1) hash = Math.imul(hash ^ cornerCells[corner + axis], 0x01000193);
+  }
   hash ^= hash >>> 16;
   return hash >>> 0;
 }
@@ -375,9 +376,10 @@ export function diagnoseMeshSelfIntersections(
   const oversizedTriangleCount = 0;
   let truncated = false;
 
-  const positions = new Float32Array(triangleCount * 9);
-  triangles.forEach((triangle, index) => triangle.vertices.forEach((vertex, corner) => positions.set(vertex, index * 9 + corner * 3)));
   const normals = new Float64Array(triangleCount * 4);                /* unit normal and 1 once computed */
+  /* two corners within the weld tolerance share a key: such a needle has no second "own" corner for the neighbour rules */
+  const needle = new Uint8Array(triangleCount);
+  triangles.forEach(({ keys }, index) => { if (keys[0] === keys[1] || keys[1] === keys[2] || keys[0] === keys[2]) needle[index] = 1; });
   const margin = epsilonMeters;
   const buckets = new Map<number, number[]>();
   const large: number[] = [];                                          /* triangles too wide for the grid: every later one is compared with them */
@@ -385,10 +387,22 @@ export function diagnoseMeshSelfIntersections(
   const seenBy = new Int32Array(triangleCount).fill(-1);
   let largeComparisons = 0;
   const candidates: number[] = [];
+  /* the boxes side by side (min x, y, z, max x, y, z): the broad phase reads them millions of times */
+  const boxes = new Float64Array(triangleCount * 6);
+  aabbs.forEach((box, index) => {
+    boxes[index * 6] = box.minX; boxes[index * 6 + 1] = box.minY; boxes[index * 6 + 2] = box.minZ;
+    boxes[index * 6 + 3] = box.maxX; boxes[index * 6 + 4] = box.maxY; boxes[index * 6 + 5] = box.maxZ;
+  });
   const consider = (otherIndex: number, current: number): void => {
     if (seenBy[otherIndex] === current) return;
     seenBy[otherIndex] = current;
-    if (aabbOverlap(aabbs[current], aabbs[otherIndex], epsilonMeters)) candidates.push(otherIndex);
+    const a = current * 6, b = otherIndex * 6;
+    if (
+      boxes[a + 3] < boxes[b] - epsilonMeters || boxes[b + 3] < boxes[a] - epsilonMeters ||
+      boxes[a + 4] < boxes[b + 1] - epsilonMeters || boxes[b + 4] < boxes[a + 1] - epsilonMeters ||
+      boxes[a + 5] < boxes[b + 2] - epsilonMeters || boxes[b + 5] < boxes[a + 2] - epsilonMeters
+    ) return;
+    candidates.push(otherIndex);
   };
 
   for (const triangleIndex of order) {
@@ -431,6 +445,7 @@ export function diagnoseMeshSelfIntersections(
       if (sharedCount === 0) {
         if (!trianglesIntersect(triangle, other, epsilonMeters)) continue;
       } else {
+        if (needle[triangleIndex] !== 0 || needle[otherIndex] !== 0) continue;   /* it touches its neighbour within the weld tolerance */
         if (sharedCount < 3 && separatedByPlane(triangle, other, matched, normals, triangleIndex)) continue;
         const shared = [0, 1, 2].filter((corner) => other.keys.includes(triangle.keys[corner]));
         if (!neighboursIntersect(triangle, other, shared, epsilonMeters)) continue;

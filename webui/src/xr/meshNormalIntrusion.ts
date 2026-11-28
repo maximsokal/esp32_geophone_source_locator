@@ -1,8 +1,10 @@
+import type { MeshVertexKey } from './meshKeys';
+
 export type MeshNormalIntrusionPoint = readonly [number, number, number];
 
 export interface MeshNormalIntrusionTriangle {
   vertices: readonly [MeshNormalIntrusionPoint, MeshNormalIntrusionPoint, MeshNormalIntrusionPoint];
-  keys: readonly [string, string, string];
+  keys: readonly [MeshVertexKey, MeshVertexKey, MeshVertexKey];
 }
 
 export interface MeshNormalIntrusionComponentStats {
@@ -121,8 +123,9 @@ function grid(value: number, cellSizeMeters: number): number {
   return Math.floor(value / cellSizeMeters);
 }
 
-function cellKey(x: number, y: number, z: number): string {
-  return `${x}:${y}:${z}`;
+/** one number per grid cell: exact for cell indices within +-65536 (kilometres at the smallest cell) */
+function cellKey(x: number, y: number, z: number): number {
+  return ((x + 65536) * 131072 + (y + 65536)) * 131072 + (z + 65536);
 }
 
 function aabbCellBounds(aabb: Aabb, cellSizeMeters: number): readonly [number, number, number, number, number, number] {
@@ -135,17 +138,6 @@ function aabbCellBounds(aabb: Aabb, cellSizeMeters: number): readonly [number, n
 
 function cellCount(bounds: readonly [number, number, number, number, number, number]): number {
   return (bounds[1] - bounds[0] + 1) * (bounds[3] - bounds[2] + 1) * (bounds[5] - bounds[4] + 1);
-}
-
-function segmentAabb(start: Point, end: Point): Aabb {
-  return {
-    minX: Math.min(start[0], end[0]),
-    minY: Math.min(start[1], end[1]),
-    minZ: Math.min(start[2], end[2]),
-    maxX: Math.max(start[0], end[0]),
-    maxY: Math.max(start[1], end[1]),
-    maxZ: Math.max(start[2], end[2]),
-  };
 }
 
 function segmentIntersectsAabb(start: Point, end: Point, aabb: Aabb, epsilon: number): boolean {
@@ -170,25 +162,27 @@ function segmentIntersectsAabb(start: Point, end: Point, aabb: Aabb, epsilon: nu
   return true;
 }
 
+/** Moller-Trumbore in scalars: it runs for every exact test, so it makes no temporary vectors. */
 function segmentIntersectsTriangle(
   start: Point,
   end: Point,
   triangle: MeshNormalIntrusionTriangle,
 ): boolean {
-  const direction = subtract(end, start);
-  const edge1 = subtract(triangle.vertices[1], triangle.vertices[0]);
-  const edge2 = subtract(triangle.vertices[2], triangle.vertices[0]);
-  const h = cross(direction, edge2);
-  const determinant = dot(edge1, h);
+  const a = triangle.vertices[0], b = triangle.vertices[1], c = triangle.vertices[2];
+  const dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+  const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+  const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+  const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+  const determinant = e1x * hx + e1y * hy + e1z * hz;
   if (Math.abs(determinant) <= 1e-12) return false;
   const inverse = 1 / determinant;
-  const s = subtract(start, triangle.vertices[0]);
-  const u = inverse * dot(s, h);
+  const sx = start[0] - a[0], sy = start[1] - a[1], sz = start[2] - a[2];
+  const u = inverse * (sx * hx + sy * hy + sz * hz);
   if (u < -BARYCENTRIC_EPSILON || u > 1 + BARYCENTRIC_EPSILON) return false;
-  const q = cross(s, edge1);
-  const v = inverse * dot(direction, q);
+  const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+  const v = inverse * (dx * qx + dy * qy + dz * qz);
   if (v < -BARYCENTRIC_EPSILON || u + v > 1 + BARYCENTRIC_EPSILON) return false;
-  const t = inverse * dot(edge2, q);
+  const t = inverse * (e2x * qx + e2y * qy + e2z * qz);
   return t >= BARYCENTRIC_EPSILON && t <= 1 + BARYCENTRIC_EPSILON;
 }
 
@@ -255,7 +249,7 @@ export function diagnoseMeshNormalIntrusions(
     prepared.push({ ...partial, priority: stablePriority(partial, cellSizeMeters) });
   }
 
-  const gridBuckets = new Map<string, number[]>();
+  const gridBuckets = new Map<number, number[]>();
   const oversized: number[] = [];
   let oversizedTriangleCount = 0;
   for (let index = 0; index < prepared.length; index += 1) {
@@ -277,6 +271,19 @@ export function diagnoseMeshNormalIntrusions(
     }
   }
 
+  // Each box widened by twice the tolerance (min x, y, z, max x, y, z). A ray wholly outside it cannot pass the
+  // slab test, so most bucket entries are dropped by six comparisons with no rounding question.
+  const reach = new Float64Array(prepared.length * 6);
+  for (let index = 0; index < prepared.length; index += 1) {
+    const box = prepared[index].aabb;
+    reach[index * 6] = box.minX - 2 * metricEpsilon;
+    reach[index * 6 + 1] = box.minY - 2 * metricEpsilon;
+    reach[index * 6 + 2] = box.minZ - 2 * metricEpsilon;
+    reach[index * 6 + 3] = box.maxX + 2 * metricEpsilon;
+    reach[index * 6 + 4] = box.maxY + 2 * metricEpsilon;
+    reach[index * 6 + 5] = box.maxZ + 2 * metricEpsilon;
+  }
+
   const triangleIntrusionHits = new Uint8Array(triangles.length);
   const order = prepared
     .map((triangle, index) => ({ index, priority: triangle.priority }))
@@ -286,52 +293,73 @@ export function diagnoseMeshNormalIntrusions(
   let exactTestedPairs = 0;
   let truncated = false;
 
+  // Scratch state of the query, made once: visited[target] holds the number of the ray that last saw the target.
+  const visited = new Int32Array(prepared.length);
+  let rayNumber = 0;
+  const lists: (readonly number[])[] = [];
+  const start: [number, number, number] = [0, 0, 0];
+  const end: [number, number, number] = [0, 0, 0];
+
   outer: for (const source of order) {
     const preparedSource = prepared[source.index];
-    if (preparedSource.normal[0] === 0 && preparedSource.normal[1] === 0 && preparedSource.normal[2] === 0) continue;
-    const candidates = new Set<number>();
+    const { centroid: origin, normal } = preparedSource;
+    if (normal[0] === 0 && normal[1] === 0 && normal[2] === 0) continue;
     for (const sign of [-1, 1] as const) {
-      const start: Point = [
-        preparedSource.centroid[0] + preparedSource.normal[0] * startOffsetMeters * sign,
-        preparedSource.centroid[1] + preparedSource.normal[1] * startOffsetMeters * sign,
-        preparedSource.centroid[2] + preparedSource.normal[2] * startOffsetMeters * sign,
-      ];
-      const end: Point = [
-        preparedSource.centroid[0] + preparedSource.normal[0] * rayLengthMeters * sign,
-        preparedSource.centroid[1] + preparedSource.normal[1] * rayLengthMeters * sign,
-        preparedSource.centroid[2] + preparedSource.normal[2] * rayLengthMeters * sign,
-      ];
-      const rayBounds = aabbCellBounds(segmentAabb(start, end), cellSizeMeters);
-      for (let gx = rayBounds[0]; gx <= rayBounds[1]; gx += 1) {
-        for (let gy = rayBounds[2]; gy <= rayBounds[3]; gy += 1) {
-          for (let gz = rayBounds[4]; gz <= rayBounds[5]; gz += 1) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        start[axis] = origin[axis] + normal[axis] * startOffsetMeters * sign;
+        end[axis] = origin[axis] + normal[axis] * rayLengthMeters * sign;
+      }
+      const lowX = Math.min(start[0], end[0]), highX = Math.max(start[0], end[0]);
+      const lowY = Math.min(start[1], end[1]), highY = Math.max(start[1], end[1]);
+      const lowZ = Math.min(start[2], end[2]), highZ = Math.max(start[2], end[2]);
+      const maxX = grid(highX, cellSizeMeters);
+      const maxY = grid(highY, cellSizeMeters);
+      const maxZ = grid(highZ, cellSizeMeters);
+      const minY = grid(lowY, cellSizeMeters);
+      const minZ = grid(lowZ, cellSizeMeters);
+      lists.length = 0;
+      for (let gx = grid(lowX, cellSizeMeters); gx <= maxX; gx += 1) {
+        for (let gy = minY; gy <= maxY; gy += 1) {
+          for (let gz = minZ; gz <= maxZ; gz += 1) {
             const bucket = gridBuckets.get(cellKey(gx, gy, gz));
-            if (bucket !== undefined) for (const target of bucket) candidates.add(target);
+            if (bucket !== undefined) lists.push(bucket);
           }
         }
       }
-      for (const target of oversized) candidates.add(target);
+      lists.push(oversized);
 
-      for (const target of candidates) {
-        if (target === source.index) continue;
-        const preparedTarget = prepared[target];
-        if (sharedVertex(preparedSource.triangle, preparedTarget.triangle)) continue;
-        if (!segmentIntersectsAabb(start, end, preparedTarget.aabb, metricEpsilon)) continue;
-        candidatePairs += 1;
-        if (candidatePairs > budgets.candidatePairs) {
-          truncated = true;
-          break outer;
+      // Candidates are tested while the buckets are walked, each at its first appearance, so the order (and with
+      // it what a budget cuts off) is fixed by the grid, and a hit ends the walk.
+      rayNumber += 1;
+      for (const list of lists) {
+        for (const target of list) {
+          if (visited[target] === rayNumber) continue;
+          visited[target] = rayNumber;
+          if (target === source.index) continue;
+          const at = target * 6;
+          if (
+            highX < reach[at] || lowX > reach[at + 3] ||
+            highY < reach[at + 1] || lowY > reach[at + 4] ||
+            highZ < reach[at + 2] || lowZ > reach[at + 5]
+          ) continue;
+          const preparedTarget = prepared[target];
+          if (!segmentIntersectsAabb(start, end, preparedTarget.aabb, metricEpsilon)) continue;
+          if (sharedVertex(preparedSource.triangle, preparedTarget.triangle)) continue;
+          candidatePairs += 1;
+          if (candidatePairs > budgets.candidatePairs) {
+            truncated = true;
+            break outer;
+          }
+          if (exactTestedPairs >= budgets.exactTests) {
+            truncated = true;
+            break outer;
+          }
+          exactTestedPairs += 1;
+          if (!segmentIntersectsTriangle(start, end, preparedTarget.triangle)) continue;
+          triangleIntrusionHits[source.index] = 1;
+          continue outer;
         }
-        if (exactTestedPairs >= budgets.exactTests) {
-          truncated = true;
-          break outer;
-        }
-        exactTestedPairs += 1;
-        if (!segmentIntersectsTriangle(start, end, preparedTarget.triangle)) continue;
-        triangleIntrusionHits[source.index] = 1;
-        continue outer;
       }
-      candidates.clear();
     }
   }
 

@@ -2,6 +2,7 @@ import { Vector3 } from 'three';
 import { ExtendedTriangle } from 'three-mesh-bvh';
 import { describe, expect, it } from 'vitest';
 
+import { sanitizeMeshTopology } from '../../src/xr/meshTopologySanity';
 import {
   diagnoseMeshSelfIntersections,
   MAX_SELF_INTERSECTION_EXACT_TESTS,
@@ -152,5 +153,18 @@ describe('bounded mesh self-intersection diagnostic', () => {
     expect(diagnostic.exactTestedPairs).toBe(MAX_SELF_INTERSECTION_EXACT_TESTS);
     expect(diagnostic.intersectingPairCount).toBeGreaterThan(0);
     expect(diagnostic.affectedTriangleCount).toBeGreaterThan(0);
+  });
+
+  // Two corners of a needle closer than the weld tolerance share one vertex id. A neighbour then has fewer
+  // "own" corners than the neighbour rules expect; this crashed the whole reconstruction.
+  it.each([0, 0.31, 0.77, 1.13, 1.9, 2.6])('survives a needle with welded corners next to a crossing neighbour (shifted by %d m)', (shift) => {
+    const at = (x: number, y: number, z: number): number[] => [shift + x, shift * 0.5 + y, z];
+    const needle = [at(0, 0, 0), at(0.0002, 0, 0), at(0.03, 0.01, 0)];
+    const blade = [at(0, 0, 0), at(0.02, 0, 0.02), at(0.02, 0, -0.02)];
+    for (const faces of [[needle, blade], [blade, needle]]) {
+      const positions = Float32Array.from(faces.flat(2));
+      expect(() => sanitizeMeshTopology(positions, 0.048)).not.toThrow();
+      expect(sanitizeMeshTopology(positions, 0.048).selfIntersectionPairCount).toBe(0);
+    }
   });
 });

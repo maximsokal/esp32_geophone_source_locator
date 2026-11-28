@@ -2,6 +2,7 @@ import {
   diagnoseMeshNormalIntrusions,
   type MeshNormalIntrusionComponentStats,
 } from './meshNormalIntrusion';
+import { createMeshVertexIds, meshEdgeKey, type MeshVertexKey } from './meshKeys';
 import { detectLocalMeshNoiseHotspots } from './meshNoiseHotspots';
 import { quarantineDetachedMeshRepairFragments } from './meshRepairFragments';
 import { quarantineSubscaleMeshBranches } from './meshThinBranches';
@@ -73,7 +74,7 @@ export interface MeshTopologySanityResult {
 interface Triangle {
   originalIndex: number;
   vertices: [Point, Point, Point];
-  keys: [string, string, string];
+  keys: [MeshVertexKey, MeshVertexKey, MeshVertexKey];
   area: number;
 }
 
@@ -81,8 +82,8 @@ type Point = readonly [number, number, number];
 
 interface EdgeUse {
   triangle: number;
-  from: string;
-  to: string;
+  from: MeshVertexKey;
+  to: MeshVertexKey;
 }
 
 interface ComponentEdgeStats {
@@ -139,20 +140,13 @@ function finitePoint(point: Point): boolean {
   return Number.isFinite(point[0]) && Number.isFinite(point[1]) && Number.isFinite(point[2]);
 }
 
-function vertexKey(point: Point, quantizationMeters: number): string {
-  return `${Math.round(point[0] / quantizationMeters)}:${Math.round(point[1] / quantizationMeters)}:${Math.round(point[2] / quantizationMeters)}`;
-}
-
-function edgeKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
-}
-
 function parseTriangles(
   positions: Float32Array,
   quantizationMeters: number,
 ): Triangle[] {
   const count = Math.floor(positions.length / 9);
   const output: Triangle[] = [];
+  const vertexId = createMeshVertexIds(quantizationMeters);
   for (let triangle = 0; triangle < count; triangle += 1) {
     const offset = triangle * 9;
     const a: Point = [positions[offset], positions[offset + 1], positions[offset + 2]];
@@ -165,9 +159,9 @@ function parseTriangles(
       originalIndex: triangle,
       vertices: [a, b, c],
       keys: [
-        vertexKey(a, quantizationMeters),
-        vertexKey(b, quantizationMeters),
-        vertexKey(c, quantizationMeters),
+        vertexId(a[0], a[1], a[2]),
+        vertexId(b[0], b[1], b[2]),
+        vertexId(c[0], c[1], c[2]),
       ],
       area,
     });
@@ -175,12 +169,12 @@ function parseTriangles(
   return output;
 }
 
-function buildEdgeUses(triangles: readonly Triangle[]): Map<string, EdgeUse[]> {
-  const edges = new Map<string, EdgeUse[]>();
+function buildEdgeUses(triangles: readonly Triangle[]): Map<MeshVertexKey, EdgeUse[]> {
+  const edges = new Map<MeshVertexKey, EdgeUse[]>();
   for (let index = 0; index < triangles.length; index += 1) {
     const keys = triangles[index].keys;
     for (const [from, to] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
-      const key = edgeKey(from, to);
+      const key = meshEdgeKey(from, to);
       const uses = edges.get(key);
       if (uses === undefined) edges.set(key, [{ triangle: index, from, to }]);
       else uses.push({ triangle: index, from, to });
@@ -199,6 +193,8 @@ function pruneNonManifoldTriangles(triangles: readonly Triangle[]): {
   triangles: Triangle[];
   detectedEdgeCount: number;
   removedTriangleCount: number;
+  /** edge uses of the returned triangles */
+  edges: Map<MeshVertexKey, EdgeUse[]>;
 } {
   const edges = buildEdgeUses(triangles);
   const removed = new Uint8Array(triangles.length);
@@ -221,12 +217,17 @@ function pruneNonManifoldTriangles(triangles: readonly Triangle[]): {
     }
     output.push(triangles[index]);
   }
-  return { triangles: output, detectedEdgeCount, removedTriangleCount };
+  return {
+    triangles: output,
+    detectedEdgeCount,
+    removedTriangleCount,
+    edges: removedTriangleCount === 0 ? edges : buildEdgeUses(output),
+  };
 }
 
 function orientAndPartition(
   triangles: readonly Triangle[],
-  edges: Map<string, EdgeUse[]>,
+  edges: Map<MeshVertexKey, EdgeUse[]>,
 ): {
   flips: Uint8Array;
   componentByTriangle: Int32Array;
@@ -283,7 +284,7 @@ function buildComponentEdgeStats(
   componentCount: number,
   flips: Uint8Array,
   componentByTriangle: Int32Array,
-  edges: Map<string, EdgeUse[]>,
+  edges: Map<MeshVertexKey, EdgeUse[]>,
 ): ComponentEdgeStats[] {
   const stats: ComponentEdgeStats[] = Array.from({ length: componentCount }, () => ({
     edgeCount: 0,
@@ -636,7 +637,7 @@ export function sanitizeMeshTopology(
   const parsed = parseTriangles(trianglePositions, quantizationMeters);
   const nonManifoldRepair = pruneNonManifoldTriangles(parsed);
   const triangles = nonManifoldRepair.triangles;
-  const edges = buildEdgeUses(triangles);
+  const edges = nonManifoldRepair.edges;
   const orientation = orientAndPartition(triangles, edges);
   const componentEdgeStats = buildComponentEdgeStats(
     orientation.componentTriangles.length,

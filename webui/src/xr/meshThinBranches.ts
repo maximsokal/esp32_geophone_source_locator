@@ -1,8 +1,10 @@
+import { meshEdgeKey, type MeshVertexKey } from './meshKeys';
+
 export type MeshBranchPoint = readonly [number, number, number];
 
 export interface MeshBranchTriangle {
   vertices: readonly [MeshBranchPoint, MeshBranchPoint, MeshBranchPoint];
-  keys: readonly [string, string, string];
+  keys: readonly [MeshVertexKey, MeshVertexKey, MeshVertexKey];
 }
 
 export interface MeshThinBranchResult {
@@ -22,10 +24,6 @@ const MAX_BRANCH_AREA_VOXELS_SQUARED = 1.05;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
-}
-
-function edgeKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 function maximumBranchTriangles(componentSize: number): number {
@@ -144,13 +142,13 @@ export function quarantineSubscaleMeshBranches(
 
   // Rebuild only the cheap shared-edge graph for retained components. This is O(T)
   // and runs post-scan; no spatial intersection or normal-ray diagnostic is repeated.
-  const edgeUses = new Map<string, number[]>();
+  const edgeUses = new Map<MeshVertexKey, number[]>();
   for (let component = 0; component < componentCount; component += 1) {
     if (component >= repairableComponentMask.length || repairableComponentMask[component] === 0) continue;
     for (const index of membersByComponent[component]) {
       const keys = triangles[index].keys;
       for (const [a, b] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
-        const id = edgeKey(a, b);
+        const id = meshEdgeKey(a, b);
         const uses = edgeUses.get(id);
         if (uses === undefined) edgeUses.set(id, [index]);
         else uses.push(index);

@@ -1,8 +1,10 @@
+import { meshEdgeKey, type MeshVertexKey } from './meshKeys';
+
 export type MeshRepairPoint = readonly [number, number, number];
 
 export interface MeshRepairTriangle {
   vertices: readonly [MeshRepairPoint, MeshRepairPoint, MeshRepairPoint];
-  keys: readonly [string, string, string];
+  keys: readonly [MeshVertexKey, MeshVertexKey, MeshVertexKey];
 }
 
 export interface MeshRepairFragmentResult {
@@ -18,10 +20,6 @@ const MIN_FRAGMENT_WIDTH_METERS = 0.032;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
-}
-
-function edgeKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 function subtract(a: MeshRepairPoint, b: MeshRepairPoint): MeshRepairPoint {
@@ -114,14 +112,14 @@ export function quarantineDetachedMeshRepairFragments(
     ) affectedComponents[component] = 1;
   }
 
-  const edgeUses = new Map<string, number[]>();
+  const edgeUses = new Map<MeshVertexKey, number[]>();
   for (let index = 0; index < triangles.length; index += 1) {
     const component = index < componentByTriangle.length ? componentByTriangle[index] : -1;
     if (component < 0 || component >= componentCount || affectedComponents[component] === 0) continue;
     if (index < initialQuarantineMask.length && initialQuarantineMask[index] !== 0) continue;
     const keys = triangles[index].keys;
     for (const [a, b] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
-      const id = edgeKey(a, b);
+      const id = meshEdgeKey(a, b);
       const uses = edgeUses.get(id);
       if (uses === undefined) edgeUses.set(id, [index]);
       else uses.push(index);
@@ -143,7 +141,7 @@ export function quarantineDetachedMeshRepairFragments(
       members.push(current);
       const keys = triangles[current].keys;
       for (const [a, b] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
-        const uses = edgeUses.get(edgeKey(a, b));
+        const uses = edgeUses.get(meshEdgeKey(a, b));
         if (uses === undefined) continue;
         for (const neighbour of uses) {
           if (visited[neighbour] !== 0) continue;
@@ -162,10 +160,8 @@ export function quarantineDetachedMeshRepairFragments(
   for (let component = 0; component < componentCount; component += 1) {
     if (affectedComponents[component] === 0) continue;
     const fragments = fragmentsByComponent[component];
-    const substantial = fragments.filter((members) =>
-      fragmentIsSubstantial(members, triangles, voxelSizeMeters)
-    );
-    if (substantial.length === 0) {
+    const substantial = fragments.map((members) => fragmentIsSubstantial(members, triangles, voxelSizeMeters));
+    if (!substantial.includes(true)) {
       // Proposed local removal was too destructive for this retained component.
       // Restore its original hotspot faces rather than deleting the whole result.
       revertedComponentCount += 1;
@@ -175,8 +171,8 @@ export function quarantineDetachedMeshRepairFragments(
       continue;
     }
 
-    for (const members of fragments) {
-      if (fragmentIsSubstantial(members, triangles, voxelSizeMeters)) continue;
+    for (const [fragment, members] of fragments.entries()) {
+      if (substantial[fragment]) continue;
       detachedFragmentCount += 1;
       for (const index of members) {
         if (quarantineMask[index] !== 0) continue;
