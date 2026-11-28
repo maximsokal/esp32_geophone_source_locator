@@ -1,5 +1,6 @@
 #include "pb2/hardware/pinmap_a0.hpp"
 
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <string>
@@ -100,6 +101,52 @@ ClockValidationResult validate_pru_iep_clocks(
     res.valid = true;
     res.reason = "PRU (200 MHz) and IEP clocks validated";
     return res;
+}
+
+namespace {
+
+std::uint32_t read_clk_rate_hz(const std::string& path) {
+    const std::string s = read_trimmed_file(path.c_str());
+    if (s.empty()) {
+        return 0U;
+    }
+    char* end = nullptr;
+    const unsigned long long val = std::strtoull(s.c_str(), &end, 10);
+    if (end == s.c_str() || *end != '\0' || val > 0xFFFFFFFFULL) {
+        return 0U;
+    }
+    return static_cast<std::uint32_t>(val);
+}
+
+} // namespace
+
+ClockValidationResult probe_hardware_pru_iep_clocks(
+    const std::string& clk_debug_root
+) {
+    ClockValidationResult res{};
+    if (clk_debug_root.empty()) {
+        res.reason = "Missing Linux clk debugfs root; refusing hardware PRU acquisition";
+        return res;
+    }
+
+    std::uint32_t pru_hz = read_clk_rate_hz(clk_debug_root + "/pruss_coreclk_mux/clk_rate");
+    if (pru_hz == 0U) {
+        pru_hz = read_clk_rate_hz(clk_debug_root + "/pruss_core_clk/clk_rate");
+    }
+    std::uint32_t iep_hz = read_clk_rate_hz(clk_debug_root + "/pruss_iepclk_mux/clk_rate");
+    if (iep_hz == 0U) {
+        iep_hz = read_clk_rate_hz(clk_debug_root + "/pruss_iep_clk/clk_rate");
+    }
+
+    if (pru_hz == 0U || iep_hz == 0U) {
+        res.pru_clock_hz = pru_hz;
+        res.iep_clock_hz = iep_hz;
+        res.reason = "Hardware PRU/IEP clock rate unavailable in " + clk_debug_root +
+                     "; refusing hardware ADC acquisition";
+        return res;
+    }
+
+    return validate_pru_iep_clocks(pru_hz, iep_hz);
 }
 
 bool verify_a1_pinmap_conflict_free() {

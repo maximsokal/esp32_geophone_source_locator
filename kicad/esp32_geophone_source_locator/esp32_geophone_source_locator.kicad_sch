@@ -5,9 +5,109 @@
 	(uuid 6bda8a13-fb15-4bff-b68e-34eb41183cce)
 	(paper "A4")
 	(lib_symbols)
+	(sheet
+		(at 45.72 35.56)
+		(size 60.96 35.56)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid c9d363d6-3a82-4e64-bb4b-7a182a4ab5d6)
+		(property "Sheetname" "PocketBeagle 2 A1"
+			(at 45.72 34.8485 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "PocketBeagle2_A1.kicad_sch"
+			(at 45.72 71.7046 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(pin "ADC_5V" input
+			(at 45.72 40.64 180)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+			(uuid 1825b806-d39d-45be-8854-cfad5d30c180)
+		)
+		(pin "GEO1_AMP_OUT" input
+			(at 45.72 45.72 180)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+			(uuid afc05a32-e1d1-43e1-9e72-b27620e96492)
+		)
+		(pin "GEO2_AMP_OUT" input
+			(at 45.72 50.8 180)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+			(uuid d45add37-ceee-4a3c-8301-ab5648379a8b)
+		)
+		(pin "GEO3_AMP_OUT" input
+			(at 45.72 55.88 180)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+			(uuid b948e9db-57f4-47c0-a288-16c79d776705)
+		)
+		(pin "GEO4_AMP_OUT" input
+			(at 45.72 60.96 180)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+			(uuid 3b9755d3-6452-4140-b826-de48ef21ed07)
+		)
+		(instances
+			(project "esp32_geophone_source_locator"
+				(path "/"
+					(page "2")
+				)
+			)
+		)
+	)
+	(no_connect (at 45.72 40.64) (uuid 5c35697e-e237-42e1-af8e-f5ce8c71b9cd))
+	(no_connect (at 45.72 45.72) (uuid 74342d43-f97c-4418-9d5c-cc0eeb94a23a))
+	(no_connect (at 45.72 50.8) (uuid 46ca433a-6345-4c30-a9f5-21fa351a005b))
+	(no_connect (at 45.72 55.88) (uuid d0d160cc-cf44-44c9-b67b-a1973d2ecd0f))
+	(no_connect (at 45.72 60.96) (uuid baae078b-00e1-46e1-9983-e2446d7f2b4f))
 	(sheet_instances
 		(path "/"
 			(page "1")
+		)
+		(path "/c9d363d6-3a82-4e64-bb4b-7a182a4ab5d6"
+			(page "2")
 		)
 	)
 	(embedded_fonts no)

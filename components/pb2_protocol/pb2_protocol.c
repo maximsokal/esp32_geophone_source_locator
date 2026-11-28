@@ -366,6 +366,88 @@ pb2_proto_status_t pb2_encode_preview_block(const pb2_preview_block_t *b, uint8_
     return PB2_PROTO_OK;
 }
 
+pb2_proto_status_t pb2_encode_geometry_update(const pb2_geometry_update_t *g, uint8_t *buf, size_t cap, uint16_t *len) {
+    if (g == NULL || buf == NULL || len == NULL) return PB2_PROTO_ERR_INVALID_ARG;
+    if (cap < 64U) return PB2_PROTO_ERR_BUFFER_TOO_SMALL;
+    write_u32_le(buf, g->session_epoch);
+    buf[4] = g->geometry_source;
+    buf[5] = g->sensor_count;
+    buf[6] = g->valid;
+    buf[7] = g->reserved;
+    for (size_t ch = 0U; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
+        buf[8U + ch] = g->channel_to_sensor[ch];
+    }
+    write_f32_le(buf + 12U, g->propagation_speed_mps);
+    size_t offset = 16U;
+    for (size_t s = 0U; s < PB2_PROTO_CHANNEL_COUNT; ++s) {
+        for (size_t k = 0U; k < 3U; ++k) {
+            write_f32_le(buf + offset, g->sensor_positions_m[s][k]);
+            offset += 4U;
+        }
+    }
+    *len = 64U;
+    return PB2_PROTO_OK;
+}
+
+pb2_proto_status_t pb2_decode_geometry_update(const uint8_t *buf, size_t len, pb2_geometry_update_t *g) {
+    if (g == NULL || buf == NULL) return PB2_PROTO_ERR_INVALID_ARG;
+    if (len != 64U) return PB2_PROTO_ERR_TRUNCATED;
+    g->session_epoch = read_u32_le(buf);
+    g->geometry_source = buf[4];
+    g->sensor_count = buf[5];
+    g->valid = buf[6];
+    g->reserved = buf[7];
+    for (size_t ch = 0U; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
+        g->channel_to_sensor[ch] = buf[8U + ch];
+    }
+    g->propagation_speed_mps = read_f32_le(buf + 12U);
+    size_t offset = 16U;
+    for (size_t s = 0U; s < PB2_PROTO_CHANNEL_COUNT; ++s) {
+        for (size_t k = 0U; k < 3U; ++k) {
+            g->sensor_positions_m[s][k] = read_f32_le(buf + offset);
+            offset += 4U;
+        }
+    }
+    return PB2_PROTO_OK;
+}
+
+pb2_proto_status_t pb2_encode_localization_result(const pb2_localization_result_t *r, uint8_t *buf, size_t cap, uint16_t *len) {
+    if (r == NULL || buf == NULL || len == NULL) return PB2_PROTO_ERR_INVALID_ARG;
+    if (cap < 40U) return PB2_PROTO_ERR_BUFFER_TOO_SMALL;
+    write_u32_le(buf, r->session_epoch);
+    buf[4] = r->valid;
+    buf[5] = r->geometry_source;
+    buf[6] = r->iterations;
+    buf[7] = r->reserved;
+    write_f32_le(buf + 8U, r->source_x_m);
+    write_f32_le(buf + 12U, r->source_y_m);
+    write_f32_le(buf + 16U, r->source_z_m);
+    write_f32_le(buf + 20U, r->rms_residual_us);
+    for (size_t ch = 0U; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
+        write_u32_le(buf + 24U + ch * 4U, (uint32_t)r->tdoa_us[ch]);
+    }
+    *len = 40U;
+    return PB2_PROTO_OK;
+}
+
+pb2_proto_status_t pb2_decode_localization_result(const uint8_t *buf, size_t len, pb2_localization_result_t *r) {
+    if (r == NULL || buf == NULL) return PB2_PROTO_ERR_INVALID_ARG;
+    if (len != 40U) return PB2_PROTO_ERR_TRUNCATED;
+    r->session_epoch = read_u32_le(buf);
+    r->valid = buf[4];
+    r->geometry_source = buf[5];
+    r->iterations = buf[6];
+    r->reserved = buf[7];
+    r->source_x_m = read_f32_le(buf + 8U);
+    r->source_y_m = read_f32_le(buf + 12U);
+    r->source_z_m = read_f32_le(buf + 16U);
+    r->rms_residual_us = read_f32_le(buf + 20U);
+    for (size_t ch = 0U; ch < PB2_PROTO_CHANNEL_COUNT; ++ch) {
+        r->tdoa_us[ch] = (int32_t)read_u32_le(buf + 24U + ch * 4U);
+    }
+    return PB2_PROTO_OK;
+}
+
 pb2_proto_status_t pb2_decode_preview_block(const uint8_t *buf, size_t len, pb2_preview_block_t *b) {
     if (b == NULL || buf == NULL) return PB2_PROTO_ERR_INVALID_ARG;
     if (len < 33U) return PB2_PROTO_ERR_TRUNCATED;

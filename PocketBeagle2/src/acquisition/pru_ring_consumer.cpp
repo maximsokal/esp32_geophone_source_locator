@@ -124,6 +124,7 @@ bool PruSharedMemory::open_uio(const std::string& uio_hint,
     std::string chosen_dev;
     std::uint64_t chosen_map_idx = 0;
     std::uint64_t chosen_map_size = 0;
+    std::uint64_t chosen_map_offset = 0;
     std::uint64_t chosen_inner_offset = 0;
     bool found = false;
 
@@ -165,6 +166,7 @@ bool PruSharedMemory::open_uio(const std::string& uio_hint,
                 chosen_dev = dev_root + "/" + uio_name;
                 chosen_map_idx = map_idx;
                 chosen_map_size = size;
+                chosen_map_offset = offset;
                 chosen_inner_offset = (expected_phys - addr) + offset;
                 found = true;
                 break;
@@ -177,7 +179,7 @@ bool PruSharedMemory::open_uio(const std::string& uio_hint,
     }
     ::closedir(dir);
 
-    if (!found || (chosen_inner_offset + sizeof(pb2_pru_shared_t)) > chosen_map_size) {
+    if (!found || (chosen_inner_offset + sizeof(pb2_pru_shared_t)) > (chosen_map_size + chosen_map_offset)) {
         return false;
     }
 
@@ -186,7 +188,8 @@ bool PruSharedMemory::open_uio(const std::string& uio_hint,
         return false;
     }
     const off_t mmap_off = static_cast<off_t>(chosen_map_idx * page_size);
-    void* mapped = ::mmap(nullptr, static_cast<std::size_t>(chosen_map_size),
+    const std::size_t mmap_len = static_cast<std::size_t>(chosen_map_size + chosen_map_offset);
+    void* mapped = ::mmap(nullptr, mmap_len,
                           PROT_READ | PROT_WRITE, MAP_SHARED, fd, mmap_off);
     if (mapped == MAP_FAILED) {
         ::close(fd);
@@ -194,7 +197,7 @@ bool PruSharedMemory::open_uio(const std::string& uio_hint,
     }
     fd_ = fd;
     map_base_ = mapped;
-    map_len_ = static_cast<std::size_t>(chosen_map_size);
+    map_len_ = mmap_len;
     owns_mmap_ = true;
     shm_ = reinterpret_cast<pb2_pru_shared_t*>(
         static_cast<std::uint8_t*>(mapped) + chosen_inner_offset);

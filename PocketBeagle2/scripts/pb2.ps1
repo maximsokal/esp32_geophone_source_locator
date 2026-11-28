@@ -267,16 +267,20 @@ done
     "install-overlay" {
         Assert-BoardReachable
         $ovlSrc = Join-Path $pb2RootWin "overlays\a1\pb2-a1-ad7606-uart2.dtso"
+        $pinctrlHdr = Join-Path $pb2RootWin "overlays\a1\k3-pinctrl.h"
         if (-not (Test-Path $ovlSrc)) { throw "Missing A1 overlay source: $ovlSrc" }
-        & scp $ovlSrc "${Pb2User}@${Pb2Host}:/tmp/pb2-a1-ad7606-uart2.dtso"
+        if (-not (Test-Path $pinctrlHdr)) { throw "Missing k3-pinctrl.h: $pinctrlHdr" }
+        & scp $ovlSrc $pinctrlHdr "${Pb2User}@${Pb2Host}:/tmp/"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $remoteOvl = @'
 set -e
+command -v cpp >/dev/null 2>&1 || { echo "cpp missing on target"; exit 1; }
 command -v dtc >/dev/null 2>&1 || { echo "dtc missing on target"; exit 1; }
-dtc -@ -I dts -O dtb -o /tmp/pb2-a1-ad7606-uart2.dtbo /tmp/pb2-a1-ad7606-uart2.dtso
+cpp -nostdinc -I /tmp -undef -x assembler-with-cpp /tmp/pb2-a1-ad7606-uart2.dtso /tmp/pb2-a1-ad7606-uart2.dts.preprocessed
+dtc -@ -I dts -O dtb -o /tmp/pb2-a1-ad7606-uart2.dtbo /tmp/pb2-a1-ad7606-uart2.dts.preprocessed
 sudo mkdir -p /lib/firmware/overlays
 sudo cp /tmp/pb2-a1-ad7606-uart2.dtbo /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo
-echo "Compiled & staged /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo (add to extlinux.conf fdtoverlays and reboot)."
+echo "Compiled & staged /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo (requires CONFIG_UIO, CONFIG_UIO_PDRV_GENIRQ, uio_pdrv_genirq.of_id=generic-uio)."
 '@
         $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteOvl))
         & ssh -t "$Pb2User@$Pb2Host" "echo '$b64' | base64 -d | bash"
@@ -359,20 +363,22 @@ echo "Compiled & staged /lib/firmware/overlays/pb2-a1-ad7606-uart2.dtbo (add to 
             python -m pytest tests/python/test_a1_overlay_dt.py tests/python/test_pru_live_lifecycle.py tests/python/test_virtual_dual_board.py tests/python/test_am62x_memory_map.py tests/python/test_repo_hygiene.py -v
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            Write-Host "=== 7/8 KiCad ERC (Error-level Gate) ===" -ForegroundColor Cyan
+            Write-Host "=== 7/9 KiCad ERC (Zero-Violation Root Hierarchy Gate) ===" -ForegroundColor Cyan
             $kicadCli = "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
             if (Test-Path $kicadCli) {
                 $ercDir = Join-Path $repoRoot "kicad\esp32_geophone_source_locator"
                 $ercTmp = Join-Path $env:TEMP "pb2_erc_virtual.json"
-                & $kicadCli sch erc --severity-error --exit-code-violations --format json -o $ercTmp "$ercDir\PocketBeagle2_A0.kicad_sch"
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                & $kicadCli sch erc --severity-error --exit-code-violations --format json -o $ercTmp "$ercDir\esp32_geophone_source_locator.kicad_sch"
+                & $kicadCli sch erc --exit-code-violations --format json -o $ercTmp "$ercDir\esp32_geophone_source_locator.kicad_sch"
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             } else {
                 Write-Host "KiCad CLI not found at $kicadCli; skipping local ERC check." -ForegroundColor Yellow
             }
 
-            Write-Host "=== 8/8 ast-grep Verification ===" -ForegroundColor Cyan
+            Write-Host "=== 8/9 ESP32-S3 Firmware Build Verification ===" -ForegroundColor Cyan
+            python tools/run_local_verify.py --scope firmware
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            Write-Host "=== 9/9 ast-grep Verification ===" -ForegroundColor Cyan
             python tools/run_local_verify.py --scope ast
             exit $LASTEXITCODE
         } finally {

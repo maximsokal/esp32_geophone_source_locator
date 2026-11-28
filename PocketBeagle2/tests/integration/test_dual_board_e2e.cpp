@@ -88,33 +88,56 @@ int main() {
     E2E_CHECK(pb2_encode_hello(&hello, hbuf, sizeof(hbuf), &hlen) == PB2_PROTO_OK);
     send_raw_esp_frame(pty1.master, PB2_MSG_HELLO, 1U, 1U, 1U, hbuf, hlen);
 
+    pb2::runtime::PipelineConfig pb2_cfg{};
+    pb2_cfg.profile = pb2::acquisition::AdcWiringProfile::SerialDualDout;
+    pb2_cfg.uart_baud = 115200U;
+    pb2_cfg.boot_epoch = 10U;
+    pb2_cfg.session_epoch = 20U;
+    pb2::runtime::RuntimePipeline pb2_pipe(pb2_cfg);
+    std::atomic<bool> pb2_remote_stop{false};
+
+    // 1. HELLO -> production RuntimePipeline::handle_uart_rx_frame replies CAPABILITIES + ACK
     bool saw_hello = false;
     for (int i = 0; i < 10 && !saw_hello; ++i) {
-        E2E_CHECK(pb2_uart.poll_once(20, [&](const pb2_frame_header_t& h, const uint8_t*) {
+        E2E_CHECK(pb2_uart.poll_once(20, [&](const pb2_frame_header_t& h, const uint8_t* p) {
             if (h.msg_type == PB2_MSG_HELLO) {
                 saw_hello = true;
-                pb2_capabilities_payload_t cap{0xFFU, 921600U, 2U, 4U};
-                std::uint8_t cbuf[32]{};
-                std::uint16_t clen = 0U;
-                E2E_CHECK(pb2_encode_capabilities(&cap, cbuf, sizeof(cbuf), &clen) == PB2_PROTO_OK);
-                pb2_frame_header_t chdr{PB2_PROTO_VERSION, PB2_MSG_CAPABILITIES, 0U, 10U, 1U, 1U, clen};
-                E2E_CHECK(pb2_uart.enqueue_frame(chdr, cbuf));
-
-                pb2_ack_payload_t ack{};
-                ack.acked_sequence = h.sequence;
-                ack.acked_msg_type = h.msg_type;
-                ack.status_code = 0U;
-                std::uint8_t abuf[16]{};
-                std::uint16_t alen = 0U;
-                E2E_CHECK(pb2_encode_ack(&ack, abuf, sizeof(abuf), &alen) == PB2_PROTO_OK);
-                pb2_frame_header_t ahdr{PB2_PROTO_VERSION, PB2_MSG_ACK, 0U, 11U, 1U, 1U, alen};
-                E2E_CHECK(pb2_uart.enqueue_frame(ahdr, abuf));
             }
+            pb2_pipe.handle_uart_rx_frame(pb2_uart, h, p, pb2_remote_stop);
         }));
     }
     E2E_CHECK(saw_hello);
     E2E_CHECK(pb2_uart.poll_once(10, [](const pb2_frame_header_t&, const uint8_t*) {}));
     E2E_CHECK(pb2_uart.stats().frames_tx >= 2U);
+
+    // 1b. GEOMETRY_UPDATE from ESP32 -> production handle_uart_rx_frame configures active_geometry
+    {
+        pb2_geometry_update_t g{};
+        g.session_epoch = 20U;
+        g.geometry_source = PB2_GEOMETRY_SRC_BLE_CS;
+        g.sensor_count = 4U;
+        g.valid = 1U;
+        g.propagation_speed_mps = 1200.0f;
+        const float pos[4][3] = {{0,0,0}, {4,0,0}, {0,4,0}, {2,2,3}};
+        for (int s = 0; s < 4; ++s) {
+            g.channel_to_sensor[s] = static_cast<uint8_t>(s);
+            for (int k = 0; k < 3; ++k) g.sensor_positions_m[s][k] = pos[s][k];
+        }
+        std::uint8_t gbuf[64]{};
+        std::uint16_t glen = 0U;
+        E2E_CHECK(pb2_encode_geometry_update(&g, gbuf, sizeof(gbuf), &glen) == PB2_PROTO_OK);
+        send_raw_esp_frame(pty1.master, PB2_MSG_GEOMETRY_UPDATE, 2U, 1U, 20U, gbuf, glen);
+        bool saw_geom = false;
+        for (int i = 0; i < 10 && !saw_geom; ++i) {
+            E2E_CHECK(pb2_uart.poll_once(20, [&](const pb2_frame_header_t& h, const uint8_t* p) {
+                if (h.msg_type == PB2_MSG_GEOMETRY_UPDATE) saw_geom = true;
+                pb2_pipe.handle_uart_rx_frame(pb2_uart, h, p, pb2_remote_stop);
+            }));
+        }
+        E2E_CHECK(saw_geom);
+        E2E_CHECK(pb2_pipe.active_geometry().valid);
+        E2E_CHECK(pb2_pipe.active_geometry().geometry_source == PB2_GEOMETRY_SRC_BLE_CS);
+    }
 
     // 2. HEARTBEAT & Duplicate sequence check
     pb2_heartbeat_payload_t hb{1000ULL, 10U, 0U};

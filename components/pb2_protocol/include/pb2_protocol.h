@@ -145,6 +145,37 @@ typedef struct {
     float samples_uv[PB2_PROTO_PREVIEW_MAX_FRAMES][PB2_PROTO_CHANNEL_COUNT];
 } pb2_preview_block_t;
 
+typedef enum {
+    PB2_GEOMETRY_SRC_NONE       = 0,
+    PB2_GEOMETRY_SRC_BLE_CS     = 1,
+    PB2_GEOMETRY_SRC_APRILTAG_3D = 2,
+    PB2_GEOMETRY_SRC_MANUAL_CAL = 3
+} pb2_geometry_source_t;
+
+typedef struct {
+    uint32_t session_epoch;
+    uint8_t geometry_source;
+    uint8_t sensor_count;
+    uint8_t valid;
+    uint8_t reserved;
+    uint8_t channel_to_sensor[PB2_PROTO_CHANNEL_COUNT];
+    float propagation_speed_mps;
+    float sensor_positions_m[PB2_PROTO_CHANNEL_COUNT][3];
+} pb2_geometry_update_t;
+
+typedef struct {
+    uint32_t session_epoch;
+    uint8_t valid;
+    uint8_t geometry_source;
+    uint8_t iterations;
+    uint8_t reserved;
+    float source_x_m;
+    float source_y_m;
+    float source_z_m;
+    float rms_residual_us;
+    int32_t tdoa_us[PB2_PROTO_CHANNEL_COUNT];
+} pb2_localization_result_t;
+
 typedef struct {
     uint8_t rx_buf[PB2_PROTO_MAX_COBS_BYTES];
     size_t rx_len;
@@ -212,6 +243,12 @@ pb2_proto_status_t pb2_decode_acq_status(const uint8_t *buf, size_t len, pb2_acq
 
 pb2_proto_status_t pb2_encode_preview_block(const pb2_preview_block_t *b, uint8_t *buf, size_t cap, uint16_t *len);
 pb2_proto_status_t pb2_decode_preview_block(const uint8_t *buf, size_t len, pb2_preview_block_t *b);
+
+pb2_proto_status_t pb2_encode_geometry_update(const pb2_geometry_update_t *g, uint8_t *buf, size_t cap, uint16_t *len);
+pb2_proto_status_t pb2_decode_geometry_update(const uint8_t *buf, size_t len, pb2_geometry_update_t *g);
+
+pb2_proto_status_t pb2_encode_localization_result(const pb2_localization_result_t *r, uint8_t *buf, size_t cap, uint16_t *len);
+pb2_proto_status_t pb2_decode_localization_result(const uint8_t *buf, size_t len, pb2_localization_result_t *r);
 
 /* Streaming byte-by-byte / chunked COBS+CRC32C decoder */
 void pb2_stream_decoder_init(pb2_stream_decoder_t *dec);

@@ -51,6 +51,12 @@ ClockValidationResult validate_pru_iep_clocks(
     std::uint32_t iep_clock_hz
 );
 
+/// Probes actual AM62x PRU/IEP clock rates from Linux debugfs clk tree.
+/// Returns valid=false if clock rates are missing or incompatible.
+ClockValidationResult probe_hardware_pru_iep_clocks(
+    const std::string& clk_debug_root = "/sys/kernel/debug/clk"
+);
+
 /// Returns false if any reserved/conflicting header pin (e.g. P2.20 aliasing R31.4,
 /// or P2.02/P2.04 UART2) is assigned to ADC PRU1.
 bool verify_a1_pinmap_conflict_free();

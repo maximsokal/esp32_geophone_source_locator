@@ -14,11 +14,44 @@ extern "C" {
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace pb2::runtime {
 
 namespace {
+
+std::uint32_t derive_runtime_epoch(std::uint32_t configured) noexcept {
+    if (configured != 0U) {
+        return configured;
+    }
+    const auto now_s = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    const std::uint32_t mixed = static_cast<std::uint32_t>((now_s & 0xFFFFFFFFULL) ^
+                                                           static_cast<std::uint64_t>(::getpid()));
+    return (mixed < 2U) ? 2U : mixed;
+}
+
+bool is_valid_geometry(const GeometryConfig& g) noexcept {
+    if (!g.valid || g.propagation_speed_mps <= 0.0 || !std::isfinite(g.propagation_speed_mps)) {
+        return false;
+    }
+    bool seen[4]{false, false, false, false};
+    for (std::size_t ch = 0; ch < 4U; ++ch) {
+        if (g.channel_to_sensor[ch] >= 4U || seen[g.channel_to_sensor[ch]]) {
+            return false;
+        }
+        seen[g.channel_to_sensor[ch]] = true;
+        for (std::size_t k = 0; k < 3U; ++k) {
+            if (!std::isfinite(g.sensor_positions_m[ch][k])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 /// Preallocated circular DDR ring buffer + RAII writer worker thread.
 /// Guarantees clean stop + join on all return paths (no std::terminate).
@@ -141,7 +174,10 @@ private:
 } // namespace
 
 RuntimePipeline::RuntimePipeline(const PipelineConfig& cfg)
-    : cfg_(cfg) {}
+    : cfg_(cfg),
+      active_geometry_(cfg.initial_geometry),
+      active_boot_epoch_(derive_runtime_epoch(cfg.boot_epoch)),
+      active_session_epoch_(derive_runtime_epoch(cfg.session_epoch)) {}
 
 void RuntimePipeline::push_preview(const pb2::acquisition::SampleFrame* frames, std::size_t count) {
     if (cfg_.preview_capacity == 0U || count == 0U) {
@@ -155,21 +191,53 @@ void RuntimePipeline::push_preview(const pb2::acquisition::SampleFrame* frames, 
     }
 }
 
+std::size_t RuntimePipeline::compute_dsp_window_samples() const noexcept {
+    /* noise_window_samples (64) + trigger_window_samples (16) + 16 margin */
+    constexpr std::size_t kMinAlgorithmSamples = 96U;
+    constexpr std::size_t kDefaultDspWindow = 256U;
+    constexpr std::size_t kMaxBoundedWindow = 16384U;
+
+    if (!is_valid_geometry(active_geometry_) || cfg_.sample_rate_hz == 0U) {
+        return kDefaultDspWindow;
+    }
+
+    double max_baseline_m = 0.0;
+    for (std::size_t i = 0; i < 4U; ++i) {
+        for (std::size_t j = i + 1U; j < 4U; ++j) {
+            const double dx = active_geometry_.sensor_positions_m[i][0] - active_geometry_.sensor_positions_m[j][0];
+            const double dy = active_geometry_.sensor_positions_m[i][1] - active_geometry_.sensor_positions_m[j][1];
+            const double dz = active_geometry_.sensor_positions_m[i][2] - active_geometry_.sensor_positions_m[j][2];
+            const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist > max_baseline_m) {
+                max_baseline_m = dist;
+            }
+        }
+    }
+
+    const double max_tdoa_s = max_baseline_m / active_geometry_.propagation_speed_mps;
+    const auto tdoa_samples = static_cast<std::size_t>(
+        std::ceil(max_tdoa_s * static_cast<double>(cfg_.sample_rate_hz)));
+    const std::size_t needed = kMinAlgorithmSamples + tdoa_samples + 32U;
+    return std::min(kMaxBoundedWindow, std::max(kDefaultDspWindow, needed));
+}
+
 void RuntimePipeline::run_dsp_window(const pb2::acquisition::SampleFrame* frames,
                                      std::size_t count,
+                                     pb2::transport::UartTransport& uart,
                                      PipelineReport& report) {
     if (!cfg_.enable_dsp || count == 0U) {
         return;
     }
-    constexpr std::size_t kMaxDspWindow = 256U;
+    const std::size_t max_dsp_window = compute_dsp_window_samples();
+    report.dsp_window_samples = max_dsp_window;
     for (std::size_t i = 0; i < count; ++i) {
         for (std::size_t ch = 0; ch < 4U; ++ch) {
             dsp_windows_[ch].push_back(static_cast<float>(frames[i].channels[ch]));
         }
     }
     for (std::size_t ch = 0; ch < 4U; ++ch) {
-        if (dsp_windows_[ch].size() > kMaxDspWindow) {
-            const std::size_t excess = dsp_windows_[ch].size() - kMaxDspWindow;
+        if (dsp_windows_[ch].size() > max_dsp_window) {
+            const std::size_t excess = dsp_windows_[ch].size() - max_dsp_window;
             dsp_windows_[ch].erase(dsp_windows_[ch].begin(),
                                    dsp_windows_[ch].begin() + static_cast<std::ptrdiff_t>(excess));
         }
@@ -194,25 +262,67 @@ void RuntimePipeline::run_dsp_window(const pb2::acquisition::SampleFrame* frames
         if (triggered_channels > 0U) {
             report.dsp_triggers += triggered_channels;
         }
-        if (triggered_channels == 4U && cfg_.sample_rate_hz > 0U) {
-            const localization_point3d_t sensors[4] = {
-                {0.0, 0.0, 0.0},
-                {4.0, 0.0, 0.0},
-                {0.0, 4.0, 0.0},
-                {2.0, 2.0, 2.5},
-            };
+        /* Never emit synthetic localization without valid session geometry */
+        if (triggered_channels == 4U && cfg_.sample_rate_hz > 0U && is_valid_geometry(active_geometry_)) {
             localization_observation_t obs[4]{};
             const double us_per_sample = 1000000.0 / static_cast<double>(cfg_.sample_rate_hz);
+            std::int64_t t_sensor[4]{};
             for (std::size_t ch = 0; ch < 4U; ++ch) {
-                obs[ch].sensor_position = sensors[ch];
-                obs[ch].arrival_time_us = static_cast<int64_t>(
+                const std::size_t sidx = active_geometry_.channel_to_sensor[ch];
+                obs[sidx].sensor_position = {
+                    active_geometry_.sensor_positions_m[sidx][0],
+                    active_geometry_.sensor_positions_m[sidx][1],
+                    active_geometry_.sensor_positions_m[sidx][2],
+                };
+                const auto t_us = static_cast<std::int64_t>(
                     std::llround(static_cast<double>(trigger_idx[ch]) * us_per_sample));
+                obs[sidx].arrival_time_us = t_us;
+                t_sensor[sidx] = t_us;
             }
             localization_config_t lcfg = localization_default_config();
-            const localization_point3d_t guess{1.0, 1.0, 1.0};
+            lcfg.propagation_speed_mps = active_geometry_.propagation_speed_mps;
+
+            localization_point3d_t centroid{0.0, 0.0, 0.0};
+            for (std::size_t s = 0; s < 4U; ++s) {
+                centroid.x_m += obs[s].sensor_position.x_m * 0.25;
+                centroid.y_m += obs[s].sensor_position.y_m * 0.25;
+                centroid.z_m += obs[s].sensor_position.z_m * 0.25;
+            }
             localization_result_t lres{};
-            if (localization_tdoa_solve(obs, 4U, &lcfg, &guess, &lres) == ESP_OK && lres.converged) {
+            if (localization_tdoa_solve(obs, 4U, &lcfg, &centroid, &lres) == ESP_OK && lres.converged) {
                 report.dsp_localizations++;
+                report.last_localization.valid = true;
+                report.last_localization.geometry_source = active_geometry_.geometry_source;
+                report.last_localization.iterations = lres.iterations;
+                report.last_localization.source_x_m = lres.source_position.x_m;
+                report.last_localization.source_y_m = lres.source_position.y_m;
+                report.last_localization.source_z_m = lres.source_position.z_m;
+                report.last_localization.rms_residual_us = lres.rms_residual_us;
+                for (std::size_t s = 0; s < 4U; ++s) {
+                    report.last_localization.tdoa_us[s] = static_cast<std::int32_t>(t_sensor[s] - t_sensor[0]);
+                }
+
+                if (uart.is_open()) {
+                    pb2_localization_result_t msg{};
+                    msg.session_epoch = active_session_epoch_;
+                    msg.valid = 1U;
+                    msg.geometry_source = active_geometry_.geometry_source;
+                    msg.iterations = lres.iterations;
+                    msg.source_x_m = static_cast<float>(lres.source_position.x_m);
+                    msg.source_y_m = static_cast<float>(lres.source_position.y_m);
+                    msg.source_z_m = static_cast<float>(lres.source_position.z_m);
+                    msg.rms_residual_us = static_cast<float>(lres.rms_residual_us);
+                    for (std::size_t s = 0; s < 4U; ++s) {
+                        msg.tdoa_us[s] = report.last_localization.tdoa_us[s];
+                    }
+                    std::uint8_t lbuf[40]{};
+                    std::uint16_t llen = 0U;
+                    if (pb2_encode_localization_result(&msg, lbuf, sizeof(lbuf), &llen) == PB2_PROTO_OK) {
+                        pb2_frame_header_t lhdr{PB2_PROTO_VERSION, PB2_MSG_LOCALIZATION_RESULT, 0U,
+                                                uart_seq_++, active_boot_epoch_, active_session_epoch_, llen};
+                        uart.enqueue_frame(lhdr, lbuf);
+                    }
+                }
             }
         }
     }
@@ -220,15 +330,29 @@ void RuntimePipeline::run_dsp_window(const pb2::acquisition::SampleFrame* frames
 
 void RuntimePipeline::handle_uart_rx_frame(pb2::transport::UartTransport& uart,
                                            const pb2_frame_header_t& rx_hdr,
-                                           const uint8_t* /*rx_payload*/,
+                                           const uint8_t* rx_payload,
                                            std::atomic<bool>& remote_stop) {
+    auto send_ack = [&](std::uint8_t status_code) {
+        pb2_ack_payload_t ack{};
+        ack.acked_sequence = rx_hdr.sequence;
+        ack.acked_msg_type = rx_hdr.msg_type;
+        ack.status_code = status_code;
+        uint8_t ack_buf[16]{};
+        uint16_t ack_len = 0U;
+        if (pb2_encode_ack(&ack, ack_buf, sizeof(ack_buf), &ack_len) == PB2_PROTO_OK) {
+            pb2_frame_header_t ack_hdr{PB2_PROTO_VERSION, PB2_MSG_ACK, 0U,
+                                       uart_seq_++, active_boot_epoch_, active_session_epoch_, ack_len};
+            uart.enqueue_frame(ack_hdr, ack_buf);
+        }
+    };
+
     if (rx_hdr.msg_type == PB2_MSG_PING) {
         pb2_frame_header_t pong_hdr{};
         pong_hdr.version = PB2_PROTO_VERSION;
         pong_hdr.msg_type = PB2_MSG_PONG;
         pong_hdr.sequence = uart_seq_++;
-        pong_hdr.boot_epoch = cfg_.boot_epoch;
-        pong_hdr.session_epoch = cfg_.session_epoch;
+        pong_hdr.boot_epoch = active_boot_epoch_;
+        pong_hdr.session_epoch = active_session_epoch_;
         pong_hdr.payload_len = 0U;
         uart.enqueue_frame(pong_hdr, nullptr);
     } else if (rx_hdr.msg_type == PB2_MSG_HELLO) {
@@ -237,31 +361,45 @@ void RuntimePipeline::handle_uart_rx_frame(pb2::transport::UartTransport& uart,
         std::uint16_t clen = 0U;
         if (pb2_encode_capabilities(&cap, cbuf, sizeof(cbuf), &clen) == PB2_PROTO_OK) {
             pb2_frame_header_t chdr{PB2_PROTO_VERSION, PB2_MSG_CAPABILITIES, 0U,
-                                    uart_seq_++, cfg_.boot_epoch, cfg_.session_epoch, clen};
+                                    uart_seq_++, active_boot_epoch_, active_session_epoch_, clen};
             uart.enqueue_frame(chdr, cbuf);
         }
-        pb2_ack_payload_t ack{};
-        ack.acked_sequence = rx_hdr.sequence;
-        ack.acked_msg_type = rx_hdr.msg_type;
-        ack.status_code = 0U;
-        uint8_t ack_buf[16]{};
-        uint16_t ack_len = 0U;
-        if (pb2_encode_ack(&ack, ack_buf, sizeof(ack_buf), &ack_len) == PB2_PROTO_OK) {
-            pb2_frame_header_t ack_hdr{PB2_PROTO_VERSION, PB2_MSG_ACK, 0U,
-                                       uart_seq_++, cfg_.boot_epoch, cfg_.session_epoch, ack_len};
-            uart.enqueue_frame(ack_hdr, ack_buf);
+        send_ack(0U);
+    } else if (rx_hdr.msg_type == PB2_MSG_GEOMETRY_UPDATE) {
+        pb2_geometry_update_t gmsg{};
+        if (rx_payload != nullptr &&
+            pb2_decode_geometry_update(rx_payload, rx_hdr.payload_len, &gmsg) == PB2_PROTO_OK) {
+            GeometryConfig gcfg{};
+            gcfg.valid = (gmsg.valid != 0U) && (gmsg.sensor_count == 4U);
+            gcfg.geometry_source = gmsg.geometry_source;
+            gcfg.session_epoch = (gmsg.session_epoch != 0U) ? gmsg.session_epoch : active_session_epoch_;
+            gcfg.propagation_speed_mps = static_cast<double>(gmsg.propagation_speed_mps);
+            for (std::size_t ch = 0; ch < 4U; ++ch) {
+                gcfg.channel_to_sensor[ch] = gmsg.channel_to_sensor[ch];
+                for (std::size_t k = 0; k < 3U; ++k) {
+                    gcfg.sensor_positions_m[ch][k] = static_cast<double>(gmsg.sensor_positions_m[ch][k]);
+                }
+            }
+            if (is_valid_geometry(gcfg)) {
+                active_geometry_ = gcfg;
+                send_ack(0U);
+            } else {
+                active_geometry_.valid = false;
+                send_ack(1U);
+            }
+        } else {
+            send_ack(1U);
         }
     } else if (rx_hdr.msg_type == PB2_MSG_SHUTDOWN_REQUEST) {
+        /* Acknowledge receipt immediately; SHUTDOWN_READY is sent ONLY after STOP_PRU->DRAIN->FLUSH->FSYNC->FINALIZE */
         remote_stop.store(true, std::memory_order_release);
-        pb2_frame_header_t rdy{PB2_PROTO_VERSION, PB2_MSG_SHUTDOWN_READY, 0U,
-                               uart_seq_++, cfg_.boot_epoch, cfg_.session_epoch, 0U};
-        uart.enqueue_frame(rdy, nullptr);
+        shutdown_via_uart_ = true;
+        send_ack(0U);
     }
 }
 
 void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uart,
                                               const pb2::acquisition::SampleFrame& latest,
-                                              std::uint32_t active_session_epoch,
                                               std::atomic<bool>& remote_stop,
                                               PipelineReport& report) {
     if (!uart.is_open()) {
@@ -272,8 +410,8 @@ void RuntimePipeline::maybe_send_uart_summary(pb2::transport::UartTransport& uar
     hdr.msg_type = PB2_MSG_PREVIEW_BLOCK;
     hdr.flags = 0U;
     hdr.sequence = uart_seq_++;
-    hdr.boot_epoch = cfg_.boot_epoch;
-    hdr.session_epoch = active_session_epoch;
+    hdr.boot_epoch = active_boot_epoch_;
+    hdr.session_epoch = active_session_epoch_;
 
     pb2_preview_block_t msg{};
     msg.first_sample_index = latest.source_sample_index;
@@ -319,11 +457,23 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
     PipelineReport report{};
     pb2::power::ShutdownFsm shutdown_fsm;
     std::atomic<bool> remote_stop{false};
-    std::uint32_t active_session_epoch = cfg_.session_epoch;
+    shutdown_via_uart_ = false;
+    report.active_boot_epoch = active_boot_epoch_;
+    report.active_session_epoch = active_session_epoch_;
+    report.dsp_window_samples = compute_dsp_window_samples();
 
-    /* Validate PRU/IEP clocks before hardware PRU acquisition */
+    /* Hardware PRU backends (PruUio, PruDevMem) must probe real Linux PRU/IEP clocks.
+       Virtual/simulator backends (Mock, PruSnapshotFile, PruLiveFile) use explicit config clocks. */
     if (cfg_.source_kind == PipelineSourceKind::PruUio ||
         cfg_.source_kind == PipelineSourceKind::PruDevMem) {
+        const auto clk = pb2::hardware::probe_hardware_pru_iep_clocks(cfg_.clk_debug_root);
+        if (!clk.valid) {
+            report.error_message = clk.reason;
+            shutdown_fsm.on_event(pb2::power::ShutdownEvent::TimeoutOrError);
+            report.shutdown_state = shutdown_fsm.state();
+            return report;
+        }
+    } else {
         const auto clk = pb2::hardware::validate_pru_iep_clocks(cfg_.pru_clock_hz, cfg_.iep_clock_hz);
         if (!clk.valid) {
             report.error_message = clk.reason;
@@ -377,13 +527,14 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
                 return false;
             }
             if (q_drop > 0U) {
+                report.writer_queue_dropped += q_drop;
                 report.dropped_frames += q_drop;
                 report.degraded = true;
             }
         }
         push_preview(frames.data(), frames.size());
-        run_dsp_window(frames.data(), frames.size(), report);
-        maybe_send_uart_summary(uart, frames.back(), active_session_epoch, remote_stop, report);
+        run_dsp_window(frames.data(), frames.size(), uart, report);
+        maybe_send_uart_summary(uart, frames.back(), remote_stop, report);
         report.frames_processed += frames.size();
         return true;
     };
@@ -451,14 +602,15 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
         }
 
         if (shm.get()->session_epoch != 0U) {
-            active_session_epoch = shm.get()->session_epoch;
+            active_session_epoch_ = shm.get()->session_epoch;
+            report.active_session_epoch = active_session_epoch_;
         }
 
         if (is_live) {
             if (!consumer.start_acquisition(cfg_.sample_rate_hz,
                                             cfg_.profile,
                                             cfg_.iep_clock_hz,
-                                            active_session_epoch,
+                                            active_session_epoch_,
                                             cfg_.pru_cmd_timeout_ms)) {
                 report.error_message = "PRU lifecycle CONFIGURE->ARM->START failed";
                 shutdown_fsm.on_event(pb2::power::ShutdownEvent::TimeoutOrError);
@@ -490,6 +642,7 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
             }
         }
 
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::RequestStop);
         if (is_live) {
             if (!consumer.stop_acquisition(cfg_.pru_cmd_timeout_ms) && report.error_message.empty()) {
                 report.error_message = "PRU STOP->DRAIN->STOPPED timed out";
@@ -499,10 +652,23 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
                 process_batch(batch);
             }
         }
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::AcquisitionStopped);
 
         const auto pstats = consumer.snapshot_stats();
+        report.pru_scheduled_samples = shm.get()->total_frames + pstats.missed_deadlines;
+        report.pru_missed_deadlines = pstats.missed_deadlines;
+        report.pru_adc_dropped = (pstats.hw_error_flags & PB2_PRU_ERR_BUSY_FELL_IN_READ) ? 1U : 0U;
+        report.pru_ring_overflow_dropped = pstats.dropped_frames;
         report.dropped_frames += pstats.dropped_frames;
         report.gap_blocks = pstats.gap_blocks;
+        if (pstats.dropped_frames > 0U || pstats.missed_deadlines > 0U || pstats.overrun_count > 0U) {
+            report.degraded = true;
+        }
+    }
+
+    if (shutdown_fsm.state() == pb2::power::ShutdownState::Running) {
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::RequestStop);
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::AcquisitionStopped);
     }
 
     if (recorder) {
@@ -510,21 +676,47 @@ PipelineReport RuntimePipeline::run(const std::atomic<bool>& stop_requested) {
         if (recorder->failed() && report.error_message.empty()) {
             report.error_message = "GeoseisV2Writer write_frames failed";
         }
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::StorageFlushed);
         if (!writer.flush() && report.error_message.empty()) {
             report.error_message = "GeoseisV2Writer flush/fsync failed";
         }
         report.frames_written = writer.frames_written();
         writer.close();
-    }
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::SessionFinalized);
+        shutdown_fsm.on_event(pb2::power::ShutdownEvent::PruStopped);
 
-    if (report.error_message.empty() && !report.degraded) {
-        shutdown_fsm.on_event(pb2::power::ShutdownEvent::RequestStop);
-        shutdown_fsm.on_event(pb2::power::ShutdownEvent::AcquisitionStopped);
+        /* Verify frame balance without double counting */
+        if (report.frames_acquired != (report.frames_written + report.writer_queue_dropped) &&
+            report.error_message.empty()) {
+            report.error_message = "Frame accounting mismatch (unannounced frame loss)";
+        }
+    } else {
         shutdown_fsm.on_event(pb2::power::ShutdownEvent::StorageFlushed);
         shutdown_fsm.on_event(pb2::power::ShutdownEvent::SessionFinalized);
         shutdown_fsm.on_event(pb2::power::ShutdownEvent::PruStopped);
-    } else {
+    }
+
+    if (!report.error_message.empty()) {
         shutdown_fsm.on_event(pb2::power::ShutdownEvent::TimeoutOrError);
+    } else if (shutdown_via_uart_ && uart.is_open() && !report.degraded) {
+        /* Only send SHUTDOWN_READY after STOP_PRU->DRAIN->FLUSH->FSYNC->FINALIZE succeeded */
+        pb2_frame_header_t rdy{PB2_PROTO_VERSION, PB2_MSG_SHUTDOWN_READY, 0U,
+                               uart_seq_++, active_boot_epoch_, active_session_epoch_, 0U};
+        if (!uart.enqueue_frame(rdy, nullptr)) {
+            report.error_message = "UART TX queue rejected SHUTDOWN_READY";
+            shutdown_fsm.on_event(pb2::power::ShutdownEvent::TimeoutOrError);
+        } else {
+            const auto tx_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+            while (uart.pending_tx_frames() > 0U && std::chrono::steady_clock::now() < tx_deadline) {
+                (void)uart.poll_once(10, [&](const pb2_frame_header_t&, const uint8_t*) {});
+            }
+            if (uart.pending_tx_frames() > 0U) {
+                report.error_message = "UART TX failed to flush SHUTDOWN_READY";
+                shutdown_fsm.on_event(pb2::power::ShutdownEvent::TimeoutOrError);
+            } else {
+                report.shutdown_ready_sent = true;
+            }
+        }
     }
 
     if (uart.is_open()) {

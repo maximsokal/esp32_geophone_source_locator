@@ -1,5 +1,6 @@
 (sym_lib_table
 	(version 7)
 	(lib (name "Diploma_Custom") (type "KiCad") (uri "${KIPRJMOD}/Diploma_Custom.kicad_sym") (options "") (descr "Project symbols"))
+	(lib (name "Diploma_PB2") (type "KiCad") (uri "${KIPRJMOD}/Diploma_PB2.kicad_sym") (options "") (descr "PocketBeagle 2 A1 integration symbols"))
 	(lib (name "Seeed_Studio_XIAO_Series") (type "KiCad") (uri "${KIPRJMOD}/../202004288;XIAO nRF54L15 v1.0_SCH&PCB/Seeed_Studio_XIAO_Series.kicad_sym") (options "") (descr "Seeed XIAO nRF54L15 symbols"))
 )

@@ -1705,7 +1705,7 @@
             },
             "problemMatcher": [],
             "group": "test",
-            "detail": "Run full offline virtual suite (ESP32 virtual stress, PRU1 ELF sim, PB2 host CTest, A1 DT overlay, KiCad ERC, ast-grep) with zero hardware."
+            "detail": "Run full offline virtual suite (ESP32 virtual stress + firmware build, PRU1 ELF sim, PB2 host CTest, A1 DT overlay, KiCad ERC, ast-grep) with zero hardware."
         }
     ],
     "inputs": [
