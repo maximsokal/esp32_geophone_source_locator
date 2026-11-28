@@ -293,6 +293,10 @@ describe('the worker dies mid-scan', () => {
     keeper.handle({ type: 'send', generation: 1, port: { postMessage: (message: unknown) => sent.push(message), onmessage: null } });
     expect(reads).toBe(1);
     expect(sent[0]).toMatchObject({ throughSeq: 40 });
+    keeper.close();                                                                          /* a closed keeper holds nothing */
+    const after: unknown[] = [];
+    keeper.handle({ type: 'send', generation: 1, port: { postMessage: (message: unknown) => after.push(message), onmessage: null } });
+    expect(after).toEqual([null]);
   });
 
   it('a checkpoint the browser cannot deserialise (its data reads as null) is reported as missing', () => {
